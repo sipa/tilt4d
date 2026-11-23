@@ -17,16 +17,27 @@ const vec = (c) => `vec3f(${c.map(f).join(', ')})`;
 //   fog          fog density per metre
 //   clouds       cloud cover 0..1 (0 disables the cloud layer)
 //   zenith, horizon   daytime sky colours (sRGB)
+//   own          names of functions the scene defines itself in place of the
+//                ones here: 'envDayPhase' and/or 'envSunVec' (see below)
 // Besides the hooks this defines envSunVec(t) (the sun's direction, which
 // keeps going below the horizon), envDayPhase(t) (0 = midnight, 0.5 = noon)
 // and envDaylight(t) (0 at night .. 1 in full day) for use in `surface`.
+// Everything else here goes by those two, so a scene can bend the day by
+// writing its own: with own: ['envDayPhase'], say, the scene's WGSL defines
+// fn envDayPhase(t: f32) -> f32 (hours that run unevenly, a day that stands
+// still), and with 'envSunVec' the sun's path.  The ones made here are there
+// under the names envDayPhase0 and envSunVec0 to build on.
 // It also defines the optional hook envReflect: glossy surfaces mirror the sky
 // without its stars, and with the sun or moon only where that shines on them.
 export function dayNightEnv(o = {}) {
   const dayLength = o.dayLength ?? 600, startHour = o.startHour ?? 9, sunTilt = o.sunTilt ?? 0.6;
   const fog = o.fog ?? 0.0015, clouds = o.clouds ?? 0.45;
   const zenith = lin(o.zenith ?? '#3d7fd6'), horizon = lin(o.horizon ?? '#b9d7ee');
-  return /* wgsl */ `
+  const own = o.own || [];
+  // (the plain ones, unless the scene brings its own)
+  const plain = (own.includes('envDayPhase') ? '' : 'fn envDayPhase(t: f32) -> f32 { return envDayPhase0(t); }\n')
+    + (own.includes('envSunVec') ? '' : 'fn envSunVec(t: f32) -> vec3f { return envSunVec0(t); }\n');
+  return plain + /* wgsl */ `
 const ENV_DAY = ${f(dayLength)};
 const ENV_T0 = ${f(startHour / 24)};
 const ENV_TILT = ${f(sunTilt)};
@@ -35,8 +46,8 @@ const ENV_CLOUDS = ${f(clouds)};
 const ENV_ZENITH = ${vec(zenith)};
 const ENV_HORIZON = ${vec(horizon)};
 
-fn envDayPhase(t: f32) -> f32 { return fract(t / ENV_DAY + ENV_T0); }
-fn envSunVec(t: f32) -> vec3f {
+fn envDayPhase0(t: f32) -> f32 { return fract(t / ENV_DAY + ENV_T0); }
+fn envSunVec0(t: f32) -> vec3f {
   let a = (envDayPhase(t) - 0.25) * TAU;
   return normalize(vec3f(cos(a), -sin(a) * sin(ENV_TILT), sin(a) * cos(ENV_TILT)));
 }

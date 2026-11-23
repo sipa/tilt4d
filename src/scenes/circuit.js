@@ -11,6 +11,15 @@
 // winds south through the hills (through a covered gallery), and comes back
 // east along the south straight.  The scene repeats every PERIOD = LAP / 15 s,
 // so every car does a whole number of laps per period.
+//
+// Detail for close inspection (on foot, or driving alongside) is mostly
+// painted by the shader from uv, tags and the copies' numbers: the cars'
+// wheels, glass, helmets, lights and racing numbers, the trains' windows,
+// doors and wheels, shutters on the houses.  What stands out in 3D is added
+// with `within`, so that it costs nothing from afar: mirrors, tyres and
+// exhausts on the cars and coaches all round the lap, the trains' bogies, the
+// balloons' ropes and burners, the yachts' rigging, the timing boards',
+// gantry's and lamps' small parts, doors and chimneys, garden walls.
 
 import { Geo } from '../geom.js';
 import { m4, v3 } from '../math.js';
@@ -45,6 +54,10 @@ const MAT = {
   TERRAIN: 1, ROAD: 2, VERGE: 3, SEA: 4, DISPLAY: 5, LAMP: 6, BEAM: 7, CHASE: 8,
   HOUSE: 9, CAR_SIDE: 10, CAR_FRONT: 11, CAR_REAR: 12, CROWD: 13, BUS_SIDE: 14,
   TRAIN: 15, LANTERN: 16, BALLOON: 17, AD: 18, RAILBED: 19, CHECKER: 20, LATTICE: 21,
+  CAR_SCREEN: 22, CAR_BACKGLASS: 23, CAR_TOP: 24, CAR_ROOF: 25, BUS_END: 26,
+  TRAIN_CAB: 27, TRAIN_END: 28, BOGIE: 29, LOCO: 30, CONTAINER: 31,
+  LADDER: 32, MARKER: 33, RAILING: 34, TYRES: 35, CONE: 36, FENCE: 37,
+  BASKET: 38, FLAME: 39, GONDOLA: 40, HULL: 41, PLANKS: 42, ARMCO: 43, CHEVRON: 44, SAIL: 45, ROOF: 46, CAR_BONNET: 47,
 };
 
 // ------------------------------------------------------------------ noise
@@ -312,6 +325,7 @@ function setAttr(g, idx, o) {
     if (o.emissive !== undefined) g.a[k * 4] = o.emissive;
     if (o.gloss !== undefined) g.a[k * 4 + 1] = o.gloss;
     if (o.mat !== undefined) g.a[k * 4 + 2] = o.mat;
+    if (o.tag !== undefined) g.x[k * 2 + 1] = o.tag;
   }
 }
 function parseHex(h) {
@@ -323,9 +337,15 @@ function parseHex(h) {
 // extruded across x.  edgeAttr(k) styles the face along profile edge k (its
 // uv: 0..1 along the edge, 0..1 across); the two sides get capAttr and uv =
 // the profile coordinates in metres.
-function prism(profile, width, edgeAttr, capAttr) {
+//   (an edgeAttr of null leaves that face out; with opts.fan the sides are a
+//   fan from profile point 0, which must see every other point, instead of
+//   one from the centre: two triangles and a vertex fewer on each side.
+//   opts.capTag(sx) tags each side's vertices.)
+function prism(profile, width, edgeAttr, capAttr, opts = {}) {
   const g = new Geo(), hw = width / 2, n = profile.length;
   for (let k = 0; k < n; k++) {
+    const attr = edgeAttr(k);
+    if (attr === null) continue;
     const P = profile[k], Q = profile[(k + 1) % n];
     const dy = Q[0] - P[0], dz = Q[1] - P[1], l = Math.hypot(dy, dz);
     const ny = dz / l, nz = -dy / l;
@@ -333,16 +353,24 @@ function prism(profile, width, edgeAttr, capAttr) {
       g.vert(-hw, P[0], P[1], 0, ny, nz, 0, 0), g.vert(hw, P[0], P[1], 0, ny, nz, 0, 1),
       g.vert(hw, Q[0], Q[1], 0, ny, nz, 1, 1), g.vert(-hw, Q[0], Q[1], 0, ny, nz, 1, 0),
     ];
-    setAttr(g, q, edgeAttr(k));
+    setAttr(g, q, attr);
     g.quadIdx(q[0], q[1], q[2], q[3]);
   }
   let cy = 0, cz = 0;
   for (const p of profile) { cy += p[0] / n; cz += p[1] / n; }
   for (const sx of [-1, 1]) {
-    const c0 = g.vert(sx * hw, cy, cz, sx, 0, 0, cy, cz), idx = [c0];
-    for (const p of profile) idx.push(g.vert(sx * hw, p[0], p[1], sx, 0, 0, p[0], p[1]));
-    for (let k = 0; k < n; k++) g.tri(c0, c0 + 1 + k, c0 + 1 + ((k + 1) % n));
+    const idx = [];
+    if (opts.fan) {
+      for (const p of profile) idx.push(g.vert(sx * hw, p[0], p[1], sx, 0, 0, p[0], p[1]));
+      for (let k = 1; k < n - 1; k++) g.tri(idx[0], idx[k], idx[k + 1]);
+    } else {
+      const c0 = g.vert(sx * hw, cy, cz, sx, 0, 0, cy, cz);
+      idx.push(c0);
+      for (const p of profile) idx.push(g.vert(sx * hw, p[0], p[1], sx, 0, 0, p[0], p[1]));
+      for (let k = 0; k < n; k++) g.tri(c0, c0 + 1 + k, c0 + 1 + ((k + 1) % n));
+    }
     setAttr(g, idx, capAttr);
+    if (opts.capTag) for (const i of idx) g.x[i * 2 + 1] = opts.capTag(sx);
   }
   return g.orientByNormals();
 }
@@ -371,25 +399,114 @@ function stopMotion(b, make, n, cycle, offset = 0) {
 
 // ------------------------------------------------------------------ vehicles
 
-const CAR_PROFILE = [[-2.25, 0.06], [2.25, 0.06], [2.3, 0.6], [1.0, 0.85], [0.25, 1.3], [-0.9, 1.3], [-1.95, 0.95], [-2.3, 0.86]];
-function carGeo(color) {
-  return prism(CAR_PROFILE, 1.84, (k) => {
-    if (k === 0) return { color: '#15171a', gloss: 0.1 };
+// The race cars: a low wedge with a ducktail, and a wing on a swan-neck
+// pedestal.  Every moving triangle is drawn as three tetrahedra, so the body
+// is still a prism of 30 triangles: no floor (it is never seen), sides fanned
+// from a corner, and everything else is painted on by the CAR_* materials: wheels with tyres,
+// rims, spokes and callipers under flared arches, glass with the driver's
+// helmet behind it, lights, grille, splitter, diffuser, exhaust, stripes and
+// the racing number (the vertices' tag; bit 128 marks the left side).  The
+// small parts that stand out (mirrors, tyres, exhaust pipe, ...) are added
+// from near by, see carDetailGeo.
+const CAR_PROFILE = [[-2.28, 0.06], [2.3, 0.06], [2.34, 0.56], [1.05, 0.8], [0.2, 1.22], [-0.85, 1.24], [-1.9, 0.93], [-2.32, 0.9]];
+const CAR_W = 1.84;
+const CAR_NUMBERS = [7, 23, 11, 4, 88, 31, 16, 42, 5, 69, 12, 27, 3, 55, 9, 71, 18, 21, 33, 8, 64, 2];
+function carGeo(color, number) {
+  const g = prism(CAR_PROFILE, CAR_W, (k) => {
+    if (k === 0) return null;
     if (k === 1) return { color, mat: MAT.CAR_FRONT, gloss: 0.6 };
     if (k === 7) return { color, mat: MAT.CAR_REAR, gloss: 0.6 };
-    if (k === 3 || k === 5) return { color: '#141a21', gloss: 0.92 };
-    return { color, gloss: 0.7 };
-  }, { color, mat: MAT.CAR_SIDE, gloss: 0.7 });
+    if (k === 3) return { color, mat: MAT.CAR_SCREEN, gloss: 0.6 };
+    if (k === 5) return { color, mat: MAT.CAR_BACKGLASS, gloss: 0.6 };
+    if (k === 4) return { color, mat: MAT.CAR_ROOF, gloss: 0.7 };
+    if (k === 2) return { color, mat: MAT.CAR_BONNET, gloss: 0.7 };
+    return { color, mat: MAT.CAR_TOP, gloss: 0.7 };
+  }, { color, mat: MAT.CAR_SIDE, gloss: 0.7 }, { fan: true, capTag: (sx) => (sx < 0 ? 128 : 0) });
+  const wing = Geo.merge(
+    Geo.quad([0, -2.17, 0.9], [0, -1.98, 0.925], [0, -2.07, 1.19], [0, -2.21, 1.19]),
+    Geo.quad([-0.86, -2.0, 1.165], [-0.86, -2.37, 1.235], [0.86, -2.37, 1.235], [0.86, -2.0, 1.165]),
+  ).color('#1c1f23').gloss(0.45).doubleSided();
+  g.add(wing);
+  for (let i = 0; i < g.vertexCount; i++) g.x[i * 2 + 1] |= number;
+  return g;
 }
+// The small parts of a car that stand out of the body, for near by: door
+// mirrors, the tyres' treads (open rings round the painted wheels, standing
+// 4 cm proud of the sides), exhaust pipe, splitter lip, wing end plates,
+// canards, tow straps, an aerial and wiper blades.  117 triangles.
+function carDetailGeo(color) {
+  const g = new Geo();
+  for (const sx of [-1, 1]) {
+    const mirror = Geo.box(0.17, 0.09, 0.1).translate(sx * 1.0, 0.8, 0.93).color(color).gloss(0.6);
+    for (let i = 12; i < 16; i++) mirror.c.splice(i * 3, 3, 0.62, 0.7, 0.78);   // the face towards the back: glass
+    for (let i = 12; i < 16; i++) mirror.a[i * 4 + 1] = 0.95;
+    g.add(mirror);
+    g.add(Geo.quad([sx * 0.865, -2.39, 1.12], [sx * 0.865, -1.97, 1.12], [sx * 0.865, -1.97, 1.27], [sx * 0.865, -2.41, 1.3]).color('#1c1f23').doubleSided());
+    g.add(Geo.triangle([sx * 0.92, 2.22, 0.3], [sx * 0.92, 1.95, 0.33], [sx * 1.0, 2.2, 0.31]).color('#1c1f23').doubleSided());
+    for (const cy of [-1.38, 1.45]) {
+      const tyre = new Geo(), seg = 8, R = 0.345, x0 = sx * 0.86, x1 = sx * 0.965;
+      for (let i = 0; i < seg; i++) {
+        const a = (i + 0.5) / seg * 2 * Math.PI, c = Math.cos(a), s = Math.sin(a);
+        tyre.vert(x0, cy + R * c, 0.33 + R * s, 0, c, s, i / seg, 0);
+        tyre.vert(x1, cy + R * c, 0.33 + R * s, 0, c, s, i / seg, 1);
+      }
+      for (let i = 0; i < seg; i++) { const j = (i + 1) % seg; tyre.quadIdx(2 * i, 2 * j, 2 * j + 1, 2 * i + 1); }
+      g.add(tyre.orientByNormals().color('#151617').gloss(0.2));
+    }
+  }
+  g.add(Geo.cylinder(0.045, 0.1, 6, { caps: false }).rotateX(Math.PI / 2).translate(0.55, -2.27, 0.26).color('#8a8580').gloss(0.7));
+  g.add(Geo.quad([-0.9, 2.3, 0.075], [0.9, 2.3, 0.075], [0.9, 2.4, 0.075], [-0.9, 2.4, 0.075]).color('#1a1a1a').doubleSided());
+  g.add(Geo.triangle([0, -0.3, 1.235], [0, -0.45, 1.235], [0, -0.42, 1.52]).color('#111').doubleSided());
+  // wiper blades lying on the windscreen, a centimetre proud of it
+  const dl = Math.hypot(0.85, 0.42), dir = [-0.85 / dl, 0.42 / dl], nrm = [dir[1], -dir[0]];   // along the glass, and out of it
+  const onGlass = (x, d) => [x, 1.05 + dir[0] * d + nrm[0] * 0.012, 0.8 + dir[1] * d + nrm[1] * 0.012];
+  for (const [x0, x1] of [[-0.8, -0.08], [0.02, 0.72]]) {
+    g.add(Geo.quad(onGlass(x0, 0.06), onGlass(x1, 0.16), onGlass(x1, 0.185), onGlass(x0, 0.085)).color('#141414').doubleSided());
+  }
+  g.add(Geo.quad([0.4, 2.33, 0.1], [0.5, 2.335, 0.1], [0.5, 2.335, 0.22], [0.4, 2.33, 0.22]).color('#d62f1f').doubleSided());
+  g.add(Geo.quad([-0.5, -2.31, 0.24], [-0.4, -2.31, 0.24], [-0.4, -2.31, 0.36], [-0.5, -2.31, 0.36]).color('#d62f1f').doubleSided());
+  return g;
+}
+// A coach's small parts: mirrors on arms that reach forward, a cooling unit
+// on the roof and the treads of its tyres.
+function busDetailGeo() {
+  const g = new Geo();
+  for (const sx of [-1, 1]) {
+    g.add(Geo.box(0.06, 0.5, 0.06).translate(sx * 1.3, 6.15, 2.6).color('#1c1f23'));
+    const mirror = Geo.box(0.12, 0.1, 0.42).translate(sx * 1.48, 6.38, 2.35).color('#1c1f23');
+    for (let i = 12; i < 16; i++) mirror.c.splice(i * 3, 3, 0.62, 0.7, 0.78);
+    g.add(mirror);
+    g.add(Geo.box(0.2, 0.06, 0.06).translate(sx * 1.38, 6.38, 2.6).color('#1c1f23'));
+  }
+  g.add(Geo.box(1.6, 2.6, 0.28).translate(0, 1.5, 3.39).color('#d8dadb').gloss(0.3));
+  // the treads of the tyres, standing a little proud of the sides
+  for (const sx of [-1, 1]) {
+    for (const cy of [-3.7, 3.9]) {
+      const tyre = new Geo(), seg = 8, R = 0.52, x0 = sx * 1.18, x1 = sx * 1.29;
+      for (let i = 0; i < seg; i++) {
+        const a = (i + 0.5) / seg * 2 * Math.PI, c = Math.cos(a), s = Math.sin(a);
+        tyre.vert(x0, cy + R * c, 0.5 + R * s, 0, c, s, i / seg, 0);
+        tyre.vert(x1, cy + R * c, 0.5 + R * s, 0, c, s, i / seg, 1);
+      }
+      for (let i = 0; i < seg; i++) { const j = (i + 1) % seg; tyre.quadIdx(2 * i, 2 * j, 2 * j + 1, 2 * i + 1); }
+      g.add(tyre.orientByNormals().color('#151617').gloss(0.2));
+    }
+  }
+  return g;
+}
+// The coaches: the same kind of prism, with doors, wheels, lights and the
+// destination board painted on (BUS_SIDE, and BUS_END with tags 1 to 4 for
+// the lower front, windscreen, upper rear and lower rear).
 const BUS_PROFILE = [[-6, 0.08], [6, 0.08], [6.05, 1.1], [5.95, 2.95], [5.7, 3.25], [-5.95, 3.25], [-6.05, 1.1]];
 function busGeo(color) {
   return prism(BUS_PROFILE, 2.5, (k) => {
-    if (k === 0) return { color: '#15171a', gloss: 0.1 };
-    if (k === 1) return { color, mat: MAT.CAR_FRONT, gloss: 0.5 };
-    if (k === 2) return { color: '#141a21', gloss: 0.92 };
-    if (k === 6) return { color, mat: MAT.CAR_REAR, gloss: 0.5 };
+    if (k === 0) return null;
+    if (k === 1) return { color, mat: MAT.BUS_END, gloss: 0.5, tag: 1 };
+    if (k === 2) return { color, mat: MAT.BUS_END, gloss: 0.6, tag: 2 };
+    if (k === 5) return { color, mat: MAT.BUS_END, gloss: 0.5, tag: 3 };
+    if (k === 6) return { color, mat: MAT.BUS_END, gloss: 0.5, tag: 4 };
     return { color, gloss: 0.55 };
-  }, { color, mat: MAT.BUS_SIDE, gloss: 0.55 });
+  }, { color, mat: MAT.BUS_SIDE, gloss: 0.55 }, { fan: true, capTag: (sx) => (sx < 0 ? 128 : 0) });
 }
 
 // Carries a model along a lane: offset metres to the right of the lap
@@ -404,36 +521,131 @@ function laneTransform(s0, speed, offset, dir) {
   };
 }
 
+// The trains move in straight lines at a steady speed, so each run has only
+// two keys and their small parts cost little memory; they are drawn whenever
+// the train is, so they are kept to boxes.  Windows, doors, lights, grilles
+// and wheels are painted (TRAIN, TRAIN_CAB, TRAIN_END, BOGIE, CONTAINER).
+// Rails are 0.26 m above the trains' origin; the bodies start at 0.55.
+const boxFace = (g, face, o) => setAttr(g, [0, 1, 2, 3].map((i) => face * 4 + i), o);   // faces: +x, -x, +y, -y, +z, -z
+// a bar of square section w from a to b (in a mesh's own coordinates)
+function bar(a, b, w) {
+  const d = v3.sub(b, a), l = v3.len(d), y = v3.scale(d, 1 / l);
+  const x = Math.abs(y[2]) < 0.9 ? v3.norm(v3.cross(y, [0, 0, 1])) : [1, 0, 0];
+  return Geo.box(w, l, w).transform(m4.fromBasis(x, y, v3.cross(x, y), v3.scale(v3.add(a, b), 0.5)));
+}
+// the faces of a box but its top and bottom (for parts whose top is hidden
+// under a body and whose bottom is never seen): 8 triangles instead of 12
+function sides(g) {
+  g.idx = g.idx.slice(0, 24);
+  for (const [k, n] of [['p', 3], ['n', 3], ['c', 3], ['uv', 2], ['a', 4], ['x', 2]]) g[k] = g[k].slice(0, 16 * n);
+  return g;
+}
+// a bogie: a low frame with two wheels painted on each side, centred at y
+const bogie = (y, w = 2.0) => sides(Geo.box(w, 2.8, 0.42)).translate(0, y, 0.41).color('#2b2d30').mat(MAT.BOGIE);
 function expressGeo() {
   const g = new Geo();
-  // power car, front at y = 0, with a sloping nose
+  // power car, front at y = 0, with a sloping nose; no floor
   g.add(prism([[-24, 0.55], [0, 0.55], [0.1, 1.5], [-4.5, 4.2], [-24, 4.2]], 3.0, (k) => {
-    if (k === 1) return { color: '#c0392b', gloss: 0.5 };
-    if (k === 2) return { color: '#11161c', gloss: 0.9 };
+    if (k === 0) return null;
+    if (k === 1) return { color: '#c0392b', gloss: 0.5, mat: MAT.TRAIN_END, tag: 1 };
+    if (k === 2) return { color: '#eef0f2', gloss: 0.6, mat: MAT.TRAIN_END, tag: 2 };
     return { color: '#eef0f2', gloss: 0.5 };
-  }, { color: '#eef0f2', gloss: 0.5 }));
+  }, { color: '#eef0f2', gloss: 0.5, mat: MAT.TRAIN_CAB }, { fan: true }));
   for (let i = 1; i < 8; i++) {
-    g.add(Geo.box(3.0, 24.2, 3.65).translate(0, -12.5 - 25 * i, 2.38).color('#eef0f2').gloss(0.5).mat(MAT.TRAIN));
+    const coach = Geo.box(3.0, 24.2, 3.65).translate(0, -12.5 - 25 * i, 2.38).color('#eef0f2').gloss(0.5).mat(MAT.TRAIN);
+    if (i === 7) boxFace(coach, 3, { mat: MAT.TRAIN_END, tag: 3 });
+    g.add(coach);
+  }
+  // bogies, the gangways between the cars, air conditioning on the roofs, the pantograph
+  const parts = new Geo();
+  for (let i = 1; i < 8; i++) {
+    const yc = -12.5 - 25 * i;
+    parts.add(Geo.box(2.5, 1.6, 3.1).translate(0, yc + 12.4, 2.3).color('#3b3e42'));
+    parts.add(Geo.box(1.9, 4.2, 0.3).translate(0, yc + 3, 4.35).color('#c9cdd1').gloss(0.3));
+  }
+  const pan = new Geo();
+  pan.add(Geo.box(1.5, 2.2, 0.22).translate(0, -15, 4.31));
+  pan.add(bar([0, -14.2, 4.42], [0, -15.6, 5.3], 0.08));
+  pan.add(bar([0, -15.6, 5.3], [0, -14.4, 6.05], 0.07));
+  pan.add(Geo.box(1.7, 0.18, 0.08).translate(0, -14.4, 6.08));
+  pan.add(Geo.box(2.0, 5.5, 0.35).translate(0, -9.5, 4.37));
+  parts.add(pan.color('#5b6168').gloss(0.4));
+  g.add(parts);
+  return g;
+}
+// the bogies under the express, and under the freight train with its
+// couplings: seen only from near by (see the trains in build())
+function expressBogies() {
+  const g = new Geo();
+  g.add(bogie(-3.5)); g.add(bogie(-20.5));
+  for (let i = 1; i < 8; i++) { const yc = -12.5 - 25 * i; g.add(bogie(yc + 9.3)); g.add(bogie(yc - 9.3)); }
+  return g;
+}
+function freightBogies() {
+  const g = new Geo();
+  g.add(bogie(-3.6, 2.2)); g.add(bogie(-15.4, 2.2));
+  for (let i = 0; i < 14; i++) {
+    const y = -20 - 20 * i - 9.6;
+    g.add(bogie(y + 7.2, 1.9)); g.add(bogie(y - 7.2, 1.9));
+    g.add(sides(Geo.box(0.35, 1.2, 0.3)).translate(0, y + 9.6 + 0.4, 1.05).color('#1d1e20'));     // coupling
   }
   return g;
 }
 function freightGeo(rand) {
   const g = new Geo();
-  g.add(Geo.box(3.0, 19, 4.0).translate(0, -9.5, 2.5).color('#8e2b20').gloss(0.4));
+  const loco = Geo.box(3.0, 19, 4.0).translate(0, -9.5, 2.5).color('#8e2b20').gloss(0.4).mat(MAT.LOCO);
+  boxFace(loco, 2, { mat: MAT.TRAIN_END, tag: 4 });
+  boxFace(loco, 3, { mat: MAT.TRAIN_END, tag: 4 });
+  g.add(loco);
   const cols = ['#2f5d8a', '#b8862b', '#7a3a2a', '#3f6b47', '#9a9a96', '#c2552c', '#5a4a7a'];
   for (let i = 0; i < 14; i++) {
     const y = -20 - 20 * i - 9.6;
     g.add(Geo.box(2.7, 19.2, 0.5).translate(0, y, 1.1).color('#2a2c2e'));
-    g.add(Geo.box(2.5, 18.6, 2.6).translate(0, y, 2.65).color(rand.pick(cols)).gloss(0.25));
+    g.add(Geo.box(2.5, 18.6, 2.6).translate(0, y, 2.65).color(rand.pick(cols)).gloss(0.25).mat(MAT.CONTAINER));
   }
+  // the red lamp on the last wagon
+  g.add(Geo.box(0.3, 0.2, 0.3).translate(0.9, -20 - 20 * 13 - 19.3, 1.6).color('#ff2a14').emissive(6));
   return g;
 }
 
 function balloonGeo(color) {
   const g = Geo.lathe([[2.0, 0], [5.2, 3.6], [8.3, 9.5], [8.9, 13.5], [7.8, 18], [4.6, 21.2], [0.4, 22.4]], 10)
     .color(color).mat(MAT.BALLOON).gloss(0.2);
-  g.add(Geo.box(1.5, 1.5, 1.1).translate(0, 0, -3.6).color('#6b4a2b'));
+  g.add(Geo.box(1.5, 1.5, 1.1).translate(0, 0, -3.6).color('#8a6236').mat(MAT.BASKET));
   return g.aux(1); // high above the land: out of the reach of its shadow
+}
+// a rope or stay: two crossed strips from a to b, w wide
+function rope(a, b, w, color) {
+  const d = v3.norm(v3.sub(b, a));
+  const g = new Geo();
+  for (const side of [[0, 0, 1], [1, 0, 0]]) {
+    let p = v3.cross(d, side);
+    if (v3.len(p) < 0.1) p = v3.cross(d, [0, 1, 0]);
+    p = v3.scale(v3.norm(p), w / 2);
+    g.add(Geo.quad(v3.sub(a, p), v3.add(a, p), v3.add(b, p), v3.sub(b, p)));
+  }
+  return g.color(color).doubleSided();
+}
+// a balloon's small parts, for near by: the ropes from the basket to the
+// envelope's mouth, the burner on its frame of poles, its flame (lit while
+// the envelope glows, see FLAME), a padded rim round the basket, and the
+// pilot and a passenger looking over it
+function balloonDetailGeo() {
+  const g = new Geo();
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    g.add(rope([sx * 0.72, sy * 0.72, -3.05], [sx * 1.41, sy * 1.41, 0], 0.05, '#cbbf9f'));
+    g.add(rope([sx * 0.62, sy * 0.62, -3.05], [sx * 0.32, sy * 0.32, -1.72], 0.04, '#3b3f44'));
+  }
+  g.add(Geo.box(0.7, 0.7, 0.35).translate(0, 0, -1.55).color('#9aa0a6').gloss(0.7));
+  for (const [x, y, w, d] of [[0, 0.76, 1.62, 0.12], [0, -0.76, 1.62, 0.12], [0.76, 0, 0.12, 1.4], [-0.76, 0, 0.12, 1.4]]) {
+    g.add(Geo.box(w, d, 0.12).translate(x, y, -3.0).color('#4a2e1a'));
+  }
+  for (const [x, y, shirt] of [[0.35, 0.3, '#2a5f8f'], [-0.33, -0.25, '#b8322a']]) {
+    g.add(Geo.box(0.4, 0.26, 0.3).translate(x, y, -3.05).color(shirt));
+    g.add(Geo.box(0.22, 0.24, 0.26).translate(x, y, -2.77).color('#c99f84'));
+  }
+  g.add(Geo.cone(0.32, 2.4, 6).translate(0, 0, -1.38).color('#ffb347').mat(MAT.FLAME).additive());
+  return g.aux(1);
 }
 
 function blimpGeo() {
@@ -442,7 +654,7 @@ function blimpGeo() {
     const fin = Geo.quad([0, -26, -9], [0, -36, -7], [0, -36, 7], [0, -26, 9]).color('#c0392b').doubleSided();
     g.add(fin.rotateY(a));
   }
-  g.add(Geo.box(2.6, 9, 2.2).translate(0, 4, -8.2).color('#2b3036'));
+  g.add(Geo.box(2.6, 9, 2.2).translate(0, 4, -8.2).color('#2b3036').mat(MAT.GONDOLA));
   for (const sx of [-1, 1]) {
     const p = Geo.plane(22, 5).rotateX(Math.PI / 2).rotateZ(sx > 0 ? Math.PI / 2 : -Math.PI / 2).translate(sx * 7.62, 0, 0);
     g.add(p.color('#ffb347').mat(MAT.DISPLAY));
@@ -450,10 +662,33 @@ function blimpGeo() {
   return g.aux(1); // high above the land: out of the reach of its shadow
 }
 
+// a yacht's small parts, for near by: boom, cabin top, shrouds and
+// backstay, and the helmsman at the tiller
+function boatDetailGeo() {
+  const g = new Geo();
+  g.add(bar([0, 0.9, 2.15], [0, -3.7, 2.15], 0.1).color('#c9ccd0'));
+  g.add(Geo.box(1.5, 2.2, 0.55).translate(0, -0.4, 1.55).color('#ece9e0').gloss(0.4));
+  for (const sx of [-1, 1]) g.add(rope([0, 0.8, 11.9], [sx * 1.22, 0.4, 1.3], 0.03, '#8d9196'));
+  g.add(rope([0, 0.8, 12.0], [0, -4.3, 1.3], 0.03, '#8d9196'));
+  g.add(Geo.box(0.36, 0.3, 0.5).translate(0.5, -3.3, 1.55).color('#2a5f8f'));
+  g.add(Geo.box(0.2, 0.22, 0.24).translate(0.5, -3.3, 1.92).color('#c99f84'));
+  g.add(bar([0, -4.1, 1.45], [0.35, -3.1, 1.6], 0.05).color('#6b5440'));
+  return g;
+}
+// the blimp's engine pods on their struts, beside the gondola, for near by
+function blimpDetailGeo() {
+  const g = new Geo();
+  for (const sx of [-1, 1]) {
+    g.add(Geo.cylinder(0.7, 2.6, 8).rotateX(-Math.PI / 2).translate(sx * 4.0, 1.0, -7.0).color('#c9ccd0').gloss(0.5));
+    g.add(bar([sx * 1.3, 2.3, -7.8], [sx * 3.4, 2.3, -7.1], 0.15).color('#5b6168'));
+    g.add(Geo.disc(1.15, 10).rotateX(Math.PI / 2).translate(sx * 4.0, 0.9, -7.0).color('#2b3036'));
+  }
+  return g.aux(1);
+}
 function boatGeo(sail) {
-  const g = prism([[-4.2, 0], [3.4, 0], [4.8, 1.3], [-4.4, 1.3]], 2.6, () => ({ color: '#f4f2ec', gloss: 0.5 }), { color: '#f4f2ec', gloss: 0.5 });
+  const g = prism([[-4.2, 0], [3.4, 0], [4.8, 1.3], [-4.4, 1.3]], 2.6, (k) => (k === 0 ? null : { color: '#f4f2ec', gloss: 0.5 }), { color: '#f4f2ec', gloss: 0.5, mat: MAT.HULL }, { fan: true });
   g.add(Geo.box(0.16, 0.16, 11).translate(0, 0.8, 6.6).color('#ccc'));
-  g.add(Geo.triangle([0, 1.0, 2.2], [0, -3.6, 2.2], [0, 0.9, 11.8]).color(sail).doubleSided());
+  g.add(Geo.triangle([0, 1.0, 2.2], [0, -3.6, 2.2], [0, 0.9, 11.8]).color(sail).mat(MAT.SAIL).doubleSided());
   g.add(Geo.triangle([0, 1.2, 2.0], [0, 4.6, 1.6], [0, 1.1, 10.5]).color('#f7f5ef').doubleSided());
   return g;
 }
@@ -553,12 +788,38 @@ fn timeDisplay(uv: vec2f, t: f32) -> f32 {
   return digit7(vec2f(x - 4.9, uv.y), d);
 }
 
+// Ladders, railings and the catch fence, uv in metres.  Their bars are kept
+// at least about a pixel wide (pf: the pixel's size), except the fence's mesh,
+// which fades away once its wires are too fine to see, leaving its frame.
+fn smallCutout(s: Surface, pf: f32) -> f32 {
+  let w = max(pf * 0.6, 0.004);
+  var d = 0.0;
+  if (s.mat == ${MAT.LADDER}u) {
+    let v = fract(s.uv.y / 0.3) * 0.3;
+    d = max(max(0.04, w) - min(s.uv.x, 0.4 - s.uv.x), max(0.016, w) - min(v, 0.3 - v));
+  } else if (s.mat == ${MAT.RAILING}u) {
+    let x = fract(s.uv.x / 1.5) * 1.5;
+    let h = s.uv.y;
+    d = max(max(max(0.03, w) - min(x, 1.5 - x), max(0.03, w) - abs(h - 1.07)), max(max(0.025, w) - abs(h - 0.55), 0.1 - h));
+  } else {
+    // tubes at the top, the middle and the bottom (uv.x is the height), and a
+    // mesh of 10 cm squares turned 45 degrees
+    let a = abs(fract((s.uv.x + s.uv.y) * 7.071 + 0.5) - 0.5);
+    let b = abs(fract((s.uv.x - s.uv.y) * 7.071 + 0.5) - 0.5);
+    let mesh = 0.007 - min(a, b) * 0.1 - smoothstep(0.014, 0.05, pf) * 0.03;
+    let tubes = max(max(0.04, w) - min(s.uv.x, 2.88 - s.uv.x), max(0.03, w) - abs(s.uv.x - 1.44));
+    d = max(mesh, tubes);
+  }
+  return saturate(0.5 + d / max(pf, 0.002));
+}
+
 // The start gantry's legs are lattice towers: on each 0.9 m side of a 10.5 m
 // leg, corner posts, a batten every 0.9 m and a diagonal brace in each panel,
 // solid at the foot and where the beam joins.  Solid again once the bars are
 // under a pixel wide (and in the shadow maps from the second cascade on).
 fn cutout(s: Surface) -> f32 {
   let pf = length(fwidth(s.pos));
+  if (s.mat == ${MAT.LADDER}u || s.mat == ${MAT.RAILING}u || s.mat == ${MAT.FENCE}u) { return smallCutout(s, pf); }
   if (s.mat != ${MAT.LATTICE}u) { return 1.0; }
   let a = s.uv.x * 0.9;
   let z = s.uv.y * 10.5;
@@ -574,6 +835,425 @@ fn cutout(s: Surface) -> f32 {
   // show the holes well, its 50 cm ones further out do not)
   let fine = select(vec2f(0.085, 0.17), vec2f(0.25, 0.45), s.dist <= 0.0);
   return mix(saturate(0.5 + d / 0.03), 1.0, smoothstep(fine.x, fine.y, pf));
+}
+
+// ---- vehicles: painted detail (see carGeo and busGeo)
+// coverage of a shape with signed distance d (< 0 inside), smoothed over aa
+fn cover(d: f32, aa: f32) -> f32 { return 1.0 - smoothstep(-aa, aa, d); }
+// the stripe colour that goes with a paint (s.color is linear)
+fn carAccent(body: vec3f) -> vec3f {
+  return select(vec3f(0.85, 0.85, 0.82), vec3f(0.02, 0.05, 0.22), dot(body, vec3f(0.3, 0.6, 0.1)) > 0.5);
+}
+fn helmetColor(num: f32) -> vec3f {
+  let h = vec3f(hash11(num * 3.1), hash11(num * 5.7 + 1.0), hash11(num * 9.3 + 2.0));
+  return h * h * 0.85 + 0.06;
+}
+// a race car's wheel from the side, d in metres from its centre: rgb, gloss
+fn carWheel(d: vec2f, num: f32, aa: f32) -> vec4f {
+  let r = length(d);
+  let k = hash11(num * 7.1);
+  let rim = select(select(vec3f(0.6, 0.61, 0.64), vec3f(0.07, 0.075, 0.08), k > 0.45), vec3f(0.55, 0.4, 0.12), k > 0.8);
+  var c = mix(vec3f(0.028), vec3f(0.5, 0.45, 0.1), cover(abs(r - 0.29) - 0.005, aa) * 0.7);
+  if (r < 0.24) {
+    let a5 = fract(atan2(d.y, d.x) * 0.7958 + 0.25) - 0.5;
+    let spoke = abs(a5) * 1.2566 * r - 0.02 - 0.06 * r;
+    let metal = min(min(spoke, abs(r - 0.223) - 0.012), r - 0.06);
+    // between the spokes: the disc, and the calliper on top
+    let calliper = step(abs(d.x), 0.07) * step(0.11, d.y) * step(d.y, 0.2);
+    let inner = mix(vec3f(0.035), select(vec3f(0.6, 0.05, 0.03), vec3f(0.75, 0.55, 0.05), k > 0.5), calliper);
+    c = mix(c, mix(inner, rim, cover(metal, aa)), cover(r - 0.235, aa));
+    c = mix(c, vec3f(0.05), cover(r - 0.022, aa));
+  }
+  return vec4f(c, select(0.15, 0.6, r < 0.235));
+}
+// the sides: uv = (forward, up) in metres
+fn carSide(sIn: Surface, aa: f32) -> Surface {
+  var s = sIn;
+  let side = select(1.0, -1.0, (s.tag & 128u) != 0u);
+  let num = f32(s.tag & 127u);
+  let q = s.uv;
+  let body = s.color;
+  var c = body;
+  var gl = s.gloss;
+  // sponsor stripe, black sills, door shut lines
+  c = mix(c, carAccent(body), cover(abs(q.y - 0.62) - 0.03, aa));
+  c = mix(c, vec3f(0.03), cover(q.y - 0.17, aa));
+  let shut = min(abs(q.x - 0.98), abs(q.x + 0.33));
+  c = mix(c, body * 0.3, cover(shut - 0.006, aa) * step(0.17, q.y) * step(q.y, 0.84));
+  // the racing number on a white roundel on the door
+  let rp = q - vec2f(0.33, 0.43);
+  let rr = length(rp * vec2f(0.85, 1.0));
+  if (rr < 0.23) {
+    c = mix(c, vec3f(0.92), cover(rr - 0.21, aa));
+    c = mix(c, vec3f(0.02), number7(vec2f(side * rp.x / 0.3 + 0.5, rp.y / 0.27 + 0.5), num, 2));
+  }
+  // side glass in a black surround, the B-pillar, and the driver's helmet behind
+  let z = q.y;
+  let win = max(max(0.86 - z, z - 1.15), max(q.x - (0.92 - (z - 0.82) * 1.9), (-1.7 + (z - 0.9) * 3.0) - q.x));
+  if (win < 0.035) {
+    c = vec3f(0.02);
+    gl = 0.35;
+    if (win < 0.0 && abs(q.x + 0.33) > 0.04) {
+      c = vec3f(0.018, 0.022, 0.028);
+      gl = 0.9;
+      let hp = q - vec2f(-0.06, 1.0);
+      if (length(hp * vec2f(1.0, 1.12)) < 0.13) {
+        c = mix(helmetColor(num), vec3f(0.01), step(abs(hp.y + 0.005), 0.035) * step(0.0, hp.x)) * 0.5;
+        gl = 0.7;
+      }
+      c = mix(c, vec3f(0.12), cover(sdSegment(q, vec2f(0.75, 0.86), vec2f(-0.25, 1.15)) - 0.014, aa));
+    }
+  }
+  // wheels under flared arches
+  let d = q - vec2f(select(-1.38, 1.45, q.x > 0.0), 0.33);
+  let r = length(d);
+  if (r < 0.42) {
+    c *= mix(0.7, 1.0, smoothstep(0.345, 0.42, r));
+    c = mix(c, vec3f(0.006), cover(r - 0.345, aa));
+    if (r < 0.345) {
+      let w = carWheel(d, num, aa);
+      c = mix(c, w.rgb, cover(r - 0.333, aa));
+      gl = w.w;
+    }
+  }
+  s.color = c;
+  s.gloss = gl;
+  return s;
+}
+// the nose: uv.x 0 at the bottom .. 1 at the top (0.5 m), uv.y across (1.84 m)
+fn carFront(sIn: Surface, fwu: vec2f) -> Surface {
+  var s = sIn;
+  let m = vec2f(abs(s.uv.y - 0.5) * 1.84, s.uv.x * 0.5);   // from the centre line, up: metres
+  let aa = max(fwu.x * 0.5, fwu.y * 1.84);
+  var c = s.color;
+  var e = 0.0;
+  c = mix(c, vec3f(0.03), cover(m.y - 0.075, aa));
+  // the front tyres, showing under the corners of the bumper
+  c = mix(c, vec3f(0.025), cover(max(abs(m.x - 0.8) - 0.11, m.y - 0.13 + 0.25 * max(0.0, abs(m.x - 0.8) - 0.05)), aa));
+  let grille = max(abs(m.y - 0.2) - 0.1, m.x - 0.34);
+  c = mix(c, mix(vec3f(0.012), vec3f(0.07), step(0.55, fract(m.y * 40.0))), cover(grille, aa));
+  c = mix(c, vec3f(0.015), cover(max(abs(m.y - 0.15) - 0.05, abs(m.x - 0.62) - 0.14), aa));
+  let house = max(abs(m.y - 0.38) - 0.07, abs(m.x - 0.68) - 0.2);
+  if (house < 0.01) {
+    c = mix(c, vec3f(0.05), cover(house, aa));
+    let lamp = min(length(m - vec2f(0.78, 0.39)) - 0.055, max(abs(m.y - 0.33) - 0.012, abs(m.x - 0.62) - 0.12));
+    let lit = cover(lamp, aa);
+    c = mix(c, vec3f(1.0, 0.97, 0.9), lit);
+    e = lit * mix(1.5, 14.0, nightOf(s.t));
+    let ind = cover(max(abs(m.y - 0.42) - 0.012, abs(m.x - 0.86) - 0.02), aa);
+    c = mix(c, vec3f(1.0, 0.45, 0.02), ind);
+    e = max(e, ind * 1.2);
+  }
+  s.color = c;
+  s.emissive = e;
+  return s;
+}
+// the tail: uv.x 0 at the top .. 1 at the bottom (0.84 m), uv.y across
+fn carRear(sIn: Surface, fwu: vec2f) -> Surface {
+  var s = sIn;
+  let x = (s.uv.y - 0.5) * 1.84;
+  let m = vec2f(abs(x), (1.0 - s.uv.x) * 0.84);
+  let aa = max(fwu.x * 0.84, fwu.y * 1.84);
+  var c = s.color;
+  c = mix(c, mix(vec3f(0.025), vec3f(0.09), step(0.85, fract(s.uv.y * 12.0))), cover(m.y - 0.2, aa));
+  c = mix(c, vec3f(0.018), cover(max(abs(m.x - 0.8) - 0.11, m.y - 0.17 + 0.25 * max(0.0, abs(m.x - 0.8) - 0.05)), aa));
+  let ex = length(vec2f(x - 0.55, m.y - 0.26));
+  c = mix(c, mix(vec3f(0.5, 0.48, 0.45), vec3f(0.01), cover(ex - 0.042, aa)), cover(ex - 0.058, aa));
+  c = mix(c, vec3f(0.12, 0.01, 0.01), cover(max(abs(m.y - 0.7) - 0.07, abs(m.x - 0.7) - 0.18), aa));
+  var lit = cover(max(abs(m.y - 0.7) - 0.045, abs(m.x - 0.72) - 0.15), aa);
+  lit = max(lit, cover(max(abs(m.y - 0.3) - 0.03, m.x - 0.035), aa));
+  c = mix(c, vec3f(1.0, 0.04, 0.02), lit);
+  s.emissive = lit * mix(1.5, 6.0, nightOf(s.t));
+  let np = vec2f(x, m.y - 0.48);
+  if (abs(np.x) < 0.2 && abs(np.y) < 0.12) {
+    c = mix(vec3f(0.9), vec3f(0.02), number7(vec2f(np.x / 0.32 + 0.5, np.y / 0.2 + 0.5), f32(s.tag & 127u), 2));
+  }
+  s.color = c;
+  return s;
+}
+// windscreen (uv.x 0 at its foot .. 1 at the roof) and rear window (uv.x 0 at
+// the roof .. 1 at its foot): glass in a frame of paint, a sun strip, and the
+// helmet of the driver, who sits on the left
+fn carGlass(sIn: Surface, fwu: vec2f, back: bool) -> Surface {
+  var s = sIn;
+  let q = s.uv;
+  let up = select(q.x * 0.42, (1.0 - q.x) * 0.31, back);   // height above the glass's foot
+  let frame = max(max(abs(q.y - 0.5) * 1.84 - 0.84, 0.035 - up), up - select(0.38, 0.27, back));
+  if (frame < 0.0) {
+    var c = vec3f(0.018, 0.022, 0.028);
+    s.gloss = 0.92;
+    if (!back && up > 0.31) { c = carAccent(s.color) * 0.8; s.gloss = 0.5; }
+    let hp = vec2f((q.y - 0.3) * 1.84, up - select(0.21, 0.08, back));
+    if (length(hp * vec2f(1.0, 1.1)) < 0.13) {
+      c = helmetColor(f32(s.tag & 127u)) * 0.45;
+      if (!back && abs(hp.y) < 0.035) { c = vec3f(0.01); }
+      s.gloss = 0.7;
+    }
+    s.color = c;
+  }
+  return s;
+}
+// bonnet, boot and roof: twin stripes, the number on the roof, louvres and
+// pins on the bonnet (uv.x 0 at the nose .. 1 at the windscreen, 1.31 m)
+fn carTop(sIn: Surface, fwu: vec2f, roof: bool, bonnet: bool) -> Surface {
+  var s = sIn;
+  let x = (s.uv.y - 0.5) * 1.84;
+  var c = mix(s.color, carAccent(s.color), cover(abs(abs(x) - 0.12) - 0.05, fwu.y * 1.84));
+  if (bonnet) {
+    let along = s.uv.x * 1.31;
+    if (abs(abs(x) - 0.48) < 0.13 && abs(along - 0.8) < 0.2) { c = mix(c * 0.35, vec3f(0.02), step(0.5, fract(along / 0.05))); }
+    c = mix(c, vec3f(0.05), step(length(vec2f(abs(x) - 0.72, along - 0.18)), 0.022));
+  }
+  if (roof) {
+    let np = vec2f(x, (0.5 - s.uv.x) * 1.05);
+    if (abs(np.x) < 0.3 && abs(np.y) < 0.33) {
+      c = mix(vec3f(0.9), vec3f(0.02), number7(vec2f(np.x / 0.5 + 0.5, np.y / 0.5 + 0.5), f32(s.tag & 127u), 2));
+    }
+  }
+  s.color = c;
+  return s;
+}
+// the coaches' sides: uv = (forward, up) in metres; the doors are on the right
+fn busSide(sIn: Surface, aa: f32) -> Surface {
+  var s = sIn;
+  let q = s.uv;
+  let n = nightOf(s.t);
+  var c = s.color;
+  c = mix(c, carAccent(s.color), cover(abs(q.y - 1.2) - 0.07, aa));
+  c = mix(c, vec3f(0.06), cover(q.y - 0.25, aa));
+  let bx = abs(fract((q.x - 0.2) / 1.8) - 0.5) * 1.8;
+  c = mix(c, c * 0.45, cover(0.9 - bx - 0.008, aa) * step(abs(q.x), 3.0) * step(0.3, q.y) * step(q.y, 1.08));
+  let glassCol = mix(vec3f(0.02, 0.025, 0.03), vec3f(0.95, 0.8, 0.55), n);
+  if (q.y > 1.35 && q.y < 2.75 && q.x > -5.6 && q.x < 5.7) {
+    c = vec3f(0.03);
+    if (fract(q.x / 1.5) > 0.1 && q.y > 1.4 && q.y < 2.7) {
+      c = glassCol;
+      s.emissive = n * 1.3;
+      s.gloss = 0.85;
+    }
+  }
+  if ((s.tag & 128u) == 0u) {
+    let dx = min(abs(q.x - 5.0), abs(q.x + 0.1));
+    if (dx < 0.5 && q.y > 0.3 && q.y < 2.78) {
+      c = vec3f(0.03);
+      if (dx < 0.45 && dx > 0.03 && q.y > 0.36 && q.y < 2.72) { c = glassCol; s.emissive = n * 1.3; s.gloss = 0.85; }
+    }
+  }
+  let d = q - vec2f(select(-3.7, 3.9, q.x > 0.0), 0.5);
+  let r = length(d);
+  if (r < 0.58) {
+    c = mix(c, vec3f(0.01), cover(r - 0.56, aa));
+    var w = vec3f(0.03);
+    if (r < 0.32) {
+      let arc = (fract(atan2(d.y, d.x) * 1.5915) - 0.5) * 0.6283 * r;
+      w = mix(vec3f(0.55, 0.56, 0.58), vec3f(0.25), cover(abs(r - 0.24) - 0.025, aa));
+      w = mix(w, vec3f(0.12), cover(length(vec2f(arc, r - 0.15)) - 0.018, aa));
+    }
+    c = mix(c, w, cover(r - 0.5, aa));
+    s.gloss = select(0.15, 0.5, r < 0.3);
+  }
+  s.color = c;
+  return s;
+}
+// the coaches' ends, by tag: 1 lower front, 2 windscreen, 3 upper rear, 4 lower rear
+fn busEnd(sIn: Surface, fwu: vec2f) -> Surface {
+  var s = sIn;
+  let q = s.uv;
+  let x = (q.y - 0.5) * 2.5;
+  let ax = abs(x);
+  let tag = s.tag & 127u;
+  let aa = max(fwu.x * 1.5, fwu.y * 2.5);
+  let n = nightOf(s.t);
+  var c = s.color;
+  var e = 0.0;
+  if (tag == 1u) {
+    let up = q.x * 1.02;
+    c = mix(c, vec3f(0.1), cover(up - 0.28, aa));
+    c = mix(c, mix(vec3f(0.02), vec3f(0.1), step(0.6, fract(up * 20.0))), cover(max(ax - 0.55, abs(up - 0.62) - 0.16), aa));
+    let lit = cover(min(length(vec2f(ax - 0.98, up - 0.62)) - 0.09, length(vec2f(ax - 0.76, up - 0.62)) - 0.07), aa);
+    c = mix(c, vec3f(1.0, 0.97, 0.9), lit);
+    e = lit * mix(1.5, 14.0, n);
+    let pl = max(ax - 0.26, abs(up - 0.18) - 0.055);
+    c = mix(c, vec3f(0.88), cover(pl, aa));
+    c = mix(c, vec3f(0.05), cover(pl + 0.015, aa) * step(0.45, fract(x / 0.07)));
+  } else if (tag == 2u) {
+    let up = q.x * 1.85;
+    if (ax < 1.15 && up > 0.06 && up < 1.78) {
+      c = vec3f(0.02, 0.025, 0.03);
+      s.gloss = 0.9;
+      if (up > 1.5 && ax < 1.0) {
+        c = vec3f(0.01);
+        s.gloss = 0.4;
+        // (seen from the front, the coach's +x is on the left: xv runs to the viewer's right)
+        let xv = -x;
+        let dots = step(0.45, hash21(floor(vec2f(xv / 0.05, up / 0.05)))) * step(1.55, up) * step(up, 1.72) * step(-0.45, xv) * step(xv, 0.95);
+        let route = number7(vec2f((xv + 0.95) / 0.4, (up - 1.53) / 0.2), 42.0, 2);
+        let on = max(dots, route);
+        c = mix(c, vec3f(1.0, 0.6, 0.1), on);
+        e = on * 3.0;
+      }
+      c = mix(c, vec3f(0.03), cover(sdSegment(vec2f(ax, up), vec2f(0.15, 0.12), vec2f(0.85, 0.5)) - 0.012, aa));
+      // the driver, on the left (x < 0), behind the dashboard
+      let dv = vec2f(x + 0.62, up);
+      let driver = max(cover(length((dv - vec2f(0.0, 0.5)) * vec2f(1.0, 0.8)) - 0.27, aa), cover(length(dv - vec2f(0.0, 0.95)) - 0.12, aa));
+      c = mix(c, vec3f(0.055, 0.058, 0.062), driver * step(up, 1.5));
+    }
+  } else if (tag == 3u) {
+    let z = 3.25 - q.x * 2.15;
+    if (ax < 1.1 && z > 2.0 && z < 3.05) { c = vec3f(0.02, 0.025, 0.03); s.gloss = 0.9; }
+    if (ax < 0.9 && z > 1.25 && z < 1.85) { c = mix(vec3f(0.03), c * 0.6, step(0.5, fract(z * 12.0))); }
+  } else {
+    let z = 1.1 - q.x * 1.02;
+    c = mix(c, vec3f(0.1), cover(z - 0.3, aa));
+    let lit = cover(max(abs(ax - 1.08) - 0.08, abs(z - 0.72) - 0.3), aa);
+    c = mix(c, vec3f(1.0, 0.04, 0.02), lit);
+    e = lit * mix(1.0, 6.0, n);
+    c = mix(c, vec3f(0.88), cover(max(ax - 0.26, abs(z - 0.5) - 0.055), aa));
+  }
+  s.color = c;
+  s.emissive = e;
+  return s;
+}
+
+// ---- trains: painted detail (see expressGeo and freightGeo)
+// a coach's side, uv 0..1 over 24.2 m by 3.65 m: skirt, stripe, doors at both
+// ends, eight windows with frames and top lights (lit at night)
+fn coachSide(sIn: Surface, aa: f32) -> Surface {
+  var s = sIn;
+  let L = vec2f(s.uv.x * 24.2, s.uv.y * 3.65);
+  let n = nightOf(s.t);
+  var c = s.color;
+  c = mix(c, vec3f(0.25, 0.26, 0.28), cover(L.y - 0.4, aa));
+  c = mix(c, vec3f(0.75, 0.13, 0.1), cover(abs(L.y - 1.4) - 0.14, aa));
+  c = mix(c, c * 0.8, cover(abs(L.y - 3.45) - 0.03, aa));
+  let glass = mix(vec3f(0.02, 0.025, 0.03), vec3f(1.0, 0.86, 0.62), n);
+  let dd = min(abs(L.x - 1.55), abs(L.x - 22.65));
+  if (dd < 0.64) {
+    let inDoor = step(0.3, L.y) * step(L.y, 3.05);
+    c = mix(c, c * 0.3, cover(abs(dd - 0.6) - 0.015, aa) * inDoor);
+    c = mix(c, c * 0.3, cover(abs(L.y - 3.05) - 0.015, aa) * step(dd, 0.6));
+    c = mix(c, c * 0.4, cover(dd - 0.012, aa) * inDoor);
+    if (dd > 0.06 && dd < 0.42 && L.y > 1.9 && L.y < 2.85) { c = glass; s.emissive = n * 1.5; s.gloss = 0.85; }
+  } else if (L.x > 2.6 && L.x < 21.6 && L.y > 1.72 && L.y < 2.88) {
+    let wx = fract((L.x - 2.6) / 2.375) * 2.375;
+    c = vec3f(0.5, 0.52, 0.55);
+    if (wx > 0.22 && wx < 2.2 && L.y > 1.8 && L.y < 2.8 && abs(L.y - 2.52) > 0.025) {
+      c = glass; s.emissive = n * 1.5; s.gloss = 0.85;
+    }
+  }
+  s.color = c;
+  return s;
+}
+// the power car's sides, uv = (forward, up) in metres: cab window and door, grilles
+fn trainCab(sIn: Surface, aa: f32) -> Surface {
+  var s = sIn;
+  let q = s.uv;
+  var c = s.color;
+  c = mix(c, vec3f(0.25, 0.26, 0.28), cover(q.y - 0.95, aa));
+  c = mix(c, vec3f(0.75, 0.13, 0.1), cover(abs(q.y - 1.95) - 0.14, aa));
+  let win = max(abs(q.x + 3.6) - 0.8, abs(q.y - 2.95) - 0.5);
+  c = mix(c, vec3f(0.05), cover(win - 0.05, aa));
+  if (win < 0.0) { c = vec3f(0.02, 0.025, 0.03); s.gloss = 0.9; }
+  let door = max(abs(q.x + 5.6) - 0.45, abs(q.y - 2.2) - 1.45);
+  c = mix(c, c * 0.35, cover(abs(door) - 0.012, aa));
+  c = mix(c, vec3f(0.02, 0.025, 0.03), cover(max(abs(q.x + 5.6) - 0.25, abs(q.y - 3.0) - 0.35), aa));
+  let gx = fract((q.x + 21.0) / 2.2) * 2.2;
+  if (q.x > -21.0 && q.x < -7.8 && q.y > 2.55 && q.y < 3.75 && gx > 0.15 && gx < 2.05) {
+    c = mix(vec3f(0.2, 0.21, 0.22), vec3f(0.45, 0.46, 0.48), step(0.5, fract(q.y * 12.0)));
+  }
+  s.color = c;
+  return s;
+}
+// the ends, by tag: 1 the express's lower nose, 2 its sloping nose, 3 the tail
+// of its last coach, 4 the freight locomotive's cab ends
+fn trainEnd(sIn: Surface, fwu: vec2f) -> Surface {
+  var s = sIn;
+  let q = s.uv;
+  let n = nightOf(s.t);
+  var c = s.color;
+  var e = 0.0;
+  if (s.tag == 1u) {
+    let m = vec2f(abs(q.y - 0.5) * 3.0, q.x * 0.95);
+    let aa = max(fwu.x * 0.95, fwu.y * 3.0);
+    c = mix(c, vec3f(0.15), cover(m.y - 0.18, aa));
+    c = mix(c, vec3f(0.06), cover(max(abs(m.x - 1.07) - 0.25, abs(m.y - 0.55) - 0.16), aa));
+    let lit = cover(length(m - vec2f(1.0, 0.55)) - 0.11, aa);
+    c = mix(c, vec3f(1.0, 0.97, 0.9), lit);
+    c = mix(c, vec3f(0.3, 0.02, 0.02), cover(length(m - vec2f(1.24, 0.55)) - 0.05, aa));
+    c = mix(c, vec3f(0.08), cover(max(m.x - 0.35, abs(m.y - 0.36) - 0.14), aa));
+    e = lit * mix(2.0, 14.0, n);
+  } else if (s.tag == 2u) {
+    let m = vec2f(abs(q.y - 0.5) * 3.0, q.x * 5.3);
+    let aa = max(fwu.x * 5.3, fwu.y * 3.0);
+    c = mix(c, vec3f(0.75, 0.13, 0.1), cover(abs(m.y - 0.55 - m.x * 0.5) - 0.18, aa));
+    let screen = max(m.x - 1.25 + (m.y - 2.0) * 0.1, abs(m.y - 2.6) - 0.75);
+    if (screen < 0.06) {
+      c = mix(vec3f(0.05), vec3f(0.02, 0.025, 0.03), cover(screen, aa));
+      s.gloss = 0.9;
+      c = mix(c, vec3f(0.06), cover(sdSegment(m, vec2f(0.1, 1.95), vec2f(0.8, 2.6)) - 0.02, aa));
+    }
+    let top = cover(max(m.x - 0.35, abs(m.y - 4.3) - 0.08), aa);
+    c = mix(c, vec3f(1.0, 0.97, 0.9), top);
+    e = top * mix(2.0, 12.0, n);
+  } else if (s.tag == 3u) {
+    let m = vec2f(abs(q.x - 0.5) * 3.0, q.y * 3.65);
+    let aa = max(fwu.x * 3.0, fwu.y * 3.65);
+    c = mix(c, vec3f(0.06), cover(max(m.x - 0.5, abs(m.y - 1.6) - 1.3), aa));
+    c = mix(c, vec3f(0.02, 0.025, 0.03), cover(max(m.x - 0.32, abs(m.y - 2.2) - 0.4), aa));
+    let lit = cover(length(m - vec2f(1.15, 0.45)) - 0.09, aa);
+    c = mix(c, vec3f(1.0, 0.04, 0.02), lit);
+    e = lit * mix(2.0, 8.0, n);
+  } else {
+    let m = vec2f(abs(q.x - 0.5) * 3.0, q.y * 4.0);
+    let aa = max(fwu.x * 3.0, fwu.y * 4.0);
+    c = mix(c, vec3f(0.95, 0.75, 0.1), step(abs(m.y - 0.75), 0.25) * step(0.5, fract((q.x * 3.0 + m.y) * 1.5)));
+    let win = max(abs(m.x - 0.75) - 0.6, abs(m.y - 2.9) - 0.45);
+    c = mix(c, vec3f(0.03), cover(win - 0.06, aa));
+    c = mix(c, vec3f(0.02, 0.025, 0.03), cover(win, aa));
+    if (win < 0.0) { s.gloss = 0.9; }
+    let lit = cover(length(m - vec2f(1.05, 1.5)) - 0.1, aa);
+    c = mix(c, vec3f(1.0, 0.97, 0.9), lit);
+    e = lit * mix(2.0, 12.0, n);
+  }
+  s.color = c;
+  s.emissive = e;
+  return s;
+}
+// a bogie's sides (uv 0..1 over 2.8 m by 0.42 m, 0.2 m above the origin): two
+// wheels on the rails, the lower half of each showing under the body
+fn bogieSide(sIn: Surface, aa: f32) -> Surface {
+  var s = sIn;
+  let L = vec2f(s.uv.x * 2.8, s.uv.y * 0.42 + 0.2);
+  let r = length(vec2f(min(abs(L.x - 0.6), abs(L.x - 2.2)), L.y - 0.59));
+  var c = s.color;
+  if (r < 0.33) {
+    c = mix(vec3f(0.42, 0.42, 0.43), vec3f(0.1), cover(r - 0.28, aa));
+    c = mix(c, vec3f(0.32), cover(r - 0.08, aa));
+    s.gloss = 0.5;
+  }
+  c = mix(c, vec3f(0.55, 0.45, 0.1), cover(max(abs(L.x - 1.4) - 0.22, abs(L.y - 0.45) - 0.08), aa));
+  s.color = c;
+  return s;
+}
+// the freight locomotive's sides (uv 0..1 over 19 m by 4 m): cabs at both ends, grilles
+fn locoSide(sIn: Surface, aa: f32) -> Surface {
+  var s = sIn;
+  let L = vec2f(s.uv.x * 19.0, s.uv.y * 4.0);
+  var c = s.color;
+  c = mix(c, vec3f(0.95, 0.75, 0.1), cover(abs(L.y - 0.55) - 0.1, aa));
+  c = mix(c, vec3f(0.18), cover(L.y - 0.35, aa));
+  let ex = min(L.x, 19.0 - L.x);
+  if (ex < 2.6) {
+    let win = max(abs(ex - 1.5) - 0.55, abs(L.y - 2.85) - 0.45);
+    c = mix(c, vec3f(0.03), cover(win - 0.05, aa));
+    if (win < 0.0) { c = vec3f(0.02, 0.025, 0.03); s.gloss = 0.9; }
+    c = mix(c, c * 0.4, cover(abs(ex - 0.55) - 0.012, aa) * step(0.6, L.y) * step(L.y, 3.5));
+  } else {
+    let gx = fract((L.x - 2.6) / 1.38) * 1.38;
+    if (L.y > 2.3 && L.y < 3.6 && gx > 0.12) { c = mix(c * 0.5, c * 0.8, step(0.5, fract(L.y * 10.0))); }
+  }
+  s.color = c;
+  return s;
 }
 
 fn surface(sIn: Surface) -> Surface {
@@ -615,6 +1295,17 @@ fn surface(sIn: Surface) -> Surface {
     col = mix(col, vec3f(0.8, 0.8, 0.76), mk * step(au, 6.0) * 0.92);
     if (kerbZone > 0.5 && au > 6.0 && au < 7.4) {
       col = mix(vec3f(0.6, 0.045, 0.035), vec3f(0.8, 0.8, 0.78), step(0.5, fract(v / 2.5)));
+    }
+    // the starting grid: fourteen numbered slots, staggered, in the two lanes that run with the lap
+    let gv = S_LINE - v;
+    if (gv > 8.0 && gv < 120.0 && u > 0.0 && u < 6.0) {
+      let k = floor((gv - 8.0) / 8.0);
+      let f = gv - 8.0 - k * 8.0;
+      let du = u - select(1.5, 4.5, fract(k * 0.5) > 0.25);
+      var gm = aaBand(f - 0.07, 0.07, fu) * step(abs(du), 1.1);
+      gm = max(gm, aaBand(abs(du) - 1.05, 0.06, fu) * step(f, 1.2));
+      gm = max(gm, number7(vec2f((du + 0.55) / 1.1, (3.4 - f) / 1.8), k + 1.0, 2));
+      col = mix(col, vec3f(0.8, 0.8, 0.76), gm * 0.92);
     }
     let dv = v - S_LINE;
     if (abs(dv) < 1.6 && au < 6.0) {
@@ -667,8 +1358,10 @@ fn surface(sIn: Surface) -> Surface {
     let a = TAU * s.t / BEAM_T;
     let toEye = normalize(-s.view.xy + vec2f(1e-5, 0.0));
     let fl = pow(abs(dot(toEye, vec2f(sin(a), cos(a)))), 80.0);
-    s.color = vec3f(1.0, 0.92, 0.7);
-    s.emissive = 0.4 + n * (4.0 + 40.0 * fl);
+    // the glazing bars
+    let gb = max(step(fract(s.uv.x * 12.0 + 0.5), 0.07), step(abs(s.uv.y - 0.55), 0.03));
+    s.color = mix(vec3f(1.0, 0.92, 0.7), vec3f(0.08), gb);
+    s.emissive = (0.4 + n * (4.0 + 40.0 * fl)) * (1.0 - gb);
   } else if (m == ${MAT.CHASE}u) {
     let q = fract((s.uv.y - CHASE_V * s.t) / CHASE_SP);
     s.emissive = 0.3 + 10.0 * pow(q, 14.0);
@@ -683,57 +1376,101 @@ fn surface(sIn: Surface) -> Surface {
       let fy = s.uv.y * 2.0;
       let row = floor(fy);
       let gy = fract(fy);
-      if (fx > 0.32 && fx < 0.68 && gy > 0.32 && gy < 0.78 && row < 2.0) {
+      let inWin = fx > 0.32 && fx < 0.68 && gy > 0.32 && gy < 0.78 && row < 2.0;
+      if (inWin) {
         let h = hash21(vec2f(cx + f32(s.tag) * 5.0, row) + f32(code >> 8u) * 7.31);
         let lit = step(h, nightOf(s.t) * 0.9 - 0.08);
         s.color = mix(vec3f(0.07, 0.065, 0.06), vec3f(1.0, 0.72, 0.42), lit);
         s.emissive = lit * 1.8;
         s.gloss = 0.5;
+        // the window's cross bars
+        if (abs(fx - 0.5) < 0.012 || abs(gy - 0.6) < 0.015) { s.color = vec3f(0.6, 0.58, 0.54); s.emissive = 0.0; s.gloss = 0.2; }
+      } else if (row < 2.0 && gy > 0.28 && gy < 0.78 && fx > 0.19 && fx < 0.81) {
+        // a stone sill under each window, and louvred shutters either side
+        // (green or blue, the same on the whole house)
+        if (gy < 0.32) {
+          s.color = vec3f(0.72, 0.69, 0.63);
+        } else if (fx < 0.3 || fx > 0.7) {
+          let blue = hash11(f32(code >> 8u) * 1.37) > 0.5;
+          s.color = select(vec3f(0.12, 0.3, 0.17), vec3f(0.14, 0.25, 0.45), blue) * (0.75 + 0.25 * step(0.5, fract(gy * 36.0)));
+          s.gloss = 0.25;
+        }
       }
     }
   } else if (m == ${MAT.CAR_SIDE}u) {
-    let q = s.uv;
-    let w = min(length(q - vec2f(1.42, 0.33)), length(q - vec2f(-1.42, 0.33)));
-    if (w < 0.33) {
-      s.color = select(vec3f(0.025), vec3f(0.32, 0.32, 0.34), w < 0.16);
-      s.gloss = 0.3;
-    } else if (q.y > 0.92 && q.y < 1.25 && q.x < 0.92 - (q.y - 0.85) * 1.6 && q.x > -1.86 + (q.y - 0.95) * 2.84 && abs(q.x + 0.38) > 0.07) {
-      s.color = vec3f(0.018, 0.022, 0.028);
-      s.gloss = 0.9;
-    }
+    s = carSide(s, max(fwu.x, fwu.y));
+  } else if (m == ${MAT.CAR_FRONT}u) {
+    s = carFront(s, fwu);
+  } else if (m == ${MAT.CAR_REAR}u) {
+    s = carRear(s, fwu);
+  } else if (m == ${MAT.CAR_SCREEN}u || m == ${MAT.CAR_BACKGLASS}u) {
+    s = carGlass(s, fwu, m == ${MAT.CAR_BACKGLASS}u);
+  } else if (m == ${MAT.CAR_TOP}u || m == ${MAT.CAR_ROOF}u || m == ${MAT.CAR_BONNET}u) {
+    s = carTop(s, fwu, m == ${MAT.CAR_ROOF}u, m == ${MAT.CAR_BONNET}u);
   } else if (m == ${MAT.BUS_SIDE}u) {
-    let q = s.uv;
-    let w = min(length(q - vec2f(3.9, 0.5)), length(q - vec2f(-3.7, 0.5)));
-    if (w < 0.5) {
-      s.color = select(vec3f(0.025), vec3f(0.32, 0.32, 0.34), w < 0.24);
-      s.gloss = 0.3;
-    } else if (q.y > 1.35 && q.y < 2.75 && q.x > -5.6 && q.x < 5.7 && fract(q.x / 1.5) > 0.1) {
+    s = busSide(s, max(fwu.x, fwu.y));
+  } else if (m == ${MAT.BUS_END}u) {
+    s = busEnd(s, fwu);
+  } else if (m == ${MAT.TRAIN}u) {
+    if (abs(s.n.z) < 0.5 && abs(s.n.y) < 0.6) { s = coachSide(s, max(fwu.x * 24.2, fwu.y * 3.65)); }
+  } else if (m == ${MAT.TRAIN_CAB}u) {
+    s = trainCab(s, max(fwu.x, fwu.y));
+  } else if (m == ${MAT.TRAIN_END}u) {
+    s = trainEnd(s, fwu);
+  } else if (m == ${MAT.BOGIE}u) {
+    if (abs(s.n.x) > 0.5) { s = bogieSide(s, max(fwu.x * 2.8, fwu.y * 0.42)); }
+  } else if (m == ${MAT.LOCO}u) {
+    if (abs(s.n.x) > 0.5) { s = locoSide(s, max(fwu.x * 19.0, fwu.y * 4.0)); }
+  } else if (m == ${MAT.MARKER}u) {
+    // a white plate with a number: the boards' distance along the straight
+    // (the copy's number), or the hundreds of metres to the bend (the tag)
+    let v = select(s.inst.w, f32(s.tag) * 100.0, s.tag != 0u);
+    let on = number7((s.uv - vec2f(0.08, 0.18)) / vec2f(0.84, 0.64), v, select(4, 3, s.tag != 0u));
+    s.color = mix(s.color, vec3f(0.02), on);
+    if (s.tag != 0u) { s.color = mix(s.color, vec3f(0.75, 0.1, 0.06), step(s.uv.y, 0.1) + step(0.9, s.uv.y)); }
+  } else if (m == ${MAT.TYRES}u) {
+    // a stack of four tyres: grooves between them, the holes in the top
+    if (s.n.z < 0.5) {
+      let f = fract(s.uv.y * 4.0);
+      s.color *= 0.35 + 0.65 * smoothstep(0.0, 0.08, min(f, 1.0 - f));
+      s.color = s.color * 0.9 + 0.012;
+    } else {
+      s.color = mix(vec3f(0.006), s.color, smoothstep(0.17, 0.2, length(s.uv - 0.5)));
+    }
+  } else if (m == ${MAT.BASKET}u) {
+    // wicker, with a padded leather rim
+    let cell = floor(s.uv * vec2f(14.0, 10.0));
+    let w = fract(s.uv * vec2f(14.0, 10.0));
+    let shade = mix(abs(w.x - 0.5), abs(w.y - 0.5), fract((cell.x + cell.y) * 0.5) * 2.0) * 2.0;
+    s.color *= 0.75 + 0.35 * (1.0 - shade * shade);
+    if (abs(s.n.z) < 0.5 && s.uv.y > 0.86) { s.color = vec3f(0.12, 0.06, 0.03); }
+  } else if (m == ${MAT.FLAME}u) {
+    // the burner's flame, in the same rhythm as BALLOON's glow (the tag holds the seed)
+    let ph = fract(s.t / 9.0 + f32(s.tag) / 255.0);
+    let burn = smoothstep(0.86, 0.9, ph) * (1.0 - smoothstep(0.96, 1.0, ph));
+    s.emissive = (0.03 + 5.0 * burn) * (1.0 - 0.8 * s.uv.y);
+  } else if (m == ${MAT.GONDOLA}u) {
+    if (abs(s.n.z) < 0.5 && s.uv.y > 0.42 && s.uv.y < 0.8 && fract(s.uv.x * 7.0) > 0.12) {
       let n = nightOf(s.t);
-      s.color = mix(vec3f(0.02, 0.025, 0.03), vec3f(0.95, 0.8, 0.55), n);
-      s.emissive = n * 1.3;
+      s.color = mix(vec3f(0.02, 0.025, 0.03), vec3f(1.0, 0.86, 0.62), n);
+      s.emissive = n * 1.5;
       s.gloss = 0.85;
     }
-  } else if (m == ${MAT.CAR_FRONT}u) {
+  } else if (m == ${MAT.HULL}u) {
+    // a yacht's sides, uv = (forward, up) in metres: cove stripe, antifouling, portholes
     let q = s.uv;
-    let hl = step(0.5, q.x) * step(q.x, 0.9) * max(step(0.08, q.y) * step(q.y, 0.3), step(0.7, q.y) * step(q.y, 0.92));
-    s.color = mix(s.color, vec3f(1.0, 0.95, 0.82), hl);
-    s.emissive = hl * mix(1.5, 14.0, nightOf(s.t));
-  } else if (m == ${MAT.CAR_REAR}u) {
-    let q = s.uv;
-    let tl = step(0.1, q.x) * step(q.x, 0.42) * max(step(0.06, q.y) * step(q.y, 0.3), step(0.7, q.y) * step(q.y, 0.94));
-    s.color = mix(s.color, vec3f(1.0, 0.06, 0.03), tl);
-    s.emissive = tl * mix(1.0, 6.0, nightOf(s.t));
-  } else if (m == ${MAT.TRAIN}u) {
-    if (abs(s.n.z) < 0.5 && abs(s.n.y) < 0.6) {
-      let q = s.uv;
-      if (q.y > 0.5 && q.y < 0.78 && q.x > 0.05 && q.x < 0.95 && fract(q.x * 8.0) > 0.14) {
-        let n = nightOf(s.t);
-        s.color = mix(vec3f(0.02, 0.025, 0.03), vec3f(1.0, 0.86, 0.62), n);
-        s.emissive = n * 1.5;
-        s.gloss = 0.85;
-      } else if (q.y > 0.34 && q.y < 0.42) {
-        s.color = vec3f(0.5, 0.04, 0.04);
-      }
+    var c = mix(s.color, vec3f(0.08, 0.2, 0.45), step(abs(q.y - 1.08), 0.06));
+    c = mix(c, vec3f(0.55, 0.1, 0.08), step(q.y, 0.22));
+    let px = fract((q.x + 0.5) / 1.1) * 1.1 - 0.55;
+    if (q.x > -2.2 && q.x < 1.8) { c = mix(c, vec3f(0.03), step(length(vec2f(px, q.y - 0.75)), 0.08)); }
+    s.color = c;
+  } else if (m == ${MAT.CONE}u) {
+    s.color = mix(s.color, vec3f(0.92), step(abs(s.uv.y - 0.5), 0.1));
+  } else if (m == ${MAT.CONTAINER}u) {
+    if (abs(s.n.z) < 0.5) {
+      let along = abs(s.n.x) > 0.5;
+      s.color *= 0.8 + 0.2 * step(0.5, fract(s.uv.x * select(9.0, 62.0, along)));
+      s.color *= 1.0 - 0.45 * (step(s.uv.y, 0.05) + step(0.95, s.uv.y) + step(min(s.uv.x, 1.0 - s.uv.x), select(0.05, 0.008, along)));
     }
   } else if (m == ${MAT.CROWD}u) {
     s.light += vec3f(1.0, 0.92, 0.78) * (0.4 * lampsOn(s.t));
@@ -763,12 +1500,52 @@ fn surface(sIn: Surface) -> Surface {
     } else {
       s.color = vec3f(0.5, 0.49, 0.46);
     }
+    // aisles every 20 m: bare concrete steps
+    if (abs(fract(s.pos.y / 20.0) - 0.5) * 20.0 > 9.25) { s.color = select(vec3f(0.58, 0.57, 0.53), vec3f(0.47, 0.46, 0.43), s.n.x > 0.6); }
+  } else if (m == ${MAT.CHEVRON}u) {
+    // red and white chevrons pointing left (number 1) or right (2)
+    let px = select(1.0 - s.uv.x, s.uv.x, s.inst.w > 1.5) * 1.2;
+    let k = px + abs(s.uv.y - 0.5) * 0.9;
+    s.color = mix(vec3f(0.75, 0.05, 0.04), vec3f(0.9), step(0.5, fract(k / 0.4)));
+    s.gloss = 0.3;
+  } else if (m == ${MAT.ROOF}u) {
+    // rows of half-round tiles, a little uneven, fading out with distance
+    let row = floor(s.uv.y * 13.0);
+    let fu = fract(s.uv.x * 64.0 + row * 0.5);
+    let fv = fract(s.uv.y * 13.0);
+    let near = 1.0 - smoothstep(40.0, 120.0, s.dist);
+    s.color *= 1.0 - near * (0.3 * (1.0 - smoothstep(0.0, 0.18, fv)) + 0.18 * abs(fu - 0.5) * 2.0 - 0.1 * hash21(vec2f(floor(s.uv.x * 64.0 + row * 0.5), row)));
+  } else if (m == ${MAT.SAIL}u) {
+    // the mainsail (uv 0..1 along its 4.6 m foot and up its 9.6 m luff):
+    // battens out to the leech, seams, and the class emblem, a ring
+    let q = s.uv * vec2f(4.6, 9.6);
+    let leech = (1.0 - s.uv.y) * 4.6;           // how far the leech is from the mast at this height
+    let k = clamp(round(q.y / 1.9), 1.0, 4.0);  // the nearest of four battens
+    var c = s.color;
+    c *= 1.0 - 0.25 * step(abs(q.y - k * 1.9), 0.035) * step(leech - 1.2 * (1.0 - k / 5.0), q.x);
+    c *= 1.0 - 0.12 * step(0.9, fract(q.y / 0.9));
+    let ring = abs(length(q - vec2f(0.95, 6.1)) - 0.38);
+    c = mix(c, vec3f(0.1, 0.25, 0.6), 1.0 - smoothstep(0.06, 0.08, ring));
+    s.color = c;
+  } else if (m == ${MAT.ARMCO}u) {
+    // the W-shaped beam: two ridges catching the light, a valley between them
+    s.color *= 0.72 + 0.36 * (0.5 + 0.5 * cos((s.uv.x - 0.25) * 12.566));
+  } else if (m == ${MAT.PLANKS}u) {
+    // a jetty's deck: planks across it, weathered
+    let k = floor(s.pos.x / 0.24);
+    let f = fract(s.pos.x / 0.24);
+    s.color *= (0.8 + 0.3 * hash11(k)) * (0.45 + 0.55 * smoothstep(0.0, 0.08, min(f, 1.0 - f)));
   } else if (m == ${MAT.BALLOON}u) {
     let seed = s.color.g * 3.7 + s.color.b * 1.3;
     let k = floor(s.uv.x * 12.0);
     let alt = fract(k * 0.5) * 2.0;
     var c = mix(s.color, vec3f(0.93, 0.88, 0.76), alt);
     c = mix(c, vec3f(0.12, 0.1, 0.1), step(0.83, s.uv.y) * step(s.uv.y, 0.88));
+    // load tapes down the seams between the gores, the dark skirt round the
+    // mouth and the crown ring at the top
+    let fg = fract(s.uv.x * 12.0);
+    c *= 1.0 - 0.4 * (1.0 - smoothstep(0.0, 0.025, min(fg, 1.0 - fg)));
+    c = mix(c, vec3f(0.08, 0.075, 0.07), step(s.uv.y, 0.035) + step(0.975, s.uv.y));
     s.color = c;
     let ph = fract(s.t / 9.0 + seed);
     let burn = smoothstep(0.86, 0.9, ph) * (1.0 - smoothstep(0.96, 1.0, ph));
@@ -804,7 +1581,7 @@ const spawnXY = onTrack(SPAWN_S, 4.5);
 export default {
   id: 'circuit',
   name: 'Coastal Circuit',
-  blurb: 'Drive a 3.6 km seaside road circuit with traffic at half of C, at C and at one and a half times C, a train, and clocks along the 1.2 km main straight. Tilt the view and the boards ahead show the past.',
+  blurb: 'Drive a 3.6 km seaside road circuit with traffic at 15, 30 and 45 m/s, a train, and clocks along the 1.2 km main straight. Tilt the view and the boards ahead show the past.',
   C,
   accel: 0.8,                // the car gains 6 m/s every second (21.6 km/h), more with Shift
   mode: 'drive',
@@ -962,6 +1739,29 @@ export default {
         if (!curved && cur) { cur.s1 = CENTRE.cum[i] + 25; bends.push(cur); cur = null; }
       }
       if (cur) { cur.s1 = LAP + 25; bends.push(cur); }
+      // chevron boards on the outside of every bend, facing the traffic that
+      // runs with the lap and pointing the way the road turns (the copy's number)
+      {
+        const curvAt = (s) => {
+          let lo = 0, hi = np;
+          while (hi - lo > 1) { const m = (lo + hi) >> 1; if (CENTRE.cum[m] <= s) lo = m; else hi = m; }
+          return LAY.curv[lo % np];
+        };
+        const sign = Geo.merge(
+          Geo.box(0.1, 0.1, 1.95).translate(0, 0.02, 0.97).color('#9aa0a6').untinted(),
+          panel(1.2, 0.9).translate(0, -0.05, 1.0).color('#ffffff').mat(MAT.CHEVRON),
+        );
+        const at = [];
+        for (const bd of bends) {
+          for (let s = bd.s0 + 35; s < bd.s1 - 25; s += 16) {
+            const c = curvAt(s % LAP);
+            if (c === 0 || inGallery(s % LAP)) continue;
+            const u = c > 0 ? 14.2 : -14.2;
+            at.push({ transform: trackMatrix(s % LAP, u, 0, heightAt(...onTrack(s % LAP, u)) + ROAD_LIFT), data: c > 0 ? 1 : 2 });
+          }
+        }
+        b.instances(sign, at, { within: 400 });
+      }
       // the rails are one mesh; their posts, one every 4 m on the bends and down
       // the right of the main straight, are copies of a single post
       const armco = new Geo(), postAt = [];
@@ -995,7 +1795,7 @@ export default {
       b.static(chase.color('#38d6ff').mat(MAT.CHASE));
       armco.add(strip(s0, s1, 12.5, 0.42, 0.82, { step: 50 }));
       for (let s = s0; s <= s1; s += 4) postAt.push(trackMatrix(s, 12.62, 0, heightAt(...onTrack(s, 12.5)) + ROAD_LIFT));
-      b.static(armco.color('#b9c0c6').gloss(0.55));
+      b.static(armco.color('#b9c0c6').gloss(0.55).mat(MAT.ARMCO));
       b.instances(Geo.box(0.12, 0.12, 0.75).translate(0, 0, 0.37).color('#b9c0c6').gloss(0.55), postAt);
     }
 
@@ -1018,6 +1818,14 @@ export default {
         at.push(left ? m : m4.mul(m, m4.rotationZ(Math.PI)));
       }
       b.instances(lamp, at);
+      // their small parts, from near by: a plinth, a brace under the arm and
+      // a housing over the lamp
+      const parts = Geo.merge(
+        Geo.box(0.5, 0.5, 0.5).translate(0, 0, 0.25).color('#9a958b'),
+        bar([0, 0, 8.3], [0.85, 0, 9.0], 0.07).color('#59616b').gloss(0.4),
+        Geo.box(1.0, 0.42, 0.12).translate(2.05, 0, 9.08).color('#59616b').gloss(0.4),
+      );
+      b.instances(parts, at, { within: 50, solid: false });
     }
 
     // ---------------------------------------------------------- start/finish gantry
@@ -1062,10 +1870,114 @@ export default {
       const green = new Geo();
       for (let j = 0; j < 5; j++) green.add(lamp(-2.6 + 1.3 * j, 6.65, '#3dff6a'));
       b.static(green.translate(0, -0.02, 0).emissive(9), { transform: m, from: 5, to: 7, period: 8 });
+      // its small parts, from near by: plinths, visors over the start lights,
+      // railings along the walkway on the beam (clear of the clocks), a ladder
+      // up the west leg (meshes with holes, see `cutout`)
+      const d = new Geo();
+      for (const x of [-11, 11]) d.add(Geo.box(1.5, 1.5, 0.4).translate(x, 0, 0.2).color('#a9a59c'));
+      for (let j = 0; j < 5; j++) {
+        for (const z of [7.85, 7.25, 6.65]) d.add(Geo.box(0.62, 0.42, 0.05).translate(-2.6 + 1.3 * j, -1.31, z + 0.3).color('#141619'));
+      }
+      for (const sd of [-1, 1]) {
+        for (const [x0, x1] of [[-11.5, -4.8], [4.8, 11.5]]) {
+          d.add(Geo.quad([x0, sd * 0.6, 9.85], [x1, sd * 0.6, 9.85], [x1, sd * 0.6, 10.95], [x0, sd * 0.6, 10.95]).uvTransform(x1 - x0, 1.1)
+            .color('#2d3238').mat(MAT.RAILING).cutout().doubleSided());
+        }
+      }
+      d.add(Geo.quad([-11.47, -0.2, 0.5], [-11.47, 0.2, 0.5], [-11.47, 0.2, 8.2], [-11.47, -0.2, 8.2]).uvTransform(0.4, 7.7)
+        .color('#4a5058').mat(MAT.LADDER).cutout().doubleSided());
+      b.static(d, { transform: m, within: 80 });
+    }
+
+    // ---------------------------------------------------------- trackside furniture along the main straight
+    // Tyre walls round the gantry's legs and at both ends of the pit wall,
+    // cones on the shoulder past the line, distance boards before the north
+    // bend, marshals' posts with their flags, and a catch fence on the pit wall.
+    {
+      const tyreStack = Geo.cylinder(0.32, 1.0, 8).color('#ffffff').mat(MAT.TYRES).gloss(0.12);
+      const stacks = [];
+      const stackAt = (s, u, tint) => stacks.push({ transform: trackMatrix(s, u, 0, heightAt(...onTrack(s, u)) + ROAD_LIFT), tint });
+      for (const sd of [-1, 1]) {
+        for (let k = -2; k <= 2; k++) stackAt(S_LINE + 0.65 * k, sd * 10.2, k === 0 ? '#e8e8e4' : '#2a2a2a');
+      }
+      for (const [s, dir] of [[30, -1], [MAIN_LEN - 30, 1]]) {
+        for (let k = 0; k < 6; k++) stackAt(s + dir * (0.4 + 0.65 * (k % 3)), -12.0 + 0.65 * Math.floor(k / 3), k % 3 === 1 ? '#c0392b' : '#2a2a2a');
+      }
+      b.instances(tyreStack, stacks, { within: 80 });
+
+      const cone = Geo.merge(
+        Geo.cone(0.17, 0.62, 8).translate(0, 0, 0.03).color('#ff6a13').mat(MAT.CONE).gloss(0.3),
+        Geo.box(0.38, 0.38, 0.03).translate(0, 0, 0.015).color('#1d1d1d'),
+      );
+      const cones = [];
+      for (let k = 0; k < 10; k++) cones.push(trackMatrix(S_LINE + 18 + 5 * k, -9.6, 0, heightAt(...onTrack(S_LINE + 18 + 5 * k, -9.6)) + ROAD_LIFT));
+      b.instances(cone, cones, { within: 50, solid: false });
+
+      // distance boards: 300, 200 and 100 m before the bend, both sides
+      for (let k = 1; k <= 3; k++) {
+        for (const u of [-14.2, 14.2]) {
+          const s = MAIN_LEN - 100 * k;
+          const g = Geo.merge(
+            Geo.box(0.12, 0.12, 2.6).translate(0, 0.05, 1.3).color('#9aa0a6'),
+            panel(1.3, 1.5).translate(0, -0.02, 1.15).color('#f2f2f0').mat(MAT.MARKER).tag(k),
+          );
+          b.static(g, { transform: trackMatrix(s, u, 0, heightAt(...onTrack(s, u)) + ROAD_LIFT) });
+        }
+      }
+
+      // marshals' posts on the right, each with a green flag in the wind
+      const hut = Geo.merge(
+        Geo.box(2.2, 2.2, 2.3).translate(0, 0, 1.15).color('#e9e4d8'),
+        Geo.box(2.6, 2.6, 0.15).translate(0, 0, 2.38).color('#c0392b'),
+        Geo.box(2.21, 1.4, 0.6).translate(0, 0, 1.6).color('#1d2329').gloss(0.8),
+        Geo.cylinder(0.04, 5.2, 5, { caps: false }).translate(-1.4, 0, 0).color('#ddd'),
+      );
+      const flagCloth = (ph) => {
+        const g = new Geo(), nx = 5, L = 1.5, H = 1.0;
+        for (let j = 0; j <= 1; j++) {
+          for (let i = 0; i <= nx; i++) {
+            const a = i / nx;
+            g.vert(0.25 * a * Math.sin(a * 5 - ph * Math.PI * 2), -a * L, -j * H, 1, 0, 0, a, 1 - j);
+          }
+        }
+        for (let i = 0; i < nx; i++) g.quadIdx(i, i + 1, i + nx + 2, i + nx + 1);
+        return g.computeNormals().color('#1e9e49').doubleSided();
+      };
+      const marshal = Geo.merge(
+        Geo.box(0.36, 0.24, 0.85).translate(0, 0, 0.43).color('#2d2f33'),
+        Geo.box(0.46, 0.3, 0.75).translate(0, 0, 1.22).color('#ff7a1a'),
+        Geo.box(0.22, 0.22, 0.25).translate(0, 0, 1.73).color('#c99f84'),
+        Geo.box(0.12, 0.12, 0.62).translate(0.29, 0, 1.25).color('#ff7a1a'),
+        Geo.quad([0.32, 0.0, 1.0], [0.32, 0.55, 1.0], [0.32, 0.55, 1.4], [0.32, 0.0, 1.4]).color('#ffd21a').doubleSided(),
+      );
+      for (const s of [470, 770, 1070]) {
+        const m = trackMatrix(s, 16.5);
+        b.static(hut, { transform: m });
+        b.static(marshal, { transform: m4.mul(m, m4.translation(-1.7, 1.6, 0), m4.rotationZ(-0.3)), within: 120, solid: false });
+        const fm = m4.mul(m, m4.translation(-1.4, 0, 5.1));
+        for (let j = 0; j < 8; j++) {
+          b.static(flagCloth(j / 8).transform(fm), { from: j * 0.85 / 8 + s * 0.01, to: (j + 1) * 0.85 / 8 + s * 0.01, period: 0.85, within: 150 });
+        }
+      }
+
+      // catch fence on top of the pit wall: posts every 4 m and a mesh (with
+      // holes, see `cutout`; it fades to its frame of tubes with distance) in
+      // 50 m pieces, both from near by, and not solid, so that a walker can
+      // still climb onto the wall and into the grandstand as before
+      const posts = [];
+      for (let s = 32; s <= MAIN_LEN - 32; s += 4) posts.push(trackMatrix(s, -12.5, 0, heightAt(...onTrack(s, -12.5)) + ROAD_LIFT));
+      b.instances(Geo.box(0.08, 0.08, 2.9).translate(0, 0, 2.65).color('#5f666d').gloss(0.4), posts, { within: 220, solid: false });
+      for (let s = 32; s < MAIN_LEN - 33; s += 50) {
+        const e = Math.min(s + 50, MAIN_LEN - 32);
+        const mesh = strip(s, e, -12.5, 1.22, 4.1, { step: 50 });
+        for (let i = 0; i < mesh.vertexCount; i++) { mesh.uv[i * 2] *= 2.88; mesh.uv[i * 2 + 1] -= s; }
+        b.static(mesh.color('#7a8188').mat(MAT.FENCE).cutout(), { within: 220, solid: false });
+      }
     }
 
     // ---------------------------------------------------------- timing boards along the straight
     // every 50 m, alternating sides; each shows the time at which you see it
+    const boardAt = [];
     for (let s = 100; s < MAIN_LEN - 40; s += 50) {
       if (s > 230 && s < 390) continue; // gantry and grandstand
       const left = (s / 50) % 2 === 0, u = left ? -14.6 : 15.2;
@@ -1079,6 +1991,26 @@ export default {
         if (side > 0) p.rotateZ(Math.PI);
         b.static(p.translate(0, side * 0.19, 4.3).color(left ? '#9dff6e' : '#ffd23a').mat(MAT.DISPLAY), { transform: m });
       }
+      boardAt.push({ transform: m, data: s });
+    }
+    // their small parts, from near by: footings, a cross brace, hoods over the
+    // displays, a sponsor board, a ladder (a mesh with holes), a cabinet and a
+    // plate with the board's distance from the start of the straight
+    {
+      const d = new Geo();
+      for (const x of [-2.2, 2.2]) d.add(Geo.box(0.6, 0.6, 0.3).translate(x, 0, 0.1).color('#a9a59c'));
+      d.add(bar([-2.2, 0, 0.9], [2.2, 0, 3.9], 0.1).color('#2b3036'));
+      d.add(bar([2.2, 0, 0.9], [-2.2, 0, 3.9], 0.1).color('#2b3036'));
+      for (const sd of [-1, 1]) d.add(Geo.box(6.3, 0.42, 0.06).translate(0, sd * 0.38, 6.74).color('#2b3036'));
+      d.add(Geo.box(4.2, 0.12, 0.42).translate(0, 0, 3.95).color('#ffffff').mat(MAT.AD));
+      d.add(Geo.quad([2.5, -0.2, 0.4], [2.5, 0.2, 0.4], [2.5, 0.2, 4.25], [2.5, -0.2, 4.25]).color('#4a5058').mat(MAT.LADDER).cutout().doubleSided());
+      d.add(Geo.box(0.7, 0.45, 1.1).translate(-2.2, 0.55, 0.55).color('#7d8a8f').gloss(0.3));
+      for (const sd of [-1, 1]) {
+        const p = panel(0.9, 0.32);
+        if (sd > 0) p.rotateZ(Math.PI);
+        d.add(p.translate(1.55, sd * 0.07, 3.79).color('#f2f2f0').mat(MAT.MARKER));
+      }
+      b.instances(d, boardAt, { within: 60, solid: false });
     }
 
     // ---------------------------------------------------------- grandstand
@@ -1210,11 +2142,54 @@ export default {
       g.add(Geo.cone(6.5, 2.2, 4).rotateZ(Math.PI / 4).scale(1.0, 0.7, 1).translate(-7, 0, 4.5).color('#a9472e'));
       b.static(aboveLand(g.translate(lx, ly, lz - 0.5)));
       b.static(aboveLand(Geo.cylinder(1.9, 3.1, 12, { caps: false }).translate(lx, ly, lz - 0.5 + H + 0.5).mat(MAT.LANTERN)));
+      // its small parts, from near by: the gallery's railing (a mesh with
+      // holes), a door with a canopy and windows up the tower, a lightning
+      // rod, and the keeper's house's door, windows and chimney
+      {
+        const d = new Geo();
+        d.add(Geo.cylinder(3.55, 1.1, 14, { caps: false }).translate(0, 0, H + 0.5).uvTransform(22.3, 1.1).color('#30353b').mat(MAT.RAILING).cutout().doubleSided());
+        d.add(Geo.box(1.3, 0.3, 2.3).translate(0, 3.72, 1.65).color('#2f4f3a').gloss(0.3));
+        d.add(Geo.box(1.8, 0.7, 0.1).translate(0, 3.95, 2.95).color('#30353b'));
+        for (const z of [7, 13, 19]) d.add(Geo.box(0.55, 0.14, 0.85).translate(0, 3.8 - 1.1 * z / H, z).color('#1b2128').gloss(0.8));
+        d.add(bar([0, 0, H + 5.5], [0, 0, H + 7.4], 0.07).color('#30353b'));
+        d.add(Geo.box(1.0, 0.1, 2.1).translate(-8.2, 3.03, 1.55).color('#29466b'));
+        for (const [x, y] of [[-10.2, 3.03], [-5.8, 3.03], [-9.5, -3.03], [-5.8, -3.03]]) {
+          d.add(Geo.box(1.2, 0.08, 1.15).translate(x, y, 2.5).color('#e0dccf'));
+          d.add(Geo.box(0.95, 0.1, 0.9).translate(x, y, 2.5).color('#1b2128').gloss(0.8));
+        }
+        d.add(Geo.box(0.65, 0.65, 1.8).translate(-9.3, -1.0, 5.6).color('#c9b9a0'));
+        b.static(aboveLand(d.translate(lx, ly, lz - 0.5)), { within: 120, solid: false });
+      }
       // two opposite beams, turning clockwise once every BEAM_T seconds: stop motion, 2.5 degree steps
       const one = Geo.lathe([[0.7, 0], [8, 120], [16, 240], [24, 360], [32, 480]], 8).rotateX(-Math.PI / 2).rotateX(-0.025);
       const beams = Geo.merge(one, one.clone().rotateZ(Math.PI)).color('#fff0c8').mat(MAT.BEAM).additive();
       const N = 72, origin = [lx, ly, lz - 0.5 + H + 2.0];
       stopMotion(b, (ph) => beams.clone().rotateZ(-ph * Math.PI).translate(...origin), N, BEAM_T / 2);
+    }
+
+    // ---------------------------------------------------------- a jetty off the beach, east of the straight
+    // A plank deck on pairs of piles, a lamp and a ladder at its end, and a
+    // dinghy tied up beside it; the piles and the small parts from near by.
+    {
+      const y = 100, x0 = 426, x1 = 520, top = groundZ(x0, y) + 0.08;
+      b.static(Geo.box(x1 - x0, 2.6, 0.22).translate((x0 + x1) / 2, y, top - 0.11).color('#9b7b57').mat(MAT.PLANKS).gloss(0.1));
+      const pair = new Geo();
+      for (const sy of [-1.15, 1.15]) pair.add(Geo.cylinder(0.14, top + 3.2, 6, { caps: false }).translate(0, sy, -3.2));
+      pair.add(Geo.box(0.22, 2.9, 0.25).translate(0, 0, top - 0.35));
+      pair.color('#5e4a36').gloss(0.1);
+      const piles = [];
+      for (let x = x0 + 30; x <= x1 - 0.5; x += 6) piles.push(m4.translation(x, y, 0));
+      b.instances(pair, piles, { within: 250 });
+      const d = new Geo();
+      d.add(Geo.cylinder(0.07, 4.2, 6, { caps: false }).translate(x1 - 0.6, y - 1.0, top).color('#3b4148'));
+      d.add(Geo.box(0.5, 0.3, 0.3).translate(x1 - 0.6, y - 0.8, top + 4.1).color('#ffe2b0').mat(MAT.LAMP));
+      for (const sy of [-0.9, 0.9]) d.add(Geo.cylinder(0.13, 0.45, 6).translate(x1 - 2.5, y + sy, top).color('#2a2c2e'));
+      d.add(Geo.quad([x1 + 0.02, y + 0.2, -0.5], [x1 + 0.02, y + 0.6, -0.5], [x1 + 0.02, y + 0.6, top], [x1 + 0.02, y + 0.2, top]).uvTransform(0.4, top + 0.5)
+        .color('#4a5058').mat(MAT.LADDER).cutout().doubleSided());
+      const dinghy = prism([[-1.8, 0.0], [1.4, 0.0], [2.0, 0.55], [-1.9, 0.55]], 1.5, (k) => (k === 0 ? null : k === 2 ? { color: '#6b5440' } : { color: '#2a6f97' }), { color: '#2a6f97' }, { fan: true });
+      d.add(dinghy.transform(m4.mul(m4.translation(x1 - 8, y + 2.6, 0.02), m4.rotationZ(-Math.PI / 2 + 0.08))));
+      d.add(rope([x1 - 2.5, y + 0.9, top + 0.4], [x1 - 6.2, y + 2.6, 0.5], 0.03, '#cbbf9f'));
+      b.static(d, { within: 150, solid: false });
     }
 
     // ---------------------------------------------------------- wind turbines on the western ridge
@@ -1239,6 +2214,21 @@ export default {
         // seen from the north (upwind) the rotor turns clockwise; one third of a turn repeats
         stopMotion(b, (ph) => aboveLand(rotor.clone().rotateY(-ph * 2 * Math.PI / 3).translate(x, y, z)), 40, T / 3, off);
       }
+      // their small parts, from near by: the spinner on the hub (round, so it
+      // need not turn), a door and a transformer at the foot; and on every
+      // nacelle a red warning light, all flashing together, a second on and a second off
+      const lightOff = new Geo(), lightOn = new Geo();
+      for (const [x, y, z] of turbines) {
+        const d = new Geo();
+        d.add(Geo.cone(1.25, 2.0, 8).rotateX(-Math.PI / 2).translate(x, y + 4.55, z).color('#f4f5f3').gloss(0.4));
+        d.add(Geo.box(1.0, 0.3, 2.2).translate(x, y - 2.08, z - 64.5 + 1.1).color('#7d8a8f'));
+        d.add(Geo.box(2.0, 1.4, 2.0).translate(x + 4.5, y, z - 64.5 + 1.0).color('#c9cdd1'));
+        b.static(aboveLand(d), { within: 200 });
+        lightOff.add(Geo.box(0.45, 0.45, 0.3).translate(x, y - 4.5, z + 1.85).color('#4a0c08'));
+        lightOn.add(Geo.box(0.47, 0.47, 0.32).translate(x, y - 4.5, z + 1.85).color('#ff2a14').emissive(9));
+      }
+      b.static(aboveLand(lightOff));
+      b.static(aboveLand(lightOn), { from: 0, to: 1, period: 2, solid: false });
     }
 
     // ---------------------------------------------------------- trees
@@ -1321,7 +2311,7 @@ export default {
     // even: across the width), so the windows are laid out on each facade from
     // its own uv.
     {
-      const walls = [], roofs = [];
+      const walls = [], roofs = [], garden = [];
       const spots = [];
       const tryHouse = (x, y, minGap) => {
         if (featureDist(x, y) < 40 || featureDist(x, y, true) < 30) return;
@@ -1341,6 +2331,30 @@ export default {
         });
         roofs.push(m4.mul(m, m4.translation(0, 0, h + 1), m4.scaling(w * 0.76, d * 0.76, 2.4)));
         spots.push([x, y]);
+        // its small parts, from near by: a front door with a step and a lamp
+        // beside it (lit at night), and a chimney rising out of the roof
+        const det = new Geo();
+        det.add(Geo.box(1.05, 0.08, 2.15).translate(0, -d / 2 - 0.03, 1.0 + 1.07).color(['#2f4f3a', '#29466b', '#6b3a2a', '#3d3d3d'][spots.length % 4]).gloss(0.3));
+        det.add(Geo.box(1.5, 0.6, 0.3).translate(0, -d / 2 - 0.3, 0.95).color('#b9b2a4'));
+        det.add(Geo.box(0.16, 0.12, 0.24).translate(0.85, -d / 2 - 0.08, 1.0 + 2.2).color('#ffe2b0').mat(MAT.LAMP));
+        det.add(Geo.box(0.62, 0.62, 1.7).translate(w * 0.2, d * 0.1, h + 1 + 1.75).color('#c9b9a0'));
+        det.add(Geo.box(0.74, 0.74, 0.12).translate(w * 0.2, d * 0.1, h + 1 + 2.62).color('#8a7d6c'));
+        b.static(det, { transform: m, within: 70, solid: false });
+        // a low garden wall round it, with a gateway in front of the door: in
+        // pieces of up to 7 m, each standing on the ground where it is
+        const gx = w / 2 + 3.5, gy = d / 2 + 4.5, cy = Math.cos(yaw), sy = Math.sin(yaw);
+        const side = (x0, y0, x1, y1) => {
+          const L = Math.hypot(x1 - x0, y1 - y0), n = Math.max(1, Math.ceil(L / 7));
+          for (let i = 0; i < n; i++) {
+            const lx = x0 + (x1 - x0) * (i + 0.5) / n, ly = y0 + (y1 - y0) * (i + 0.5) / n;
+            const wx = x + cy * lx - sy * ly, wy = y + sy * lx + cy * ly;
+            garden.push({
+              transform: m4.mul(m4.translation(wx, wy, groundZ(wx, wy) - 0.6), m4.rotationZ(yaw + Math.atan2(y1 - y0, x1 - x0)), m4.scaling(L / n + 0.34, 0.34, 1.5)),
+              tint: ['#d9cdb5', '#cfc3a8', '#e3d9c4'][spots.length % 3],
+            });
+          }
+        };
+        side(-gx, -gy, -1.3, -gy); side(1.3, -gy, gx, -gy); side(gx, -gy, gx, gy); side(gx, gy, -gx, gy); side(-gx, gy, -gx, -gy);
       };
       for (let k = 0; k < 400 && spots.length < 34; k++) tryHouse(rand.range(-260, 260), rand.range(-1220, -880), 22);
       for (let k = 0; k < 300 && spots.length < 50; k++) tryHouse(rand.range(-900, 250), rand.range(700, 1100), 30);
@@ -1349,7 +2363,10 @@ export default {
       // (Geo.box makes the faces +x, -x, +y, -y, +z, -z, four corners each)
       for (let i = 0; i < block.vertexCount; i++) block.x[i * 2 + 1] = [1, 3, 2, 4, 0, 0][i >> 2];
       b.instances(block, walls);
-      b.instances(Geo.cone(1, 1, 4).rotateZ(Math.PI / 4).color('#b0532f').gloss(0.15), roofs);
+      b.instances(Geo.cone(1, 1, 4).rotateZ(Math.PI / 4).color('#b0532f').gloss(0.15).mat(MAT.ROOF), roofs);
+      const wallBox = Geo.box(1, 1, 1).translate(0, 0, 0.5).color('#ffffff').gloss(0.08);
+      wallBox.idx = wallBox.idx.slice(0, 30);   // (no floor: it stands in the ground)
+      b.instances(wallBox, garden, { within: 150, solid: false });
     }
 
     // ---------------------------------------------------------- traffic
@@ -1363,6 +2380,9 @@ export default {
       ];
       const carCols = ['#f08a12', '#c62828', '#1565c0', '#f9a825', '#2e7d32', '#eceff1', '#37474f', '#ef6c00', '#6a1b9a', '#00838f', '#d81b60', '#8d6e63'];
       const busCols = ['#f2c12e', '#e9eef2', '#2a6f97', '#c0392b'];
+      // Each vehicle's small parts ride with it all the way round the lap,
+      // with the same keys as its body (so they stay exactly in place), and
+      // are drawn only while the vehicle is seen within 50 m.
       let ci = 0;
       lanes.forEach((lane, li) => {
         for (let i = 0; i < lane.n; i++) {
@@ -1370,9 +2390,12 @@ export default {
           // the first car of each lane is `ahead` metres in front of the spawn at the spawn time
           const s0 = SPAWN_S + lane.ahead - lane.dir * speed * SPAWN_T + i * LAP / lane.n;
           const tf = laneTransform(s0, speed, lane.offset, lane.dir);
-          const geo = lane.kind === 'bus' ? busGeo(busCols[i % busCols.length]) : carGeo(carCols[ci++ % carCols.length]);
+          const color = lane.kind === 'bus' ? busCols[i % busCols.length] : carCols[ci % carCols.length];
+          const geo = lane.kind === 'bus' ? busGeo(color) : carGeo(color, CAR_NUMBERS[ci++]);
+          const detail = lane.kind === 'bus' ? busDetailGeo() : carDetailGeo(color);
           const times = adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.07, size: lane.kind === 'bus' ? 6 : 2.3, maxStep: 8, minStep: 0.03 });
           b.dynamic(geo, { times, transform: tf, caps: 'none' });
+          b.dynamic(detail, { times, transform: tf, caps: 'none', within: 50 });
         }
       });
     }
@@ -1380,24 +2403,26 @@ export default {
     // ---------------------------------------------------------- trains
     {
       const express = expressGeo(), freight = freightGeo(rand);
+      // The bogies and couplings are drawn only from within 40 m (which
+      // leaves them out when the viewer is on the road, 40 m and more from
+      // the rails), with the same two keys as the train.
+      const expressParts = expressBogies(), freightParts = freightBogies();
       const xN = RAIL_X + RAIL_GAUGE, xS = RAIL_X - RAIL_GAUGE;
       // northbound express, 40 m/s, from inside the south tunnel to inside the north one
       const vN = 40, yA = RAIL_S - 12, yB = RAIL_N + 15 + 200;
       for (const t0 of [10, 10 + PERIOD / 2]) {
         const t1 = t0 + (yB - yA) / vN;
-        b.dynamic(express, {
-          times: [t0, t1],
-          transform: (t) => m4.translation(xN, yA + vN * (t - t0), RAIL_Z + 0.2),
-        });
+        const transform = (t) => m4.translation(xN, yA + vN * (t - t0), RAIL_Z + 0.2);
+        b.dynamic(express, { times: [t0, t1], transform });
+        b.dynamic(expressParts, { times: [t0, t1], transform, within: 40 });
       }
       // southbound freight, 25 m/s, 300 m long
       const vS = 25, yC = RAIL_N + 12, yD = RAIL_S - 15 - 300;
       for (const t0 of [70, 70 + PERIOD / 2]) {
         const t1 = t0 + (yC - yD) / vS;
-        b.dynamic(freight, {
-          times: [t0, t1],
-          transform: (t) => m4.mul(m4.translation(xS, yC - vS * (t - t0), RAIL_Z + 0.2), m4.rotationZ(Math.PI)),
-        });
+        const transform = (t) => m4.mul(m4.translation(xS, yC - vS * (t - t0), RAIL_Z + 0.2), m4.rotationZ(Math.PI));
+        b.dynamic(freight, { times: [t0, t1], transform });
+        b.dynamic(freightParts, { times: [t0, t1], transform, within: 40 });
       }
     }
 
@@ -1414,7 +2439,12 @@ export default {
           const a = (t / PERIOD * bl.laps + bl.ph) * 2 * Math.PI;
           return m4.translation(bl.c[0] + bl.r * Math.cos(a), bl.c[1] + bl.r * Math.sin(a), bl.z + 25 * Math.sin(a * 2 + 1));
         };
-        b.dynamic(balloonGeo(bl.col), { times: adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.2, size: 10, maxStep: 8 }), transform: tf, caps: 'none' });
+        const times = adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.2, size: 10, maxStep: 8 });
+        b.dynamic(balloonGeo(bl.col), { times, transform: tf, caps: 'none' });
+        // the flame takes the envelope's burner rhythm from its colour, as BALLOON does (the tag holds it)
+        const lin = parseHex(bl.col).map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+        const seed = lin[1] * 3.7 + lin[2] * 1.3;
+        b.dynamic(balloonDetailGeo().tag(Math.round((seed - Math.floor(seed)) * 255)), { times, transform: tf, caps: 'none', within: 60 });
       }
       const blimp = (t) => {
         const a = (t / PERIOD) * 2 * Math.PI;
@@ -1422,7 +2452,9 @@ export default {
         const dir = [-540 * Math.sin(a), 840 * Math.cos(a), 30 * Math.cos(2 * a)];
         return m4.facing(pos, dir);
       };
-      b.dynamic(blimpGeo(), { times: adaptiveTimes(blimp, 0, PERIOD, { tolerance: 0.2, size: 30, maxStep: 8 }), transform: blimp, caps: 'none' });
+      const blimpTimes = adaptiveTimes(blimp, 0, PERIOD, { tolerance: 0.2, size: 30, maxStep: 8 });
+      b.dynamic(blimpGeo(), { times: blimpTimes, transform: blimp, caps: 'none' });
+      b.dynamic(blimpDetailGeo(), { times: blimpTimes, transform: blimp, caps: 'none', within: 80 });
       const boats = [
         { c: [780, 150], a: 260, b: 90, sail: '#f7f5ef', ph: 0 },
         { c: [1000, -450], a: 330, b: 130, sail: '#e74c3c', ph: 0.4 },
@@ -1435,7 +2467,9 @@ export default {
           const a = (t / PERIOD + bt.ph) * 2 * Math.PI;
           return m4.facing([bt.c[0] + bt.b * Math.cos(a), bt.c[1] + bt.a * Math.sin(a), 0.05], [-bt.b * Math.sin(a), bt.a * Math.cos(a), 0]);
         };
-        b.dynamic(boatGeo(bt.sail), { times: adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.15, size: 5, maxStep: 8 }), transform: tf, caps: 'none' });
+        const times = adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.15, size: 5, maxStep: 8 });
+        b.dynamic(boatGeo(bt.sail), { times, transform: tf, caps: 'none' });
+        b.dynamic(boatDetailGeo(), { times, transform: tf, caps: 'none', within: 50 });
       }
     }
   },

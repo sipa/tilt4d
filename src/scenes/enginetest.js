@@ -137,6 +137,40 @@ export default {
     b.dynamic(Geo.box(1, 1, 1).color('#f39c12').emissive(2), { from: 0, to: 20, step: 0.25, caps: 'none', transform: (t) => m4.translation(16 + 4 * Math.cos(t * Math.PI / 5), 4 * Math.sin(t * Math.PI / 5), 3) });
     // a mast east of the ridge: at sunset its foot is in the ridge's shadow and its top is not
     b.static(Geo.box(1.5, 1.5, 60).translate(0, 0, 30).color('#e8e8e8').mat(MAT_MAST), { transform: m4.translation(-60, 60, 0) });
+    // Detail that is drawn only from near by (within): a ring of rivets round
+    // the mast's foot, a cap on every post, and a stud on the orbiting box.
+    {
+      const rivets = [];
+      for (let i = 0; i < 16; i++) rivets.push(Geo.sphere(0.06, 6, 4).translate(-60 + 0.82 * Math.cos(i * Math.PI / 8), 60 + 0.82 * Math.sin(i * Math.PI / 8), 0.5));
+      b.static(Geo.merge(...rivets).color('#c0392b'), { within: 12 });
+      const caps = [];
+      const r2 = rng(5);
+      for (let i = 0; i < 300; i++) { const x = r2.range(-3, 3), y = r2.range(3, 40); r2.range(0, 6.28); r2.range(0.7, 1.3); r2.range(0.7, 1.3); const h = r2.range(0.6, 1.6); r2.range(0.3, 1); r2.range(0.3, 1); r2.range(0.3, 1); caps.push(m4.translation(x, y, 1.6 * h)); }
+      b.instances(Geo.sphere(0.07, 6, 4).color('#111111'), caps, { within: 8, solid: false });
+      b.dynamic(Geo.sphere(0.12, 8, 6).color('#ffffff').emissive(3), { from: 0, to: 20, step: 0.25, caps: 'none', within: 10, transform: (t) => m4.translation(16 + 4 * Math.cos(t * Math.PI / 5), 4 * Math.sin(t * Math.PI / 5), 3.62) });
+    }
+    // The same on something that goes a long way between two keys: a sledge
+    // crossing the ground in one straight run of 20 s, with a flag that is
+    // only drawn within 15 m of where the sledge is seen.
+    {
+      const run = (t) => m4.translation(-150 + 15 * t, -30, 0);
+      b.dynamic(Geo.box(2, 0.8, 0.5).translate(0, 0, 0.25).color('#34495e'), { times: [0, 20], caps: 'none', transform: run });
+      b.dynamic(Geo.merge(Geo.cylinder(0.03, 1.2, 6).translate(0, 0, 1.1), Geo.box(0.5, 0.02, 0.3).translate(0.25, 0, 1.55)).color('#e74c3c'), { times: [0, 20], caps: 'none', within: 15, transform: run });
+    }
+    // Moving things of every kind the builder tells apart, side by side at
+    // y = 12: one that is only moved (stored once, placed by its keys), one
+    // moved by a mirroring matrix that also stretches it, one that changes
+    // shape, and one that is repainted.
+    {
+      const arrow = Geo.merge(Geo.box(1.6, 0.5, 0.5).translate(0, 0, 0.25), Geo.box(0.5, 0.5, 1.2).translate(0.55, 0, 0.6)).color('#3498db');
+      const spin = (x) => (t) => m4.mul(m4.translation(x, 12, 0.6 + 0.3 * Math.sin(t * Math.PI / 5)), m4.rotationZ(t * Math.PI / 10));
+      b.dynamic(arrow, { from: 0, to: 20, step: 0.5, transform: spin(24) });
+      b.dynamic(arrow, { from: 0, to: 20, step: 0.5, transform: (t) => m4.mul(spin(28)(t), m4.scaling(-1, 1.6, 0.7)) });
+      b.dynamic((t) => Geo.box(1 + 0.5 * Math.sin(t * Math.PI / 5), 1, 1).translate(0, 0, 0.5).color('#2ecc71'), { from: 0, to: 20, step: 0.5, transform: spin(32) });
+      b.dynamic(arrow, { from: 0, to: 20, step: 0.5, transform: spin(36), paint: (t) => ({ color: [0.9, 0.5 + 0.4 * Math.sin(t * Math.PI / 5), 0.2] }) });
+      // and one that is only there for a while, with its ends in time sealed
+      b.dynamic(arrow, { from: 4, to: 9, step: 0.5, transform: spin(40) });
+    }
     // a distant tower for the third shadow cascade
     b.static(Geo.box(12, 12, 90).translate(0, 0, 45).color('#b9b2a4'), { transform: m4.translation(120, -330, 0) });
   },

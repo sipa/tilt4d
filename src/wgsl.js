@@ -1,6 +1,8 @@
 // WGSL sources.  The scene shader is assembled as
 //   COMMON  +  the scene's textures  +  scene hooks (or defaults)  +  SCENE_PIPELINES
 
+import { BLOCK } from './builder.js';
+
 // For every sign pattern of a tetrahedron's four corners relative to the
 // slicing hyperplane: the (up to four) edges that are cut, in triangle-strip
 // order, packed as 4 bits per strip vertex (edge from corner i to corner j is
@@ -240,9 +242,18 @@ struct PassU { cascade: u32, p0: u32, p1: u32, p2: u32 };
 
 struct DynVert { pos: vec4f, nrm: u32, col: u32, prm: u32, uv: u32 };
 struct DrawU { tRel: f32, p0: f32, p1: f32, p2: f32 };
+// Moving geometry (see SceneBuilder in builder.js): vertices; the lists of
+// tetrahedra of one step of a mesh; the chunks, each a run of tetrahedron
+// numbers that stands for some steps of one mesh; which chunk each block of
+// numbers belongs to; and the placing matrices of meshes that only move.
+struct DynRun { first: u32, count: u32, tmpl: u32, per: u32, vert: u32, nv: u32, key: u32, rigid: u32 };
+struct DynKey { r0: vec4f, r1: vec4f, r2: vec4f, t: vec4f };   // the matrix by rows; t.x the key's time, t.y the sign of its determinant
 @group(1) @binding(0) var<storage, read> dynVerts: array<DynVert>;
-@group(1) @binding(1) var<storage, read> dynTets: array<vec4u>;
+@group(1) @binding(1) var<storage, read> dynTmpl: array<vec4u>;
 @group(1) @binding(2) var<uniform> drawU: DrawU;
+@group(1) @binding(3) var<storage, read> dynRuns: array<DynRun>;
+@group(1) @binding(4) var<storage, read> dynBlocks: array<u32>;
+@group(1) @binding(5) var<storage, read> dynKeys: array<DynKey>;
 
 struct VOut {
   @builtin(position) clip: vec4f,
@@ -414,18 +425,63 @@ fn staticShadowOut(in: SIn, pos: vec3f, inst: vec4f, win: vec3f) -> ShadowOut {
 @vertex fn vs_static_i_shadow(in: SIn, i: IIn) -> ShadowOut { return staticShadowOut(in, instPos(in.pos, i), i.inst, i.win.xyz); }
 
 // ---- dynamic geometry: tetrahedra in (x, y, z, t), cut by the slice.
-struct TetCut { ok: bool, a: u32, b: u32, s: f32, d: vec4f, n4: vec4f };
+// What a tetrahedron's cut gives for one corner of its quad: the two vertices
+// it lies between (and, for a mesh that only moves, the keys that place them),
+// how far along, and where that is.
+// na, nb: for a mesh that only moves, what turns its normals as the keys of
+// those two vertices place them (see placedNormal).
+struct TetCut { ok: bool, a: u32, b: u32, rigid: bool, s: f32, d: vec4f, n4: vec4f, na: mat3x3f, nb: mat3x3f };
+// What a key's matrix does to normals: the cross products of its rows, with
+// the sign of its determinant, so that a mirroring key does not turn them
+// inside out.  (The result still has to be brought to unit length.)
+fn normalRows(K: DynKey) -> mat3x3f {
+  return mat3x3f(cross(K.r1.xyz, K.r2.xyz) * K.t.y, cross(K.r2.xyz, K.r0.xyz) * K.t.y, cross(K.r0.xyz, K.r1.xyz) * K.t.y);
+}
+fn placedNormal(m: mat3x3f, n: vec4f) -> vec4f {
+  let v = n.xyz * m;
+  return vec4f(v / max(length(v), 1e-20), n.w);
+}
 fn cutTet(ii: u32, vi: u32) -> TetCut {
   var r: TetCut;
   r.ok = false;
-  // the top bit of the first index records the tetrahedron's orientation
-  let raw = dynTets[ii];
-  let tet = vec4u(raw.x & 0x7fffffffu, raw.yzw);
+  // Which chunk the number belongs to, and which tetrahedron of which step
+  // of it this is.  (A chunk's run of numbers is rounded up to whole blocks:
+  // the numbers past its end stand for nothing.)
+  let run = dynRuns[dynBlocks[ii / ${BLOCK}u]];
+  let n = ii - run.first;
+  if (n >= run.count) { return r; }
+  let step = n / run.per;
+  // its corners: vertex numbers within the mesh, bit 30 for "at the later
+  // key"; the top bit of the first records the tetrahedron's orientation
+  let raw = dynTmpl[run.tmpl + n % run.per];
+  r.rigid = run.rigid != 0u;
+  // (a mesh that only moves: the two keys this step runs between)
+  var K0: DynKey;
+  var K1: DynKey;
+  if (r.rigid) { K0 = dynKeys[run.key + step]; K1 = dynKeys[run.key + step + 1u]; }
+  var tet: vec4u;
+  var later = vec4<bool>(false);
   var q: array<vec4f, 4>;
   var dd: array<f32, 4>;
   var mask = 0u;
   for (var k = 0u; k < 4u; k++) {
-    let p = dynVerts[tet[k]].pos;
+    later[k] = (raw[k] & 0x40000000u) != 0u;
+    let v = raw[k] & 0x0fffffffu;
+    var p: vec4f;
+    if (r.rigid) {
+      // the mesh as it is, placed by the key
+      tet[k] = run.vert + v;
+      let m = dynVerts[tet[k]].pos.xyz;
+      if (later[k]) {
+        p = vec4f(dot(K1.r0.xyz, m) + K1.r0.w, dot(K1.r1.xyz, m) + K1.r1.w, dot(K1.r2.xyz, m) + K1.r2.w, K1.t.x);
+      } else {
+        p = vec4f(dot(K0.r0.xyz, m) + K0.r0.w, dot(K0.r1.xyz, m) + K0.r1.w, dot(K0.r2.xyz, m) + K0.r2.w, K0.t.x);
+      }
+    } else {
+      // the vertex as stored for that key
+      tet[k] = run.vert + (step + u32(later[k])) * run.nv + v;
+      p = dynVerts[tet[k]].pos;
+    }
     let dl = vec4f(p.xyz - G.P.xyz, (p.w - drawU.tRel) * G.proj.w);
     q[k] = dl;
     dd[k] = dot(G.O, dl);
@@ -438,6 +494,11 @@ fn cutTet(ii: u32, vi: u32) -> TetCut {
   let i = e & 3u; let j = e >> 2u;
   r.ok = true;
   r.a = tet[i]; r.b = tet[j];
+  if (r.rigid) {
+    let n0 = normalRows(K0); let n1 = normalRows(K1);
+    if (later[i]) { r.na = n1; } else { r.na = n0; }
+    if (later[j]) { r.nb = n1; } else { r.nb = n0; }
+  }
   r.s = dd[i] / (dd[i] - dd[j]);
   r.d = mix(q[i], q[j], r.s);
   // The tetrahedron is a piece of the 3D boundary of a world-volume.  Its
@@ -461,7 +522,10 @@ fn cutTet(ii: u32, vi: u32) -> TetCut {
   o.clip = toClip(o.view);
   o.wpos = G.P.xyz + c.d.xyz;
   o.t = G.P.w + c.d.w / G.proj.w;
-  o.nrm = mix(unpack4x8snorm(va.nrm), unpack4x8snorm(vb.nrm), c.s);
+  var na = unpack4x8snorm(va.nrm);
+  var nb = unpack4x8snorm(vb.nrm);
+  if (c.rigid) { na = placedNormal(c.na, na); nb = placedNormal(c.nb, nb); }
+  o.nrm = mix(na, nb, c.s);
   o.n4 = c.n4;
   o.col = mix(unpack4x8unorm(va.col), unpack4x8unorm(vb.col), c.s);
   o.uv = mix(unpack2x16float(va.uv), unpack2x16float(vb.uv), c.s);
@@ -697,6 +761,13 @@ struct SkyOut { @builtin(position) clip: vec4f, @location(0) ndc: vec2f };
 @vertex fn vs_sky(@builtin(vertex_index) vi: u32) -> SkyOut {
   let p = vec2f(f32((vi << 1u) & 2u), f32(vi & 2u)) * 2.0 - 1.0;
   return SkyOut(vec4f(p, 0.0, 1.0), p);
+}
+// The direction of the light over a stretch of time, a pixel per moment: the
+// renderer reads this back to tell what can cast a shadow into each shadow
+// map (see _sunDir in renderer.js).  G.P.w is the first moment here, and
+// G.shadow2.z the step from pixel to pixel.
+@fragment fn fs_sun(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  return vec4f(normalize(envSun(G.P.w + (pos.x - 0.5) * G.shadow2.z).dir), 1.0);
 }
 @fragment fn fs_sky(in: SkyOut) -> @location(0) vec4f {
   let dv = normalize(vec3f(in.ndc.x / G.proj.x, in.ndc.y / G.proj.y, 1.0));

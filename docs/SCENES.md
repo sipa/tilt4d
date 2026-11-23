@@ -73,10 +73,10 @@ export default {
                              // (in fly and swim it is a floor the player cannot pass)
   ceiling: 40,               // optional: maximum height in fly and swim (number or function)
   solid: true,               // optional: false lets the player pass through everything
-  alignToGround: true,       // optional: lean the player with the terrain's slope
+  alignToGround: true,       // optional: lean a car with the terrain's slope (a walker always stands upright)
   walkSpeed: 3, runSpeed: 8, // optional, metres per second
   eyeHeight: { walk: 1.7, drive: 1.25 },                  // optional
-  accel: 1,                  // optional: how quickly drive, fly and swim change speed (times 0.25 C per second per second for a car, 0.5 C for thrust)
+  accel: 1,                  // optional: how quickly drive, fly and swim change speed (times 0.25 C per second per second for a car, whose friction goes by it too, and 0.5 C for thrust)
 
   env: { dayLength: 600 },   // optional: settings for the built-in day/night sky (see below)
   wgsl: `...`,               // optional: shader hooks (see below)
@@ -84,6 +84,12 @@ export default {
   build(b) { ... },          // adds all geometry through the SceneBuilder `b`
 };
 ```
+
+A walker cannot go up ground steeper than 60° (the slope is measured over
+0.8 m), and is slowed well before that. So a rise of more than about 1.4 m
+that `ground` makes within a step's length is a wall to them, and one of 1 m
+slows them to a sixth of their pace: give stairs and ramps a real slope, of
+30° or less where people are meant to walk up briskly.
 
 In the modes with a ground, the player's `z` follows `ground` plus the eye
 height. There are no collisions. `spawn.pos[2]` is ignored in those modes.
@@ -161,10 +167,43 @@ Matrices (`m4` in src/math.js) are column-major arrays of 16:
 
 ## Placing things in time: the builder
 
-### `b.static(geo, { from, to, period, transform, solid })`
+### `b.static(geo, { from, to, period, transform, solid, within })`
 
 Geometry that does not move. This is the cheap kind: use it for everything
 that stands still. Without options it exists forever.
+
+### Detail that is only there from near by: `within`
+
+`b.static`, `b.instances` and `b.dynamic` all take `within: metres`. Geometry
+given with it is drawn only while the viewer is no further from it than that,
+and costs nothing otherwise: it is the way to give things that can be walked
+up to their small parts (door handles, faces, wheel spokes, rivets, the
+lettering on a sign) without paying for them all over the scene.
+
+```js
+b.static(house, {});                          // the house, always
+b.static(doorHandleAndLetterbox, { within: 15 });   // its small parts, from near by
+b.instances(lampGlassDetail, lampPlaces, { within: 20 });
+b.dynamic(faceAndButtons, { ...sameTimesAndTransformAsTheWalker, within: 12 });
+```
+
+* It is an addition, not a replacement: the plain version is always drawn, so
+  model the object without its detail first and give the detail separately.
+* The detail appears and disappears abruptly, so choose a distance at which it
+  is too small to notice: a part 2 cm across is under a pixel beyond about
+  25 m, one 10 cm across beyond about 120 m (at 1080 lines and the usual
+  field of view).
+* The distance is measured in space, to the geometry's bounding box: each
+  `b.static` call's box, each cluster of an instanced call (the copies are put
+  in clusters about twice the distance across, by themselves), and each
+  stretch of a moving object's path. So give detail in pieces that are small
+  compared with the distance: one call per house, not one for the whole street.
+* Detail is solid like anything else that is static and lasting; pass
+  `solid: false` for parts too small to matter.
+* For something that moves, the distance is to where the thing is seen, so
+  detail riding on a tram is drawn when the tram is near, however long the
+  tram's run. Give the detail the same `times` and `transform` as what it
+  belongs to.
 
 **It is also solid**: the player cannot pass through it (see "Solid things"
 below). Pass `solid: false` for what should be walked or flown through, such
@@ -338,8 +377,9 @@ b.dynamic(car, {
 flag, a growing plant). Every result must have the same vertex count and
 triangle list.
 
-Each triangle becomes three tetrahedra per key interval, so **key times are
-the budget**:
+Each triangle becomes three tetrahedra per key interval, and a tilted view
+draws those of every interval its slice passes through, so **key times are the
+budget** for drawing:
 
 * straight motion at constant speed needs only two keys, however long it lasts.
   Give straight legs their end points as keys: `times: [0, 28, 30, 58, 60]`;
@@ -347,6 +387,21 @@ the budget**:
   segments look right: a quarter of a second for a car on a bend, a twelfth of
   a bounce for a ball. A sudden change of direction must land exactly on a key;
 * keep moving meshes simple (tens of triangles, not thousands).
+
+What it takes to store depends on the kind of motion:
+
+* A mesh that is only moved (a fixed `Geo`, a `transform`, no `paint`) is
+  stored once, however many keys it has, with a matrix per key: 64 bytes a
+  key. Cars, trams, fish, walking figures built from stiff parts: nearly
+  everything is of this kind, and it is cheap. Two calls with the same mesh
+  share it, so a hundred fish of one kind store one fish. The motion may be
+  any matrix (turned, scaled, mirrored), and between keys each vertex still
+  goes in a straight line.
+* A mesh that changes shape (`geo` given as a function) or colour (`paint`)
+  is stored vertex by vertex at every key, 32 bytes a vertex. Keep those for
+  what needs them (a flag, a jellyfish's bell), and build things that could be
+  stiff parts out of stiff parts: a walker as a body and four limbs, each a
+  call of its own, rather than one mesh that bends.
 
 An object that neither starts from nor ends in nothing has open ends in time.
 `caps` seals them so that a tilted slice through its first or last moment looks
@@ -375,25 +430,57 @@ With `period: 0` the scene has a beginning and an end; use `holdBefore` and
 
 ### Budgets
 
-The shot tool prints the totals and how many tetrahedra a view draws.
+The shot tool prints the totals and how many tetrahedra a view draws, and
+`node tools/cost.mjs <scene>` counts what a running frame hands to the GPU
+over all its passes, from the starting point at several tilts and from any
+views you add, as triangles, tetrahedra, draw calls and one combined score;
+with `--save` and `--against` it compares a scene with what it was before a
+change (see the head of that file).
 
 * static geometry: up to about 300,000 triangles;
-* tetrahedra: up to about 2,000,000 in total (they cost memory and build
-  time). The renderer only processes the chunks of each object that the
-  player's slice actually passes through, so what a view draws is normally a
-  small fraction of the total, at any tilt. If the printed "drawing N
-  tetrahedra" goes beyond a few hundred thousand, something has far more keys
-  or triangles than it needs.
+* tetrahedra: the total matters little by itself (meshes that only move are
+  stored once, see `b.dynamic`); what counts is how many a view draws. The
+  renderer only processes the chunks of each object that the player's slice
+  actually passes through, so that is normally a small fraction of the total,
+  at any tilt. If the printed "drawing N tetrahedra" goes beyond a few hundred
+  thousand, something has far more keys or triangles than it needs.
+
+How many tetrahedra a tilted view draws depends on how far into the past and
+the future its slice reaches within the scene: `viewDistance × sin(tilt) / C`
+seconds each way. Every moving thing in sight is drawn at each of its key
+steps that the slice passes through, and once more for each period that fits
+into that reach, in the picture and again in every shadow map it stands in.
+With a small `C`, a long view and a short period that multiplies quickly (a
+scene with C = 5 m/s and 2.6 km of view reaches six minutes each way at 45°).
+Then give the small moving things `within`, at a distance where they are a
+pixel or two, so that only what is near is drawn; keep straight runs to two
+keys; and keep `shadowRadii` and `viewDistance` no larger than the place
+needs. `tools/cost.mjs` prints the tetrahedra per frame for each view.
 
 Those figures suit phones as well. A scene meant for desktop graphics cards
-can go to roughly 1,000,000 static triangles and 4,000,000 tetrahedra in
-total, with no more than about 400,000 tetrahedra and 1,500 draw calls in any
-one view. Every static triangle is drawn three times per frame (once for the
-picture, twice for the shadow maps; once more with a third shadow cascade, and
-once more with `reflections`), and `ground` is called for every static
-triangle when the scene loads (to tell terrain from obstacles), so keep it
-cheap. These limits are estimates: nothing here has been timed on a real
-graphics card. `src/scenes/valley.js` is the scene built to this tier.
+can go to roughly 1,000,000 static triangles, with no more than about
+400,000 tetrahedra and 1,500 draw calls in any one view (two or three times
+that over all the passes of a frame, which is what `tools/cost.mjs` counts).
+`ground` is called for every static triangle when the scene loads (to tell
+terrain from obstacles), so keep it cheap. These limits are estimates: nothing
+here has been timed on a real graphics card. `src/scenes/valley.js` and
+`src/scenes/pier.js` are the scenes built to this tier.
+
+A frame is drawn in several passes: the picture, two or three shadow maps, and
+one side of the reflection picture if the scene has `reflections`. Static
+geometry is drawn in each pass that can see it. The builder sorts it into
+cells of neighbouring triangles (about two thousand each) and large instanced
+groups into clusters of neighbouring copies, and the renderer leaves a cell or
+cluster out of a pass whose view volume it lies wholly outside: the pyramid of
+the picture, the box of space a shadow map covers, the quarter of the
+surroundings a side of the reflection picture shows. So what a view costs
+depends on what is in front of the camera and round it, not on the whole
+scene: a town seen from inside costs less than the same town seen from a hill.
+The widest shadow map takes in the most; keep `shadowRadii` no larger than the
+scene needs. Moving geometry is tested the same way, chunk by chunk.
+
+On a device that cannot keep up, the page lowers the resolution it draws at,
+and with it the distance from which detail given with `within` is drawn.
 
 ## Helpers (src/util.js)
 
@@ -553,6 +640,14 @@ scene.
 Shadows come from one sun direction, taken at the player's own time; where a
 surface's time has the sun somewhere quite different they fade out.
 
+`dayNightEnv` (src/env.js) is the ready-made sky. A scene that wants the day
+to run unevenly, or the sun on another path, need not write a sky of its own:
+`dayNightEnv({ ..., own: ['envDayPhase', 'envSunVec'] })` leaves those two
+functions (either or both) for the scene's WGSL to define, with the built-in
+ones at hand as `envDayPhase0` and `envSunVec0`. `src/scenes/pier.js` slows
+its dusk and turns its sunset that way. Do not edit the text that
+`dayNightEnv` returns: the single-file build shortens it.
+
 ## Testing
 
 ```
@@ -597,6 +692,29 @@ time and how many static triangles are solid. If "touching something" is a
 large share of the frames on the route the scene's hint suggests, there is
 clutter in the way that wants `solid: false`.
 
+```
+node tools/cost.mjs myscene [--view "pos=x,y,z yaw=deg tilt=deg t=seconds"]...
+     [--save before.json] [--against before.json --budget 1.2]
+```
+
+counts what a frame hands to the graphics card (triangles, tetrahedra, draw
+calls, and a score made of them) from the starting point at several tilts and
+from any views you add: see "Budgets". Add views in the busiest places, tilted
+by 60° and more. To hold a change to a budget, save the numbers before it and
+compare after it.
+
+These counts are the measure to go by. Frame times here come from software
+renderers, each with a bias of its own: Chromium's (SwiftShader) runs every
+branch of the `surface` and `cutout` hooks for every pixel, so a longer hook
+slows everything there whether or not it is used, and Firefox's (lavapipe)
+charges far more for a draw call than a graphics card does. A graphics card
+runs only the branch a pixel takes; so keep each material's own branch short,
+and put what only part of a surface needs behind a test of where the pixel
+is.
+
 Look at the picture every time. Check several places and times, level and
 tilted (`--tilt 30`, `60`, `85`, `120`), and check a periodic scene on both
 sides of the seam (`--t` just below and just above a multiple of the period).
+Firefox's renderer is about ten times quicker than Chromium's for a heavy
+scene, which makes it the one to look around with; check the final pictures
+in both.

@@ -6,6 +6,12 @@
 // Fly fast and the far side of everything is seen in the past: the spokes of
 // the wheel bend, the beacon pulses stall or run backwards, and the clouds on
 // the planet ahead and behind you are a minute and a half apart.
+//
+// Close up, most of the detail is painted by the shaders from uv and tags
+// (hull panels, hatches, numbers, windows, container doors), which costs no
+// triangles; the few small parts that are geometry (engine bells, aerials,
+// handrails, docking ports, beacon cages, lattices) are added with `within`,
+// so that they are drawn only from near by.
 
 import { Geo } from '../geom.js';
 import { m4, v3 } from '../math.js';
@@ -20,7 +26,8 @@ const TAU = Math.PI * 2;
 const MAT = {
   HULL: 1, HULLW: 2, RING_SIDE: 3, RING_INNER: 4, RING_OUTER: 5, RING_PANEL: 6, HUB: 7,
   SPOKE: 8, SOLAR: 9, CLOCK: 10, SPINCOUNT: 11, CARGO: 12, ROCK: 13, ROCKD: 14, GATE: 15,
-  RAIL: 16, BLINK: 17, WINDOWS: 18, CONTAINER: 19, MOON: 20, GLOW: 21, BEACON: 22, DIST: 40,
+  RAIL: 16, BLINK: 17, WINDOWS: 18, CONTAINER: 19, MOON: 20, GLOW: 21, BEACON: 22,
+  SHIP: 23, CANOPY: 24, TUG: 25, CNT: 26, LENS: 27, PORT: 28, RADIATOR: 29, LATTICE: 30, BLOCK: 31, FOIL: 32, DIST: 40,
 };
 
 // how long a beacon's flash and the afterglow that follows it last, in seconds
@@ -88,7 +95,17 @@ const BEACON_AFTER = ${f(BEACON_AFTER)};
 // its phase and how often it flashes (phase + 8 * every); the test is the one
 // the engine makes for a time window, so a tilted slice cuts the lamps just
 // as it would cut windowed static geometry.
+// An open lattice of chords, posts and alternating diagonals, one bay per
+// unit of uv (the trusses of the station's solar wings).
+fn lattice(uv: vec2f) -> f32 {
+  let f = fract(uv);
+  let edge = min(min(f.y, 1.0 - f.y), min(f.x, 1.0 - f.x) * 1.6);
+  let diag = abs(select(f.x, 1.0 - f.x, fract(uv.x * 0.5) >= 0.5) - f.y) * 0.7071;
+  return 1.0 - smoothstep(0.055, 0.075, min(edge, diag * 1.15));
+}
+
 fn cutout(s: Surface) -> f32 {
+  if (s.mat == MAT_LATTICE) { return lattice(s.uv); }
   if (s.mat != MAT_BEACON) { return 1.0; }
   let every = floor(s.inst.w / 8.0);
   let glow = s.tag == 1u;
@@ -264,6 +281,217 @@ fn lampDot(d: f32, r: f32, px: f32) -> vec2f {
   return vec2f(cov, k * k);
 }
 
+// signed distance to a rectangle of half-size h with corners rounded by r
+fn sdRect(q: vec2f, h: vec2f, r: f32) -> f32 {
+  let d = abs(q) - h + r;
+  return length(max(d, vec2f(0.0))) + min(max(d.x, d.y), 0.0) - r;
+}
+// coverage of the inside of a distance field, and of a line of half-width w
+// along its edge (fading out once it is thinner than a pixel)
+fn fillSd(d: f32, px: f32) -> f32 { return 1.0 - smoothstep(-px * 0.5, px * 0.5, d); }
+fn lineSd(d: f32, w: f32, px: f32) -> f32 {
+  return (1.0 - smoothstep(w - px * 0.5, w + px * 0.5, abs(d))) * saturate(w * 2.0 / px);
+}
+// seams at every multiple of cell (metres), half-width w
+fn seams(q: vec2f, cell: vec2f, w: f32, px: f32) -> f32 {
+  return max(1.0 - stripe(q.x / cell.x, 0.5 - w / cell.x, px / cell.x), 1.0 - stripe(q.y / cell.y, 0.5 - w / cell.y, px / cell.y));
+}
+// a thruster pad centred on c: a dark plate with two nozzle holes
+fn rcsPad(q: vec2f, c: vec2f, s: f32, px: f32) -> f32 {
+  let d = q - c;
+  let pad = fillSd(sdRect(d, vec2f(0.2, 0.13) * s, 0.03 * s), px);
+  let hole = fillSd(min(length(d - vec2f(0.09 * s, 0.0)), length(d + vec2f(0.09 * s, 0.0))) - 0.045 * s, px);
+  return pad * 0.5 + hole * 0.45;
+}
+// painted digits in a box from lo to hi (metres on the face), read left to right
+// whichever side of the ship they are on (dir = -1 mirrors the face's x)
+fn label7(q: vec2f, lo: vec2f, hi: vec2f, dir: f32, value: f32, digits: i32, px: f32) -> f32 {
+  var u = (q - lo) / (hi - lo);
+  if (dir < 0.0) { u.x = 1.0 - u.x; }
+  if (u.x < 0.0 || u.x > 1.0 || u.y < 0.0 || u.y > 1.0) { return 0.0; }
+  return number7(u, value, digits) * saturate(2.0 - px * 12.0 / (hi.y - lo.y));
+}
+// the shuttles' and tugs' hulls: q = model coordinates across the face,
+// fam = which way it faces (0 side, 1 top or bottom, 2 front or back), neg =
+// towards -x, -z or -y, part = 0 hull, 1 accent and fin, 2 wing, 3 engine
+// block.  Returns the colour change in rgb (multiplier) and a glow in w.
+fn shuttleSkin(q: vec2f, fam: u32, neg: bool, part: u32, id: f32, base: vec3f, px: f32) -> vec4f {
+  var c = base;
+  var glow = 0.0;
+  let dir = select(1.0, -1.0, neg);
+  if (part == 0u) {
+    c *= 1.0 - 0.4 * seams(q + vec2f(0.4, 0.0), vec2f(2.0, 1.25), 0.012, px);
+    if (fam == 0u) {
+      // side: a hatch with a handle and a status light, the registration, thruster pads
+      let hd = sdRect(q - vec2f(5.75, 0.05), vec2f(0.62, 1.05), 0.22);
+      c *= (1.0 - 0.6 * lineSd(hd, 0.03, px)) * (1.0 - 0.08 * fillSd(hd, px));
+      c *= 1.0 - 0.7 * fillSd(sdRect(q - vec2f(5.75 - 0.42 * dir, 0.05), vec2f(0.04, 0.16), 0.03), px);
+      let sill = fillSd(sdRect(q - vec2f(5.75, -1.18), vec2f(0.62, 0.05), 0.0), px);
+      let hz = step(0.5, fract((q.x + q.y) * 3.0));
+      c = mix(c, mix(vec3f(0.02), vec3f(0.9, 0.62, 0.05), hz), sill);
+      let ld = lampDot(length(q - vec2f(5.75, 1.3)), 0.06, px);
+      c = mix(c, vec3f(0.2, 1.0, 0.3), ld.x);
+      glow += ld.x * ld.y * 6.0;
+      let reg = label7(q, vec2f(-8.3, 0.25), vec2f(-4.9, 1.55), dir, 100.0 + id * 37.0, 3, px);
+      c = mix(c, vec3f(0.08, 0.09, 0.11), reg);
+      c *= 1.0 - rcsPad(q, vec2f(8.6, 0.6), 1.0, px) - rcsPad(q, vec2f(-8.3, 1.35), 1.0, px);
+    } else if (fam == 1u && !neg) {
+      // roof: a docking hatch, walkway lines, thruster pads by the nose
+      let r = length(q - vec2f(-1.8, 0.0));
+      c *= (1.0 - 0.55 * lineSd(r - 0.82, 0.05, px)) * (1.0 - 0.12 * fillSd(r - 0.7, px));
+      c *= 1.0 - 0.5 * fillSd(sdRect(q - vec2f(-1.8, 0.0), vec2f(0.32, 0.05), 0.04), px);
+      let walk = lineSd(abs(q.y) - 1.25, 0.03, px) * step(abs(q.x + 0.5), 6.5) * step(0.4, fract(q.x * 1.2));
+      c = mix(c, vec3f(0.85, 0.6, 0.06), walk);
+      c *= 1.0 - rcsPad(q.yx, vec2f(2.15, 6.6), 1.0, px) - rcsPad(q.yx, vec2f(-2.15, 6.6), 1.0, px);
+    } else if (fam == 1u) {
+      // belly: dark heat tiles and the doors of the landing gear
+      let tile = 1.0 - seams(q, vec2f(0.5, 0.5), 0.01, px) * 0.5;
+      let h = hash21(floor(q * 2.0));
+      c = mix(c, vec3f(0.07, 0.075, 0.08) * (0.8 + 0.4 * h) * tile, step(abs(q.y), 2.3));
+      let gear = min(sdRect(q - vec2f(4.2, 0.0), vec2f(0.9, 0.55), 0.1), sdRect(q - vec2f(-5.5, 0.0), vec2f(1.0, 1.4), 0.1));
+      c *= 1.0 - 0.6 * lineSd(gear, 0.025, px);
+    } else {
+      // stern: white lights either side of the engines; bow: thruster pads
+      if (neg) {
+        let ld = lampDot(length(vec2f(abs(q.x) - 2.45, q.y + 0.1)), 0.14, px);
+        c = mix(c, vec3f(1.0, 0.97, 0.9), ld.x);
+        glow += ld.x * ld.y * 22.0;
+      } else {
+        c *= 1.0 - rcsPad(vec2f(abs(q.x), q.y), vec2f(1.6, -0.1), 0.8, px);
+      }
+    }
+  } else if (part == 1u) {
+    // accent stripe and fin: a pinstripe and a roundel with the ship's number
+    c = mix(c, vec3f(0.85), lineSd(q.y + 0.1, 0.035, px) * step(f32(fam), 0.5));
+    if (fam == 0u && q.y > 1.9) {
+      let r = length(q - vec2f(-7.0, 3.1));
+      let ring = fillSd(r - 0.85, px) - fillSd(r - 0.7, px);
+      c = mix(c, vec3f(0.85), ring);
+      c = mix(c, vec3f(0.9), label7(q, vec2f(-7.3, 2.75), vec2f(-6.7, 3.45), dir, id + 1.0, 1, px));
+    }
+  } else if (part == 2u) {
+    // wing: panels, walkway lines by the root, red and green tips
+    c *= 1.0 - 0.4 * seams(q, vec2f(1.6, 1.3), 0.012, px);
+    if (fam == 1u) {
+      c *= 1.0 - 0.35 * lineSd(abs(q.y) - 3.3, 0.025, px);
+      let tip = smoothstep(5.55 - px, 5.55 + px, abs(q.y));
+      c = mix(c, select(vec3f(0.1, 0.55, 0.15), vec3f(0.7, 0.08, 0.05), q.y < 0.0), tip);
+    }
+  } else if (part == 3u) {
+    // engine block: cooling fins along it
+    c *= 0.75 + 0.35 * stripe(q.x * 4.0, 0.3, px * 4.0);
+  } else if (part == 4u) {
+    // the tug's cab: panels, a big number, a hatch, a striped bow
+    c *= 1.0 - 0.4 * seams(q, vec2f(2.5, 1.5), 0.02, px);
+    if (fam == 0u) {
+      c = mix(c, vec3f(0.07, 0.08, 0.1), label7(q, vec2f(21.4, -1.2), vec2f(26.6, 2.6), dir, 200.0 + id * 41.0, 3, px));
+      let hd = sdRect(q - vec2f(31.0, -1.6), vec2f(0.75, 1.3), 0.3);
+      c *= (1.0 - 0.6 * lineSd(hd, 0.04, px)) * (1.0 - 0.6 * fillSd(sdRect(q - vec2f(31.0 - 0.5 * dir, -1.6), vec2f(0.06, 0.22), 0.04), px));
+      let band = step(abs(q.y + 3.7), 0.35) * step(q.x, 29.8);
+      c = mix(c, mix(vec3f(0.03), vec3f(0.9, 0.62, 0.05), step(0.5, fract((q.x + q.y) * 0.8))), band);
+      c *= 1.0 - rcsPad(q, vec2f(32.0, 3.2), 2.0, px);
+    } else if (fam == 2u && !neg) {
+      let ch = step(0.5, fract((abs(q.x) - q.y) * 0.5));
+      c = mix(vec3f(0.03), vec3f(0.9, 0.62, 0.05), ch);
+      let ld = lampDot(length(q - vec2f(0.0, 0.7)), 0.3, px);
+      c = mix(c, vec3f(1.0, 0.97, 0.9), ld.x);
+      glow += ld.x * ld.y * 18.0;
+    } else if (fam == 1u && !neg) {
+      let r = length(q - vec2f(24.0, 0.0));
+      c *= (1.0 - 0.55 * lineSd(r - 1.4, 0.07, px)) * (1.0 - 0.12 * fillSd(r - 1.25, px));
+      c = mix(c, vec3f(0.85, 0.6, 0.06), lineSd(abs(q.y) - 4.0, 0.06, px) * step(0.4, fract(q.x * 0.6)));
+    }
+  } else if (part == 5u) {
+    // the spine: an open lattice of struts
+    let a = stripe((q.x + q.y) / 3.0, 0.07, px / 3.0);
+    let b = stripe((q.x - q.y) / 3.0, 0.07, px / 3.0);
+    let e = 1.0 - stripe(q.y / 3.0, 0.38, px / 3.0);
+    c = mix(vec3f(0.015, 0.017, 0.02), c, max(max(a, b), e));
+  } else if (part == 6u) {
+    c *= 1.0 - 0.4 * seams(q, vec2f(2.5, 1.5), 0.02, px);
+    let tip = smoothstep(7.6 - px, 7.6 + px, abs(q.y)) * step(f32(fam), 1.5);
+    c = mix(c, select(vec3f(0.1, 0.55, 0.15), vec3f(0.7, 0.08, 0.05), q.y < 0.0), tip);
+  } else {
+    // the tug's engine block: fins, and white stern lights at its corners
+    c *= 0.72 + 0.38 * stripe(q.x * 2.0, 0.3, px * 2.0);
+    if (fam == 2u && neg) {
+      let ld = lampDot(length(vec2f(abs(q.x) - 4.6, q.y - 3.6)), 0.32, px);
+      c = mix(c, vec3f(1.0, 0.97, 0.9), ld.x);
+      glow += ld.x * ld.y * 22.0;
+      c *= 1.0 - 0.5 * lineSd(length(q) - 3.55, 0.12, px);
+    }
+  }
+  return vec4f(c, glow);
+}
+
+// The blocks where the spokes meet the ring (10 m deep, 18 wide, 26 along
+// the axis), in model coordinates as for shuttleSkin: lit windows on the faces
+// towards the axis, an airlock on the faces along the ring, the spoke's number.
+fn blockSkin(q: vec2f, fam: u32, neg: bool, id: f32, base: vec3f, px: f32, t: f32) -> vec3f {
+  var c = base * (1.0 - 0.4 * seams(q, vec2f(3.0, 2.0), 0.02, px));
+  if (fam == 1u) {
+    // q = (across the ring, radial): two rows of windows, the number
+    let wq = vec2f(q.x / 2.6, (q.y + 1.0) / 2.4);
+    let win = stripe(wq.x, 0.3, px / 2.6) * stripe(wq.y, 0.2, px / 2.4) * step(abs(q.x), 7.5) * step(abs(q.y + 1.0), 2.4);
+    c = mix(c, vec3f(1.0, 0.8, 0.52) * 1.6, win);
+  } else if (fam == 2u) {
+    let hd = sdRect(q - vec2f(0.0, -4.0), vec2f(1.1, 1.5), 0.45);
+    c *= (1.0 - 0.6 * lineSd(hd, 0.04, px)) * (1.0 - 0.1 * fillSd(hd, px));
+    c = mix(c, vec3f(0.85, 0.65, 0.12), lineSd(abs(q.x) - 1.8, 0.04, px) * step(abs(q.y + 4.0), 1.6));
+    c = mix(c, vec3f(0.1, 0.11, 0.13), label7(q, vec2f(-1.5, 3.0), vec2f(1.5, 7.0), select(1.0, -1.0, !neg), id + 1.0, 1, px));
+  }
+  return c;
+}
+
+// A freight container's face of sz metres, from its corner (q in metres):
+// kind 0 side, 1 front end, 2 door end, 3 roof or floor.  Frame rails and
+// corner castings, corrugated walls, lock rods on the doors, numbers, and on
+// the convoys' containers the grapple's strap.
+fn containerSkin(q: vec2f, sz: vec2f, kind: u32, serial: f32, base: vec3f, px: f32, strap: bool) -> vec3f {
+  let cq = min(q, sz - q);
+  let edge = min(cq.x, cq.y);
+  var c = base;
+  // corrugation
+  let ribs = select(q.x, q.y, kind == 3u) / 0.6;
+  c *= 1.0 - 0.22 * (0.5 + 0.5 * sin(ribs * TAU)) * saturate(1.0 - px * 3.0);
+  let number = 4100.0 + serial * 173.0;
+  if (kind == 2u) {
+    // two door leaves, four lock rods with their cams and handles
+    let h = sz.x * 0.5;
+    c *= 1.0 - 0.7 * lineSd(q.x - h, 0.03, px);
+    let rx = abs(abs(q.x - h) - 0.26 * sz.x) - 0.1 * sz.x;
+    let rod = lineSd(rx, 0.06, px) * step(0.5, cq.y);
+    c = mix(c, vec3f(0.55, 0.57, 0.6), rod);
+    c *= 1.0 - 0.5 * lineSd(rx - 0.11, 0.03, px) * step(0.5, cq.y);
+    let cam = fillSd(sdRect(vec2f(rx, cq.y - 0.75), vec2f(0.13, 0.09), 0.03), px);
+    c = mix(c, vec3f(0.25, 0.26, 0.28), cam);
+    let handle = fillSd(sdRect(vec2f(rx + 0.25, q.y - 0.42 * sz.y), vec2f(0.22, 0.05), 0.04), px);
+    c = mix(c, vec3f(0.2, 0.21, 0.23), handle);
+    c = mix(c, vec3f(0.95), label7(q, vec2f(0.56 * sz.x, sz.y - 1.4), vec2f(0.78 * sz.x, sz.y - 0.7), 1.0, number, 4, px));
+  } else if (kind == 0u) {
+    // the owner's band and a big number up top, a placard down low
+    c = mix(c, vec3f(0.92), label7(q, vec2f(0.5, sz.y - 2.4), vec2f(4.4, sz.y - 1.0), 1.0, number, 4, px));
+    let band = step(abs(q.y - sz.y + 3.2), 0.18) * step(0.6, q.x) * step(q.x, sz.x - 0.6);
+    c = mix(c, vec3f(0.92), band);
+    let dmd = abs(q.x - sz.x + 1.5) + abs(q.y - 1.6) - 0.55;
+    c = mix(c, mix(vec3f(0.95), vec3f(0.95, 0.45, 0.05), step(0.0, q.y - 1.6)), fillSd(dmd, px));
+  }
+  // the grapple's strap round the middle, over the roof and down the sides
+  if (strap && (kind == 0u || kind == 3u)) {
+    let sq = select(q.x, q.y, kind == 3u) - 5.0;
+    let strapCov = fillSd(abs(sq) - 0.3, px);
+    c = mix(c, vec3f(0.62, 0.5, 0.16) * (1.0 - 0.4 * lineSd(abs(sq) - 0.22, 0.02, px)), strapCov);
+    c *= 1.0 - 0.45 * lineSd(abs(sq) - 0.33, 0.03, px);
+  }
+  // frame rails and corner castings, with their slots
+  let rail = 1.0 - smoothstep(0.28 - px * 0.5, 0.28 + px * 0.5, edge);
+  c = mix(c, base * 0.62, rail);
+  let casting = fillSd(max(cq.x, cq.y) - 0.45, px);
+  c = mix(c, vec3f(0.16, 0.17, 0.18), casting);
+  c *= 1.0 - 0.8 * fillSd(sdRect(cq - vec2f(0.24, 0.24), vec2f(0.1, 0.05), 0.045), px);
+  return c;
+}
+
 fn surface(sIn: Surface) -> Surface {
   var s = sIn;
   let fwP = fwidth(s.pos);
@@ -292,8 +520,24 @@ fn surface(sIn: Surface) -> Surface {
     let warm = mix(vec3f(1.0, 0.7, 0.4), vec3f(0.78, 0.9, 1.0), step(0.82, hash11(id * 3.1 + 0.2)));
     let seam = max(1.0 - stripe(X / 14.0, 0.5 - 0.03, fX / 14.0), 1.0 - stripe(rows + 0.5, 0.5 - 0.02, fwU.y * 2.0));
     let rib = (1.0 - stripe(ub * 6.0 + 0.5, 0.5 - 0.012, fwU.x * 6.0));
-    s.color = mix(s.color * (1.0 - 0.45 * seam) * (1.0 - 0.35 * rib), mix(vec3f(0.012, 0.016, 0.024), warm, lit), win);
-    s.emissive = win * lit * 2.2;
+    // inside each window a room: brighter under its ceiling (towards the axis,
+    // since the spin makes "down" outward) and something standing on its floor
+    let outward = select(-1.0, 1.0, dot(s.n, ST_Z) < 0.0);
+    let wy = (fract(rows) - 0.5) / 0.22 * outward;
+    let wx = (fract(X) - 0.5) / 0.4;
+    let ceilLight = 0.55 + 0.9 * smoothstep(0.0, -0.45, wy);
+    let hs = hash11(id * 0.71 + 3.0);
+    let thing = step(abs(wx - (hs - 0.5) * 0.6), 0.12 + 0.2 * hs) * step(0.5 - 0.35 * fract(hs * 7.0), wy);
+    let room = warm * ceilLight * (1.0 - 0.75 * thing * saturate(1.0 - fX * 2.0));
+    let frame = stripe(X, 0.25, fX) * stripe(rows, 0.135, fwU.y * 2.0) - win0;
+    // a handrail between the rows of windows, with its shadow
+    let rm = (fract(rows + 0.5) - 0.5) * 8.0;
+    let rail = lineSd(rm - 0.4 * outward, 0.035, px);
+    let railShade = lineSd(rm - 0.5 * outward, 0.03, px);
+    var hull = s.color * (1.0 - 0.45 * seam) * (1.0 - 0.35 * rib) * (1.0 - 0.5 * frame) * (1.0 - 0.5 * railShade);
+    hull = mix(hull, vec3f(0.85, 0.65, 0.12), rail);
+    s.color = mix(hull, mix(vec3f(0.012, 0.016, 0.024), room, lit), win);
+    s.emissive = win * lit * 2.2 * ceilLight;
     s.gloss = mix(s.gloss, 0.8, win);
   } else if (m == MAT_RING_INNER) {
     let ub = fract(s.uv.x - s.t / SPIN);
@@ -317,8 +561,22 @@ fn surface(sIn: Surface) -> Surface {
       let red = fract(k * 0.5) > 0.25;
       let col = select(vec3f(1.0, 0.95, 0.9), vec3f(1.0, 0.12, 0.06), red);
       let on = step(fract(s.t / 2.0 + select(0.0, 0.5, red)), 0.1);
+      // in metres on the face: an airlock with a porthole and a striped
+      // frame, two handrails, a vent, and the section's number
+      let hd = sdRect(vec2f(lx - 14.0, ly), vec2f(1.0, 1.4), 0.45);
+      let frameZ = step(0.0, hd) * step(hd, 0.28);
+      s.color = mix(s.color, mix(vec3f(0.03), vec3f(0.9, 0.62, 0.05), step(0.5, fract((lx + ly) * 1.4))), frameZ);
+      s.color *= (1.0 - 0.6 * lineSd(hd, 0.03, px)) * (1.0 - 0.6 * fillSd(sdRect(vec2f(lx - 14.75, ly), vec2f(0.05, 0.3), 0.04), px));
+      let port = lampDot(length(vec2f(lx - 14.0, ly - 0.55)), 0.28, px);
+      s.color = mix(s.color, vec3f(1.0, 0.8, 0.5), port.x);
+      let rail = lineSd(abs(ly) - 5.3, 0.04, px);
+      s.color *= 1.0 - 0.5 * lineSd(abs(ly) - 5.45, 0.035, px);
+      s.color = mix(s.color, vec3f(0.85, 0.65, 0.12), rail);
+      let vent = fillSd(sdRect(vec2f(lx + 9.0, ly), vec2f(1.6, 0.7), 0.1), px);
+      s.color *= 1.0 - vent * (0.5 + 0.3 * stripe(lx * 5.0, 0.25, px * 5.0));
+      s.color = mix(s.color, vec3f(0.08, 0.09, 0.11), label7(vec2f(lx, ly), vec2f(-23.0, -1.6), vec2f(-17.0, 1.6), 1.0, k + 1.0, 2, px));
       s.color = mix(s.color, col, ld.x);
-      s.emissive = ld.x * (on * 30.0 + 1.0) * ld.y;
+      s.emissive = ld.x * (on * 30.0 + 1.0) * ld.y + port.x * port.y * 3.0;
     }
   } else if (m == MAT_HUB) {
     let ub = fract(s.uv.x - s.t / SPIN);
@@ -327,8 +585,22 @@ fn surface(sIn: Surface) -> Surface {
     s.color *= tint * (1.0 - 0.4 * (1.0 - stripe(X, 0.5 - 0.02, fX)));
     let lx = (fract(ub * 6.0 + 0.5) - 0.5) * 39.8;
     let ld = lampDot(abs(lx), 1.2, px) * stripe(s.uv.y * 6.0, 0.25, fwU.y * 6.0);
+    // on the collar's outer drum (the third piece of its profile): two rows of
+    // lit windows, and an airlock half way between each pair of spokes
+    let sg = s.uv.y * 6.0;
+    if (sg > 2.0 && sg < 3.0) {
+      let zm = (sg - 2.0) * 26.0 - 13.0;
+      let am = ub * 238.8;
+      let win = stripe(am / 3.0, 0.2, px / 3.0) * fillSd(abs(abs(zm) - 6.0) - 0.9, px) * step(4.5, abs(lx)) * step(abs(lx), 16.5);
+      let h = hash11(floor(am / 3.0) + step(0.0, zm) * 97.0);
+      s.color = mix(s.color, mix(vec3f(1.0, 0.78, 0.48), vec3f(0.75, 0.88, 1.0), step(0.75, h)), win);
+      s.emissive += win * select(2.0, 0.2, h < 0.15);
+      let hd = sdRect(vec2f(19.9 - abs(lx), zm), vec2f(1.0, 1.5), 0.45);
+      s.color *= (1.0 - 0.6 * lineSd(hd, 0.04, px)) * (1.0 - 0.1 * fillSd(hd, px));
+      s.color = mix(s.color, vec3f(0.85, 0.65, 0.12), lineSd(abs(19.9 - abs(lx)) - 1.7, 0.04, px) * step(abs(zm), 1.6));
+    }
     s.color = mix(s.color, vec3f(0.35, 0.85, 1.0), ld.x);
-    s.emissive = ld.x * 12.0 * ld.y;
+    s.emissive = max(s.emissive, ld.x * 12.0 * ld.y);
   } else if (m == MAT_SPOKE) {
     // light rings running outward along the spokes
     let y = s.uv.y * 19.0;
@@ -336,10 +608,48 @@ fn surface(sIn: Surface) -> Surface {
     let on = step(0.8, fract(floor(y) / 5.0 - s.t * 0.5));
     s.color = mix(s.color, vec3f(0.35, 0.85, 1.0), band * (0.3 + 0.7 * on));
     s.emissive = band * (on * 9.0 + 0.15);
+    // two handrails along the spoke
+    let hr = stripe(s.uv.x * 2.0 + 0.25, 0.012, fwU.x * 2.0);
+    s.color = mix(s.color, vec3f(0.85, 0.65, 0.12), hr * (1.0 - band));
+  } else if (m == MAT_BLOCK) {
+    s.color = blockSkin(s.uv * 8.0, s.tag & 3u, (s.tag & 4u) != 0u, f32(s.tag >> 5u), s.color, px, s.t);
   } else if (m == MAT_SOLAR) {
+    // cells in a light grid, each cut in four with thin silver lines, and a
+    // busbar every sixth row
     let cell = stripe(s.uv.x, 0.44, fwU.x) * stripe(s.uv.y, 0.42, fwU.y);
-    s.color = mix(vec3f(0.5, 0.52, 0.56), vec3f(0.012, 0.03, 0.085), cell);
+    let sub = 1.0 - 0.6 * seams(s.uv * 2.0, vec2f(1.0), 0.012, max(fwU.x, fwU.y) * 2.0);
+    let bus = 1.0 - stripe(s.uv.y / 6.0, 0.5 - 0.06 / 6.0, fwU.y / 6.0);
+    s.color = mix(vec3f(0.5, 0.52, 0.56), vec3f(0.012, 0.03, 0.085) * (0.8 + 0.4 * hash21(floor(s.uv))), cell * sub);
+    s.color = mix(s.color, vec3f(0.62, 0.55, 0.38), bus);
     s.gloss = mix(0.3, 0.72, cell);
+  } else if (m == MAT_RADIATOR) {
+    // radiator panels: coolant tubes in a frame, headers top and bottom
+    let tubes = stripe(s.uv.x * 40.0, 0.12, fwU.x * 40.0);
+    let frame = seams(s.uv * vec2f(4.0, 5.0), vec2f(1.0), 0.012, max(fwU.x * 4.0, fwU.y * 5.0));
+    let header = 1.0 - stripe(s.uv.y, 0.47, fwU.y);
+    s.color *= (1.0 - 0.25 * tubes) * (1.0 - 0.45 * frame);
+    s.color = mix(s.color, vec3f(0.55, 0.57, 0.6), header);
+    s.gloss = mix(s.gloss, 0.7, tubes);
+  } else if (m == MAT_PORT) {
+    // a docking port: a striped seal ring, the hatch with its bolts and
+    // handles, a target cross and a lamp that shows when it is free
+    let q = (s.uv - 0.5) * 2.0;
+    let r = length(q);
+    let pr = px * 2.0 / s.aux;
+    let ang = atan2(q.y, q.x);
+    let ring = step(0.8, r) * step(r, 0.96);
+    s.color = mix(s.color, mix(vec3f(0.03), vec3f(0.9, 0.62, 0.05), step(0.5, fract(ang / TAU * 16.0))), ring);
+    s.color *= 1.0 - 0.7 * lineSd(r - 0.62, 0.025, pr);
+    let bolt = lineSd(length(vec2f(r - 0.7, fract(ang / TAU * 12.0 + 0.5) - 0.5)), 0.03, pr);
+    s.color *= 1.0 - 0.6 * bolt;
+    let cross = min(abs(q.x), abs(q.y));
+    s.color *= 1.0 - 0.7 * lineSd(cross, 0.02, pr) * step(r, 0.5) * step(0.1, r);
+    let hd = fillSd(sdRect(vec2f(abs(q.x) - 0.38, q.y), vec2f(0.035, 0.12), 0.03), pr);
+    s.color = mix(s.color, vec3f(0.85, 0.65, 0.1), hd);
+    let ld = lampDot(r, 0.06, pr);
+    let free = step(0.5, fract(s.t / 3.0));
+    s.color = mix(s.color, mix(vec3f(1.0, 0.2, 0.1), vec3f(0.2, 1.0, 0.35), free), ld.x);
+    s.emissive = ld.x * ld.y * 10.0;
   } else if (m == MAT_CLOCK) {
     let on = clock7((s.uv - vec2f(0.05, 0.14)) / vec2f(0.9, 0.72), s.t);
     s.color = mix(vec3f(0.01, 0.012, 0.016), vec3f(1.0, 0.6, 0.14), on);
@@ -385,17 +695,45 @@ fn surface(sIn: Surface) -> Surface {
     let on = step(fract(s.t * 0.75), 0.1);
     s.emissive = on * 26.0 + 0.4;
   } else if (m == MAT_WINDOWS) {
+    // a lit room behind every pane: a ceiling light, a few dark or bluish rooms, a frame
     let win = stripe(s.uv.x, 0.3, fwU.x) * stripe(s.uv.y, 0.3, fwU.y);
-    s.color = mix(s.color, vec3f(1.0, 0.78, 0.48), win);
-    s.emissive = win * 4.0;
+    let frame = stripe(s.uv.x, 0.36, fwU.x) * stripe(s.uv.y, 0.36, fwU.y) - win;
+    let h = hash21(floor(s.uv) + 0.37);
+    let room = mix(vec3f(1.0, 0.78, 0.48), vec3f(0.72, 0.86, 1.0), step(0.78, h));
+    let ceil = 0.55 + 0.9 * smoothstep(0.3, 0.75, fract(s.uv.y)) * saturate(1.5 - fwU.y * 3.0);
+    let on = select(1.0, 0.12, h < 0.1);
+    s.color = mix(s.color * (1.0 - 0.6 * frame), room, win);
+    s.emissive = win * 4.0 * on * mix(1.0, ceil, 0.8);
+  } else if (m == MAT_SHIP || m == MAT_TUG) {
+    let sc = select(4.0, 8.0, m == MAT_TUG);
+    let part = (s.tag >> 3u) & 3u;
+    let sk = shuttleSkin(s.uv * sc, s.tag & 3u, (s.tag & 4u) != 0u, select(part, part + 4u, m == MAT_TUG), f32(s.tag >> 5u), s.color, px);
+    s.color = sk.rgb;
+    s.emissive = max(s.emissive, sk.w);
+  } else if (m == MAT_CANOPY) {
+    // cockpit glazing: four panes in a dark frame, lit from inside
+    let u = s.uv.x * 4.0;
+    let pane = stripe(u, 0.42, fwU.x * 4.0) * stripe(s.uv.y, 0.36, fwU.y);
+    s.color = mix(vec3f(0.06, 0.065, 0.075), s.color * (0.55 + 0.6 * s.uv.y), pane);
+    s.emissive *= pane * (0.6 + 0.6 * (1.0 - s.uv.y));
+    s.gloss = mix(0.35, 0.95, pane);
+  } else if (m == MAT_LENS) {
+    // Fresnel rings on a beacon's lens
+    s.emissive *= 0.65 + 0.7 * stripe(s.uv.y * 9.0, 0.3, fwU.y * 9.0);
+  } else if (m == MAT_CNT) {
+    s.color = containerSkin(s.uv * 10.0, vec2f(10.0), s.tag & 7u, f32(s.tag >> 3u), s.color, px, true);
   } else if (m == MAT_GLOW) {
     // additive glows fade towards their silhouette, so a sphere becomes a soft halo
     let k = abs(dot(s.n, s.view));
     s.emissive *= k * k * k * 1.5;
   } else if (m == MAT_CONTAINER) {
-    let r = stripe(s.uv.x * 14.0, 0.25, fwU.x * 14.0);
-    let e = 1.0 - stripe(s.uv.y, 0.46, fwU.y);
-    s.color *= (0.86 + 0.2 * r) * (1.0 - 0.35 * e);
+    // the depot's racks: 18 by 6 by 6 m boxes, numbered by the copy
+    let kind = s.tag & 7u;
+    let sz = select(vec2f(18.0, 6.0), vec2f(6.0), kind == 1u || kind == 2u);
+    s.color = containerSkin(s.uv * sz, sz, kind, s.inst.w, s.color, px, false);
+  } else if (m == MAT_FOIL) {
+    // gold foil, crinkled, in panels
+    s.color *= (0.7 + 0.6 * noise2(s.uv * vec2f(7.0, 9.0))) * (1.0 - 0.35 * seams(s.uv * 3.0, vec2f(1.0), 0.01, max(fwU.x, fwU.y) * 3.0));
   }
   return s;
 }
@@ -561,8 +899,37 @@ function beacon(list, pos, phase, every, color, { r = 1.8 } = {}) {
   list.lamps.push({ transform, tint: color, data: ph + 8 * every });
 }
 
+// Seen from near by a beacon is a buoy: a ribbed lens inside the lamp, a band
+// and four struts round it, a cap with an aerial, and a base with two small
+// solar fins.  Only the lens takes the lane's colour.
+const beaconDetail = (() => {
+  const metal = '#5f656e';
+  const g = new Geo();
+  g.add(Geo.sphere(0.76, 10, 5).color('#ffffff').emissive(1.6).gloss(0.8).mat(MAT.LENS));
+  const parts = new Geo();
+  parts.add(Geo.cylinder(1.07, 0.14, 12, { caps: false }).translate(0, 0, -0.07));
+  for (let k = 0; k < 4; k++) {
+    const a = k * Math.PI / 2 + Math.PI / 4, c = Math.cos(a), sn = Math.sin(a);
+    const P = (r, z) => [r * c, r * sn, z];
+    const w = [-sn * 0.035, c * 0.035, 0];
+    const strip = (p0, p1) => Geo.quad(v3.sub(p0, w), v3.add(p0, w), v3.add(p1, w), v3.sub(p1, w)).doubleSided();
+    parts.add(strip(P(1.07, 0.07), P(0.8, 0.75)));
+    parts.add(strip(P(0.8, 0.75), P(0.3, 1.04)));
+    parts.add(strip(P(1.07, -0.07), P(0.8, -0.75)));
+    parts.add(strip(P(0.8, -0.75), P(0.45, -1.0)));
+  }
+  parts.add(Geo.cone(0.34, 0.25, 8).translate(0, 0, 0.98));
+  parts.add(Geo.merge(Geo.triangle([-0.03, 0, 1.2], [0.03, 0, 1.2], [0, 0, 2.3]), Geo.triangle([0, -0.03, 1.2], [0, 0.03, 1.2], [0, 0, 2.3])).doubleSided());
+  parts.color(metal);
+  parts.add(Geo.lathe([[0.01, -1.9], [0.32, -1.9], [0.46, -1.76], [0.46, -1.1], [0.56, -1.0], [0.2, -0.88]], 6, { smooth: false }).color('#7a8089'));
+  for (const sx of [-1, 1]) parts.add(Geo.box(0.9, 0.03, 0.42).translate(sx * 0.95, 0, -1.45).color('#ffffff').mat(MAT.SOLAR));
+  g.add(parts.untinted());
+  return g;
+})();
+
 function addBeacons(b, list) {
   b.instances(beaconHousing, list.housings);
+  b.instances(beaconDetail, list.housings, { within: 80, solid: false });
   // (the lamps are only there part of the time, so they are not solid, as
   // anything with a time window is not)
   b.instances(beaconLamp, list.lamps, { solid: false });
@@ -571,39 +938,173 @@ function addBeacons(b, list) {
 // ---------------------------------------------------------------------------
 // Vehicles (all modelled with +Y forward and +Z up)
 
-function shuttle(accent) {
+// What the hull shaders (shuttleSkin, containerSkin) are told about a flat
+// mesh, in model coordinates: uv = the two coordinates across each face, in
+// units of `scale` metres, and a tag: bits 0-1 which way the face looks (0
+// side, 1 top or bottom, 2 front or back), bit 2 set for -x, -z or -y, bits
+// 3-4 which part of the ship it is, bits 5-7 which ship.  Patterns painted
+// from these cost no triangles, which matters on anything that moves.
+function hullUV(g, scale, part, id) {
+  for (let i = 0; i < g.vertexCount; i++) {
+    const n = g.n.slice(i * 3, i * 3 + 3), p = g.p.slice(i * 3, i * 3 + 3), a = n.map(Math.abs);
+    let fam, neg, u, v;
+    if (a[0] >= a[1] && a[0] >= a[2]) { fam = 0; neg = n[0] < 0; u = p[1]; v = p[2]; }
+    else if (a[2] >= a[1]) { fam = 1; neg = n[2] < 0; u = p[1]; v = p[0]; }
+    else { fam = 2; neg = n[1] < 0; u = p[0]; v = p[2]; }
+    g.uv[i * 2] = u / scale; g.uv[i * 2 + 1] = v / scale;
+    g.x[i * 2 + 1] = fam + (neg ? 4 : 0) + part * 8 + id * 32;
+  }
+  return g;
+}
+
+// A container's faces for containerSkin: kind (0 side, 1 front end, 2 door
+// end, 3 roof or floor) in bits 0-2 and a serial number in bits 3-7.
+function containerTags(g, serial) {
+  const kinds = [0, 0, 1, 2, 3, 3]; // Geo.box's faces: +x, -x, +y, -y, +z, -z
+  for (let i = 0; i < g.vertexCount; i++) g.x[i * 2 + 1] = kinds[Math.floor(i / 4)] + serial * 8;
+  return g;
+}
+
+const SHIP_SCALE = 4, TUG_SCALE = 8; // metres per unit of uv (MAT.SHIP, MAT.TUG)
+
+function shuttle(accent, id) {
   const g = new Geo();
+  const ship = (geo, part) => hullUV(geo, SHIP_SCALE, part, id).mat(MAT.SHIP);
   const prof = [[-9, -1.5], [5, -1.5], [9.5, -0.6], [10.5, 0.4], [7.5, 1.9], [-8, 2.1], [-9.5, 1.0]];
-  g.add(sideHull(prof, 5.6).color('#d9dbe0').gloss(0.35));
-  g.add(Geo.box(5.75, 10, 0.6).translate(0, -1.5, -0.3).color(accent));
+  g.add(ship(sideHull(prof, 5.6), 0).color('#d9dbe0').gloss(0.35));
+  g.add(ship(Geo.box(5.75, 10, 0.6).translate(0, -1.5, -0.3), 1).color(accent));
   g.add(Geo.box(5.8, 7, 0.8).translate(0, 0.5, 0.9).mat(MAT.WINDOWS).uvTransform(6, 1).color('#26303a'));
-  g.add(Geo.box(3.8, 0.4, 1.0).rotateX(-0.75).translate(0, 8.95, 1.2).color('#a8dcff').emissive(2.5).gloss(0.9));
-  g.add(Geo.box(13, 3.2, 0.35).translate(0, -5.5, -0.6).color('#9aa0a8'));
-  g.add(Geo.box(0.35, 3.5, 2.6).translate(0, -7, 3.1).color(accent));
-  g.add(Geo.box(4.4, 2.6, 2.4).translate(0, -10.2, 0.2).color('#4a4f57'));
-  g.add(Geo.disc(1.0, 6).rotateX(Math.PI / 2).translate(-1.1, -11.55, 0.2).color('#bfe6ff').emissive(16));
-  g.add(Geo.disc(1.0, 6).rotateX(Math.PI / 2).translate(1.1, -11.55, 0.2).color('#bfe6ff').emissive(16));
-  g.add(Geo.cylinder(1.6, 9, 6, { r2: 0.2, caps: false }).rotateX(Math.PI / 2).translate(0, -11.6, 0.2)
-    .color([0.3, 0.55, 1.0]).emissive(4).additive().mat(MAT.GLOW));
+  g.add(Geo.box(3.8, 0.4, 1.0).rotateX(-0.75).translate(0, 8.95, 1.2).color('#a8dcff').emissive(2.5).gloss(0.9).mat(MAT.CANOPY));
+  g.add(ship(Geo.box(13, 3.2, 0.35).translate(0, -5.5, -0.6), 2).color('#9aa0a8'));
+  g.add(ship(Geo.box(0.35, 3.5, 2.6).translate(0, -7, 3.1), 1).color(accent));
+  g.add(ship(Geo.box(4.4, 2.6, 2.4).translate(0, -10.2, 0.2), 3).color('#4a4f57'));
+  g.add(engineDiscs(-11.52, 0.5));
   g.add(navLight(0.35, '#ff2a1a').translate(-6.5, -5.5, -0.6));
   g.add(navLight(0.35, '#22ff66').translate(6.5, -5.5, -0.6));
   g.add(navLight(0.3, '#ffffff', 1).mat(MAT.BLINK).translate(0, -7.5, 4.5));
   return g;
 }
 
-function freighter(colors) {
+// The exhaust and the glow in the engines, kept apart from the hull so that
+// addShuttle can change them with the shuttle's speed: the plume is scaled,
+// and the bright discs slide out of the engine block when it is under way and
+// back into it, behind the dim discs that are part of the hull, when it stops.
+// All three are moved by matrices only, so each is stored once.
+const SHUTTLE_TAIL = [0, -11.6, 0.2];
+const engineDiscs = (y, e) => Geo.merge(...[-1.15, 1.15].map((x) => Geo.disc(0.78, 6).rotateX(Math.PI / 2).translate(x, y, 0.2))).color('#bfe6ff').emissive(e);
+const shuttleFires = () => engineDiscs(-11.6, 16);
+const shuttlePlume = () => Geo.cylinder(1.6, 9, 6, { r2: 0.2, caps: false }).rotateX(Math.PI / 2).translate(...SHUTTLE_TAIL)
+  .color([0.3, 0.55, 1.0]).emissive(4).additive().mat(MAT.GLOW);
+const SHUTTLE_PLUME = shuttlePlume(), SHUTTLE_FIRES = shuttleFires(); // one of each for all the shuttles
+
+// Small parts seen only from near by: the engine bells, two aerials, the
+// hatch collar and the thruster blocks by the nose.
+function shuttleDetail() {
   const g = new Geo();
-  g.add(Geo.box(3, 50, 3).translate(0, 0, 0).color('#5d636b'));
-  g.add(sideHull([[22, -4.5], [30, -4.5], [33.5, -1.5], [33, 3], [26, 5.5], [21, 5.5]], 12).color('#cfd2d6').gloss(0.3));
+  for (const x of [-1.15, 1.15]) {
+    g.add(Geo.cylinder(0.8, 1.05, 6, { r2: 1.02, caps: false }).rotateX(Math.PI / 2).translate(x, -11.45, 0.2).color('#2c2f34').gloss(0.55));
+  }
+  const whip = (base, tip, w) => Geo.merge(
+    Geo.triangle(v3.add(base, [-w, 0, 0]), v3.add(base, [w, 0, 0]), tip),
+    Geo.triangle(v3.add(base, [0, -w, 0]), v3.add(base, [0, w, 0]), tip),
+  ).doubleSided().color('#33373d');
+  g.add(whip([1.5, 2.6, 1.9], [1.5, 1.2, 3.9], 0.05));
+  g.add(whip([-1.5, -2.5, -1.45], [-1.5, -3.6, -2.5], 0.04));
+  // the collar round the roof hatch, and thruster blocks on the painted pads
+  g.add(Geo.cylinder(0.95, 0.22, 8, { caps: false }).translate(0, -1.8, 1.98).color('#9aa0a8').gloss(0.4));
+  for (const x of [-2.86, 2.86]) g.add(Geo.box(0.12, 0.42, 0.28).translate(x, 8.6, 0.6).color('#3a3f46'));
+  return g;
+}
+
+const SHUTTLE_DETAIL = shuttleDetail(); // (one mesh for all of them)
+
+// Detail that rides on a moving object whose keys are `times`.  Its keys are
+// the object's own, with any interval longer than `span` metres cut into
+// pieces by interpolating between them (the object's vertices move in
+// straight lines between its keys, so the detail stays exactly where it
+// belongs), and it is added as runs of keys no more than `span` apart, each a
+// call of its own: `within` is measured to the box of a run, and a run that
+// went a long way would be drawn from far away.  (This costs a few keys more
+// than one call with the object's own keys would.)
+function addRiding(b, geo, times, tf, within, span) {
+  const mats = new Map(times.map((t) => [t, tf(t)]));
+  const pos = (t) => { const m = mats.get(t); return [m[12], m[13], m[14]]; };
+  const keys = [times[0]];
+  for (let i = 1; i < times.length; i++) {
+    const t0 = times[i - 1], t1 = times[i], m0 = mats.get(t0), m1 = mats.get(t1);
+    const n = Math.ceil(v3.dist(pos(t0), pos(t1)) / span);
+    for (let k = 1; k < n; k++) {
+      const t = t0 + (t1 - t0) * k / n;
+      mats.set(t, m0.map((v, j) => v + (m1[j] - v) * k / n));
+      keys.push(t);
+    }
+    keys.push(t1);
+  }
+  const transform = (t) => mats.get(t);
+  for (let start = 0; start < keys.length - 1;) {
+    let end = start + 1;
+    while (end + 1 < keys.length && v3.dist(pos(keys[start]), pos(keys[end + 1])) <= span) end++;
+    b.dynamic(geo, { times: keys.slice(start, end + 1), transform, caps: 'none', within });
+    start = end;
+  }
+}
+
+// A shuttle on its way: the hull, the exhaust scaled by speed, and the detail.
+function addShuttle(b, accent, id, tf, distAt) {
+  const times = adaptiveTimes(tf, 0, PERIOD, { size: 10, tolerance: 0.3, maxStep: 8 });
+  // The exhaust is full length and the engines full bright at 60 m/s and
+  // more; standing still, a stub and a dim glow.
+  const thrust = (t) => Math.min(1, Math.abs(distAt(t + 0.05) - distAt(t - 0.05)) / 0.1 / 60);
+  b.dynamic(shuttle(accent, id), { times, transform: tf, caps: 'none' });
+  const plume = (t) => {
+    const k = thrust(t);
+    return m4.mul(tf(t), m4.translation(...SHUTTLE_TAIL), m4.scaling(0.25 + 0.75 * k, 0.04 + 0.96 * k, 0.25 + 0.75 * k), m4.translation(...SHUTTLE_TAIL.map((v) => -v)));
+  };
+  b.dynamic(SHUTTLE_PLUME, { times, transform: plume, caps: 'none' });
+  // (from a third of full thrust up the bright discs are out in front of the
+  // dim ones; below that they are behind them or inside the engine block)
+  const fires = (t) => m4.mul(tf(t), m4.translation(0, 0.12 * (1 - thrust(t)), 0));
+  b.dynamic(SHUTTLE_FIRES, { times, transform: fires, caps: 'none' });
+  addRiding(b, SHUTTLE_DETAIL, times, tf, 90, 500);
+}
+
+// The tug's engine bell, radar mast and grapples, seen only from near by.
+function freighterDetail() {
+  const g = new Geo();
+  g.add(Geo.cylinder(3.35, 3.2, 8, { r2: 4.3, caps: false }).rotateX(Math.PI / 2).translate(0, -32.9, 0).color('#2c2f34').gloss(0.5));
+  g.add(Geo.merge(
+    Geo.triangle([3.9, 25.2, 5.3], [4.1, 25.2, 5.3], [4.0, 24.2, 10.5]),
+    Geo.triangle([4.0, 25.1, 5.3], [4.0, 25.3, 5.3], [4.0, 24.2, 10.5]),
+  ).doubleSided().color('#33373d'));
+  // the grapples: a band over the middle of each container and down both
+  // sides, standing a hand's breadth off it (over the painted strap)
+  for (let i = 0; i < 4; i++) {
+    const y = 13 - i * 11.5, h = 5.15, w = 0.35;
+    const P = (x, z, dy) => [x, y + dy, z];
+    const band = new Geo();
+    band.add(Geo.quad(P(-h, h, -w), P(h, h, -w), P(h, h, w), P(-h, h, w)));
+    for (const x of [-h, h]) band.add(Geo.quad(P(x, 1.5, -w), P(x, h, -w), P(x, h, w), P(x, 1.5, w)));
+    g.add(band.doubleSided().color('#6d6450').gloss(0.4));
+  }
+  return g;
+}
+
+const FREIGHTER_DETAIL = freighterDetail();
+
+function freighter(colors, id) {
+  const g = new Geo();
+  const tug = (geo, part) => hullUV(geo, TUG_SCALE, part, id).mat(MAT.TUG);
+  g.add(tug(Geo.box(3, 50, 3), 1).color('#5d636b'));
+  g.add(tug(sideHull([[22, -4.5], [30, -4.5], [33.5, -1.5], [33, 3], [26, 5.5], [21, 5.5]], 12), 0).color('#cfd2d6').gloss(0.3));
   g.add(Geo.box(12.1, 4, 1.4).translate(0, 29.5, 2.2).mat(MAT.WINDOWS).uvTransform(6, 1).color('#22303a'));
   colors.forEach((c, i) => {
-    g.add(Geo.box(10, 10, 10).translate(0, 13 - i * 11.5, 0).color(c).mat(MAT.CONTAINER));
+    g.add(containerTags(Geo.box(10, 10, 10), id * 4 + i).translate(0, 13 - i * 11.5, 0).color(c).mat(MAT.CNT));
   });
-  g.add(Geo.box(18, 5, 0.4).translate(0, -24, 0).color('#a9adb3'));
-  g.add(Geo.box(11, 8, 9).translate(0, -29, 0).color('#474c54'));
+  g.add(tug(Geo.box(18, 5, 0.4).translate(0, -24, 0), 2).color('#a9adb3'));
+  g.add(tug(Geo.box(11, 8, 9).translate(0, -29, 0), 3).color('#474c54'));
   g.add(Geo.disc(3.2, 8).rotateX(Math.PI / 2).translate(0, -33.05, 0).color('#c2e4ff').emissive(14));
   g.add(Geo.cylinder(4.5, 22, 6, { r2: 0.6, caps: false }).rotateX(Math.PI / 2).translate(0, -33.1, 0)
-    .color([0.28, 0.5, 1.0]).emissive(3).additive().mat(MAT.GLOW));
+    .color([0.3, 0.55, 1.0]).emissive(3).additive().mat(MAT.GLOW));
   g.add(navLight(0.6, '#ff2a1a').translate(-9, -24, 0));
   g.add(navLight(0.6, '#22ff66').translate(9, -24, 0));
   g.add(navLight(0.5, '#ffffff', 1).mat(MAT.BLINK).translate(0, 26, 6.2));
@@ -612,8 +1113,8 @@ function freighter(colors) {
 
 function satellite(accent) {
   const g = new Geo();
-  g.add(Geo.box(3, 3, 3.6).color('#c9a227').gloss(0.7));
-  g.add(Geo.box(15, 2.6, 0.2).color('#1b2a55').gloss(0.7));
+  g.add(Geo.box(3, 3, 3.6).color('#c9a227').gloss(0.7).mat(MAT.FOIL));
+  g.add(Geo.box(15, 2.6, 0.2).color('#1b2a55').gloss(0.7).mat(MAT.SOLAR).uvTransform(16, 3));
   g.add(Geo.cone(1.4, 1.2, 6).rotateY(Math.PI / 2).translate(1.5, 0, 1.0).color('#e6e6e6'));
   g.add(Geo.box(0.3, 0.3, 3).translate(0, 0, 3).color(accent));
   g.add(navLight(0.45, '#ff3a2a', 1).mat(MAT.BLINK).translate(0, 0, 4.6));
@@ -668,7 +1169,7 @@ function stationStatic(b) {
   }
   // rear radiator fins
   for (let k = 0; k < 4; k++) {
-    g.add(Geo.box(46, 1.2, 50).translate(48, 0, -165).rotateZ(k * Math.PI / 2).color('#e4e6ea').mat(MAT.HULL).gloss(0.4));
+    g.add(Geo.box(46, 1.2, 50).translate(48, 0, -165).rotateZ(k * Math.PI / 2).color('#e4e6ea').mat(MAT.RADIATOR).gloss(0.4));
   }
   // solar wings on a truss across the rear
   g.add(beam([-230, 0, -112], [230, 0, -112], 3));
@@ -713,6 +1214,178 @@ function stationStatic(b) {
   blink([0, 0, -207], '#ff2a1a', 0, 3, 0.4);
 }
 
+// A thin rod from a to b: handrails, struts, masts.
+function rod(a, b, r, seg = 4) {
+  const d = v3.sub(b, a), len = v3.len(d);
+  const up = Math.abs(d[2]) > 0.98 * len ? [1, 0, 0] : [0, 0, 1];
+  return Geo.cylinder(r, len, seg, { caps: false }).rotateX(-Math.PI / 2).transform(m4.facing(a, d, up));
+}
+
+// A yellow handrail from a to b, standing h off a surface whose outward normal is n.
+function handrail(a, b, n, h = 0.3, every = 2.5) {
+  const g = new Geo();
+  const off = v3.scale(n, h);
+  g.add(rod(v3.add(a, off), v3.add(b, off), 0.04, 3));
+  const k = Math.max(1, Math.round(v3.dist(a, b) / every));
+  for (let i = 0; i <= k; i++) {
+    const p = v3.lerp(a, b, i / k);
+    g.add(rod(p, v3.add(p, off), 0.03, 3));
+  }
+  return g.color('#d8b23a').gloss(0.4);
+}
+
+// A docking port's face (MAT.PORT): a disc of radius r facing +z.  The
+// shader is told the radius in aux, to size its lines in metres.
+const portFace = (r, seg = 16) => Geo.disc(r, seg).color('#c9cdd3').mat(MAT.PORT).aux(r / 4);
+
+// Parts of the station that are seen only from near by: docking ports,
+// handrails, floodlights, aerials, and the lattice of the solar truss.  Each
+// is its own piece, so that only those near the viewer are drawn.
+function stationDetail(b) {
+  const near = (g, within) => b.static(g, { transform: STATION, within, solid: false });
+  const cyl = (r, a, z) => [r * Math.cos(a), r * Math.sin(a), z];
+
+  // the docking tube on the nose: a port on its end, handrails along it,
+  // floodlights round its foot
+  {
+    const g = new Geo();
+    g.add(portFace(2.7).translate(0, 0, 223.03));
+    for (let k = 0; k < 4; k++) {
+      const a = (k + 0.5) * Math.PI / 2;
+      g.add(handrail(cyl(3.2, a, 208.5), cyl(3.2, a, 220.5), cyl(1, a, 0), 0.35, 4));
+      g.add(navLight(0.3, '#fff1d0', 12).translate(...cyl(7.6, a + 0.4, 207.4)));
+    }
+    near(g, 70);
+  }
+
+  // the four docking arms: a collar and a port on each end block,
+  // handrails along the top, a mast with a lamp
+  for (let k = 0; k < 4; k++) {
+    const g = new Geo();
+    g.add(Geo.cylinder(2.9, 1.0, 12, { caps: false }).rotateY(Math.PI / 2).translate(78.3, 0, 140).color('#3b4048').gloss(0.5));
+    g.add(portFace(2.5).rotateY(Math.PI / 2).translate(78.65, 0, 140));
+    for (const y of [-1.7, 1.7]) g.add(handrail([21, y, 142.5], [67, y, 142.5], [0, 0, 1], 0.3, 4.2));
+    for (const y of [-2.5, 2.5]) g.add(handrail([70, y * 2, 146], [76, y * 2, 146], [0, 0, 1], 0.3, 3));
+    g.add(rod([72, -3.5, 146], [72, -3.5, 152], 0.06).color('#8a9099'));
+    g.add(navLight(0.25, '#ffffff', 14).translate(72, -3.5, 152.3));
+    near(g.rotateZ(k * Math.PI / 2), 80);
+  }
+
+  // the four modules round the forward spindle: handrails along their
+  // outer faces, a port on their forward ends
+  for (let k = 0; k < 4; k++) {
+    const g = new Geo();
+    for (const y of [-3.6, 3.6]) g.add(handrail([21.5, y, 50], [21.5, y, 90], [1, 0, 0], 0.3, 4));
+    g.add(portFace(2.4).translate(16, 0, 93.03));
+    near(g.rotateZ(k * Math.PI / 2 + Math.PI / 4), 60);
+  }
+
+  // a dish aerial on a mast between two of the arms
+  {
+    const g = new Geo();
+    g.add(rod([5.5, 0, 180], [15, 0, 180], 0.35, 6).color('#8a9099'));
+    const dish = new Geo();
+    dish.add(Geo.lathe([[0.01, 0], [1.5, 0.2], [3, 0.8], [4.2, 1.6]], 10).color('#e8e8e4').gloss(0.3));
+    for (let k = 0; k < 3; k++) {
+      const q = k * TAU / 3;
+      dish.add(rod([4.1 * Math.cos(q), 4.1 * Math.sin(q), 1.55], [0, 0, 3.4], 0.05, 3).color('#8a9099'));
+    }
+    dish.add(Geo.box(0.6, 0.6, 0.8).translate(0, 0, 3.6).color('#3a3f47'));
+    g.add(dish.rotateY(-0.5).translate(15.5, 0, 181));
+    near(g.rotateZ(Math.PI / 4), 150);
+  }
+
+  // two pipes lying along the outer face of the ring: round, so they may
+  // stand still while the ring turns under them, and in short arcs so that
+  // only those near the viewer are drawn
+  for (let k = 0; k < 24; k++) {
+    const g = new Geo();
+    for (const z of [-3.2, 3.2]) {
+      const pts = [];
+      for (let i = 0; i <= 4; i++) pts.push(cyl(R_OUT + 0.2, (k + i / 4) * TAU / 24, z));
+      g.add(Geo.tube(pts, 0.16, 4, { caps: false }));
+    }
+    near(g.color('#8d939b').gloss(0.5), 80);
+  }
+
+  // a lattice truss round the beam that carries the solar wings
+  for (let i = -5; i < 5; i++) {
+    const g = Geo.box(46, 6, 6).translate(i * 46 + 23, 0, -112).uvTransform(46 / 6, 1).color('#9aa1aa').mat(MAT.LATTICE).cutout();
+    near(g, 300);
+  }
+}
+
+// An astronaut in a white suit (+Y forward, +Z up, feet at the origin).
+function astronaut() {
+  const g = new Geo();
+  const suit = '#e9e7e1';
+  g.add(Geo.box(0.55, 0.36, 0.7).translate(0, 0, 1.38).color(suit));
+  g.add(Geo.box(0.5, 0.26, 0.62).translate(0, -0.3, 1.42).color('#9aa0a8'));
+  g.add(Geo.sphere(0.2, 6, 4).translate(0, 0.02, 1.92).color(suit));
+  g.add(Geo.box(0.26, 0.06, 0.16).translate(0, 0.19, 1.93).color('#d9a640').gloss(0.95));
+  for (const x of [-0.14, 0.14]) g.add(Geo.box(0.18, 0.2, 0.95).translate(x, 0.04, 0.5).color(suit));
+  for (const x of [-0.36, 0.36]) g.add(Geo.box(0.14, 0.14, 0.62).rotateX(-0.9).translate(x, 0.22, 1.48).color(suit));
+  g.add(navLight(0.045, '#fff3dc', 12).translate(0.2, 0.12, 2.0));
+  return g;
+}
+
+// A small service pod (+Y forward): a round cab with a window, thruster
+// blocks, two manipulator arms, navigation lights and a floodlight.
+function servicePod() {
+  const g = new Geo();
+  g.add(Geo.sphere(1.3, 8, 5).scale(1, 1.1, 0.9).color('#e8e2d2').gloss(0.4));
+  g.add(Geo.disc(0.72, 8).rotateX(-Math.PI / 2).translate(0, 1.33, 0.25).color('#9fd4ff').emissive(1.5).gloss(0.9).mat(MAT.CANOPY));
+  for (const x of [-1.3, 1.3]) g.add(Geo.box(0.3, 0.9, 0.5).translate(x, -0.2, 0).color('#5d636b'));
+  for (const x of [-0.5, 0.5]) {
+    g.add(rod([x, 0.9, -0.6], [x * 1.3, 2.1, -0.9], 0.06).color('#8a9099'));
+    g.add(rod([x * 1.3, 2.1, -0.9], [x * 1.1, 2.6, -0.5], 0.05).color('#8a9099'));
+  }
+  g.add(Geo.disc(0.35, 6).rotateX(Math.PI / 2).translate(0, -1.44, 0).color('#bfe6ff').emissive(10));
+  g.add(navLight(0.09, '#ff2a1a').translate(-1.47, -0.2, 0.2));
+  g.add(navLight(0.09, '#22ff66').translate(1.47, -0.2, 0.2));
+  g.add(navLight(0.08, '#ffffff', 14).translate(0, -1.3, 0.55));
+  g.add(lamp(0.12, '#fff1d0', 16).translate(0, 1.25, -0.55));
+  return g;
+}
+
+// People and small craft at work round the hub: an astronaut working along
+// the handrail of a docking arm, and a service pod going round the modules.
+function stationWorkers(b) {
+  // Two astronauts, each going over and back along a handrail once a period,
+  // with a pause and a turn at each end.  frame(d) places one at distance d
+  // along its way (+Y forward, +Z away from the hull).
+  const patrol = (frame, d0, d1) => {
+    const keys = [[0, d0, 0], [50, d1, 0], [52, d1, 1], [54, d1, 2], [56, d1, 3], [58, d1, 4],
+      [110, d0, 4], [112, d0, 5], [114, d0, 6], [116, d0, 7], [118, d0, 8], [120, d0, 8]];
+    const at = new Map(keys.map(([t, d, turn]) => [t, m4.mul(frame(d), m4.rotationZ(turn * Math.PI / 4))]));
+    b.dynamic(astronaut(), { times: keys.map((k) => k[0]), transform: (t) => at.get(t), caps: 'none', within: 300 });
+  };
+  // on top of the first docking arm (station-local +x, its top towards +z)
+  patrol((x) => m4.mul(STATION, m4.translation(x, -0.9, 142.55), m4.fromBasis([0, -1, 0], [1, 0, 0], [0, 0, 1], [0, 0, 0])), 28, 60);
+  // along the docking tube on the nose, beside one of its handrails
+  {
+    const a = Math.PI / 4 + 0.28, c = Math.cos(a), sn = Math.sin(a);
+    patrol((z) => m4.mul(STATION, m4.fromBasis([-sn, c, 0], [0, 0, 1], [c, sn, 0], [3.2 * c, 3.2 * sn, z])), 209, 219);
+  }
+  {
+    // round the forward spindle at 32 m, stopping at each of six corners to
+    // turn: it arrives at t0 = 20 k, has turned by t0 + 3 and flies straight on
+    const corner = (k) => [32 * Math.cos(k * TAU / 6), 32 * Math.sin(k * TAU / 6), 104];
+    const pose = (p, heading) => m4.mul(STATION, m4.facing(p, heading, [0, 0, 1]));
+    const mats = new Map();
+    for (let k = 0; k <= 6; k++) {
+      const p = corner(k), din = v3.norm(v3.sub(p, corner(k - 1))), dout = v3.norm(v3.sub(corner(k + 1), p));
+      mats.set(20 * k, pose(p, din));
+      if (k < 6) {
+        mats.set(20 * k + 1.5, pose(p, v3.add(din, dout)));
+        mats.set(20 * k + 3, pose(p, dout));
+      }
+    }
+    const final = [...mats.keys()];
+    b.dynamic(servicePod(), { times: final, transform: (t) => mats.get(t), caps: 'none', within: 400 });
+  }
+}
+
 function stationDynamic(b) {
   // spokes and the blocks where they meet the ring: the only parts of the wheel
   // that have to move, since everything round can stand still and let its
@@ -721,7 +1394,7 @@ function stationDynamic(b) {
   for (let k = 0; k < 6; k++) {
     const a = k * TAU / 6;
     g.add(Geo.cylinder(3.6, 152, 6, { caps: false }).rotateY(Math.PI / 2).translate(36, 0, 0).rotateZ(a).color('#b7bcc4').mat(MAT.SPOKE));
-    g.add(Geo.box(10, 18, 26).translate(R_IN - 3, 0, 0).rotateZ(a).color('#9097a1'));
+    g.add(hullUV(Geo.box(10, 18, 26), 8, 0, k).translate(R_IN - 3, 0, 0).rotateZ(a).color('#9097a1').mat(MAT.BLOCK));
   }
   b.dynamic(g, {
     times: timeRange(0, PERIOD, SPIN / 64),
@@ -768,6 +1441,8 @@ export default {
   build(b) {
     const rand = rng(1234);
     stationStatic(b);
+    stationDetail(b);
+    stationWorkers(b);
     stationDynamic(b);
 
     const avoid = []; // points rocks keep clear of: [point, radius]
@@ -796,6 +1471,16 @@ export default {
         fr.add(Geo.box(24, 10, 2).translate(0, -57, z).color('#262b33').mat(MAT.HULL));
         fr.add(Geo.plane(21, 8).translate(0, -57, z + 1.05).mat(MAT.DIST + Math.round((z - 230) / 100)));
         b.static(fr, { transform: STATION });
+        // from near by, an open lattice round each beam of the frame
+        const lat = new Geo();
+        for (const [a, c] of [[[-62.5, -48], [62.5, -48]], [[-62.5, 48], [62.5, 48]], [[-66, -44.5], [-66, 44.5]], [[66, -44.5], [66, 44.5]]]) {
+          for (let k = 0; k < 2; k++) {
+            const p0 = P(a[0] + (c[0] - a[0]) * k / 2, a[1] + (c[1] - a[1]) * k / 2), p1 = P(a[0] + (c[0] - a[0]) * (k + 1) / 2, a[1] + (c[1] - a[1]) * (k + 1) / 2);
+            const len = v3.dist(p0, p1);
+            lat.add(Geo.box(6, len, 6).uvTransform(len / 6, 1).transform(m4.facing(v3.lerp(p0, p1, 0.5), v3.sub(p1, p0), [0, 0, 1])));
+          }
+        }
+        b.static(lat.color('#aab1ba').mat(MAT.LATTICE).cutout(), { transform: STATION, within: 250, solid: false });
       });
 
       // shuttles: in along one side, round the nose of the station, a pause at
@@ -803,8 +1488,8 @@ export default {
       const rt = racetrack(L2W([0, 0, 270]), L2W([0, 0, 1960]), 40, YL, 24);
       const dist = schedule(rt.path.length, [{ d: rt.apexA, dwell: 6 }, { d: rt.apexB, dwell: 0.5 }], { laps: 2, ramp: 4 });
       ['#e0782e', '#2f9fd6', '#d9b53a'].forEach((accent, i) => {
-        const tf = along(rt.path, (t) => dist(t + i * 20), 10);
-        b.dynamic(shuttle(accent), { times: adaptiveTimes(tf, 0, PERIOD, { size: 10, tolerance: 0.3, maxStep: 8 }), transform: tf, caps: 'none' });
+        const distAt = (t) => dist(t + i * 20);
+        addShuttle(b, accent, i, along(rt.path, distAt, 10), distAt);
       });
     }
 
@@ -823,7 +1508,9 @@ export default {
         for (let i = 0; i < 4; i++) {
           const off = base - i * 130;
           const tf = along(conv.path, (t) => off + speed * t, 40);
-          b.dynamic(freighter(palettes[i]), { times: adaptiveTimes(tf, 0, PERIOD, { size: 30, tolerance: 0.5, maxStep: 10 }), transform: tf, caps: 'none' });
+          const times = adaptiveTimes(tf, 0, PERIOD, { size: 30, tolerance: 0.5, maxStep: 10 });
+          b.dynamic(freighter(palettes[i], (base > L / 2 ? 4 : 0) + i), { times, transform: tf, caps: 'none' });
+          addRiding(b, FREIGHTER_DETAIL, times, tf, 150, 900);
         }
       }
       // beacon chains along both straights, flashing in the direction of travel
@@ -931,12 +1618,14 @@ export default {
           for (const y of [13, 20, 27, 34]) {
             for (const z of [-14, -7, 0, 7, 14]) {
               if (rand() < 0.28) continue;
-              containers.push({ transform: m4.translation(...D(x, sy * y, z)), tint: rand.pick(cols) });
+              containers.push({ transform: m4.translation(...D(x, sy * y, z)), tint: rand.pick(cols), data: containers.length + 40 });
             }
           }
         }
       }
-      b.instances(Geo.box(18, 6, 6).color('#ffffff').mat(MAT.CONTAINER), containers);
+      const box = Geo.box(18, 6, 6);
+      for (let i = 0; i < box.vertexCount; i++) box.x[i * 2 + 1] = [2, 1, 0, 0, 3, 3][Math.floor(i / 4)];
+      b.instances(box.color('#ffffff').mat(MAT.CONTAINER), containers);
       // control tower with a big clock and a cargo counter
       g.add(Geo.box(26, 26, 64).translate(...D(150, 0, 8)).color('#d0d1cd').mat(MAT.HULLW));
       for (const z of [-12, 0, 12, 24]) g.add(Geo.box(26.4, 26.4, 3).translate(...D(150, 0, z)).mat(MAT.WINDOWS).uvTransform(9, 1).color('#232a33'));
@@ -978,8 +1667,9 @@ export default {
 
       // two gantry cranes running up and down the racks, pausing at each end
       const crane = new Geo();
-      for (const sy of [-1, 1]) crane.add(Geo.box(3, 3, 64).translate(0, sy * 44, 0).color('#c8a04a'));
-      crane.add(Geo.box(3, 91, 3).translate(0, 0, 32).color('#c8a04a'));
+      // (the legs and the bridge are painted as open lattices: MAT.TUG's part 1)
+      for (const sy of [-1, 1]) crane.add(hullUV(Geo.box(3, 3, 64).translate(0, sy * 44, 0), TUG_SCALE, 1, 0).color('#c8a04a').mat(MAT.TUG));
+      crane.add(hullUV(Geo.box(3, 91, 3).translate(0, 0, 32), TUG_SCALE, 1, 0).color('#c8a04a').mat(MAT.TUG));
       crane.add(Geo.box(6, 8, 4).translate(0, 18, 28).color('#555b63'));
       crane.add(Geo.box(1, 1, 20).translate(0, 18, 16).color('#2b2f35'));
       crane.add(navLight(0.9, '#ffb030', 1).mat(MAT.BLINK).translate(0, 0, 34.5));
@@ -1037,8 +1727,8 @@ export default {
       const rt = racetrack(a, bb, 20, [0, 0, 1], 20);
       const dist = schedule(rt.path.length, [{ d: rt.apexA, dwell: 7 }, { d: rt.apexB, dwell: 7 }], { laps: 2, ramp: 5 });
       ['#c8402f', '#8a8f96'].forEach((accent, i) => {
-        const tf = along(rt.path, (t) => dist(t + i * 30), 10);
-        b.dynamic(shuttle(accent), { times: adaptiveTimes(tf, 0, PERIOD, { size: 10, tolerance: 0.3, maxStep: 8 }), transform: tf, caps: 'none' });
+        const distAt = (t) => dist(t + i * 30);
+        addShuttle(b, accent, 3 + i, along(rt.path, distAt, 10), distAt);
       });
       const n = Math.floor(rt.len / 55);
       for (let i = 1; i < n; i++) {

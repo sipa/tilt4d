@@ -18,6 +18,8 @@
 //                   default), 0 none, 2 full: amber = the player's past, blue =
 //                   their future, a line per second
 //
+//   --query "a=1&b=2"   more parameters for the page's address, for a scene
+//                   that reads some of its own while it is being developed
 //   --page file     the page to load, relative to the project (default
 //                   index.html); dist/tilt4d.html checks the single-file build
 //
@@ -87,7 +89,7 @@ try {
   page.on('pageerror', (e) => { console.log('[pageerror] ' + e.message); });
   const q = new URLSearchParams({ shot: '1', scene: args.scene || 'lab' });
   for (const k of ['pos', 't', 'yaw', 'pitch', 'tilt', 'tiltdir', 'mode', 'hud', 'fov', 'tint', 'cast']) if (args[k] !== undefined) q.set(k, args[k]);
-  await page.goto(`http://127.0.0.1:${port}/${(args.page || '').replace(/^\/+/, '')}?${q}`);
+  await page.goto(`http://127.0.0.1:${port}/${(args.page || '').replace(/^\/+/, '')}?${q}${args.query ? '&' + args.query : ''}`);
   await page.waitForFunction(() => window.__shot && (window.__shot.ready || window.__shot.error), null, { timeout: 180000 });
   const state = await page.evaluate(() => window.__shot);
   if (state.error) {

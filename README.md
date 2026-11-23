@@ -11,7 +11,7 @@ within the slice you see. It looks a little like relativity but is not: the
 rotation is Euclidean and light is instantaneous.
 
 [CONCEPT.md](CONCEPT.md) is the note the project started from. There the
-player always moves at a fixed speed C at right angles to the view, so that
+player always moves at a fixed speed at right angles to the view, so that
 tilting and speeding up are the same thing. The demo keeps the tilt and what
 it does to time, but no longer ties it to the player's speed; see "How it
 works" below.
@@ -42,7 +42,11 @@ menu but cannot start. `--https` makes a self-signed certificate (kept in
 `--cert` and `--key` to use a real one. The alternative is to leave the server
 on localhost and forward the port: `ssh -L 8080:localhost:8080 <host>`.
 
-Pick a scene from the menu. `Esc` brings the menu back.
+Pick a scene from the menu. `Esc` brings the menu back. The scenes are listed
+from the lightest to draw to the heaviest, each with a mark of one to six
+bars for how much there is to draw; the first, the Time Lab, is what runs
+behind the menu when the page opens. A bar across the top of the page shows
+how far the loading of a scene has got.
 
 ### As a single file
 
@@ -58,7 +62,7 @@ node tools/bundle.mjs       # or: npm run bundle
 ```
 
 writes `dist/tilt4d.html`: the page with its stylesheet and all its scripts,
-every scene included, minified into one file of about 360 kB (135 kB as a web
+every scene included, minified into one file of about 650 kB (230 kB as a web
 server sends it compressed). The shaders are minified too: they are the
 template strings marked `/* wgsl */` in the scripts, and an unmarked one is
 left as it is (the tool points out any it finds). It needs nothing beside it, so it can be uploaded
@@ -91,15 +95,41 @@ suits it; `M` switches.
 
 | mode | controls |
 |---|---|
-| **Walk** | `W A S D` walk, `Shift` run, `Space` jump, mouse to look. |
-| **Drive** | `W` / `S` speed up / slow down (the speed holds; `S` from rest reverses), `A` / `D` steer, `Space` brake. The mouse looks around without steering. |
+| **Walk** | `W A S D` walk, `Shift` run, `Space` jump, mouse to look. You stay upright on a slope, and going up it slows you: hardly on a gentle hill, a good deal on a steep one, and ground steeper than 60° cannot be walked up at all. |
+| **Drive** | `W` / `S` speed up / slow down (`S` from rest reverses), `A` / `D` or the mouse steer, `Space` brake, `Shift` for more power. Left alone the car rolls out: slowly below a speed that depends on the scene (30 m/s on the Coastal Circuit; the menu's list of controls names it), quickly above it. |
 | **Fly** | mouse to turn, `W A S D` and `Space` / `C` to thrust, `Q` / `E` roll, `Shift` for more thrust, `B` to brake. No drag. |
 | **Swim** | as Fly, but the water brings you back to rest. `Shift` sprints. |
 
 "Forward" is forward in the view. In a tilted view that is partly a direction
 in time, so walking, driving or thrusting forward takes you into the past (or
-the future) on top of that: going forward at speed v takes another
-`v · sin(tilt) / C` off the pace of your time.
+the future) on top of that. The readouts show it:
+
+* **speed in slice** is how fast you are moving within the view, which is the
+  speed at which the scenery passes;
+* **through space** and **through time** are its two parts: the speed over the
+  ground, and the seconds of scene time you cross each second by moving
+  (negative towards the past);
+* **time flows** is the pace of your own time all told: what the tilt leaves of
+  it, plus that part through time.
+
+### Settings
+
+The **Settings** button at the top of the menu opens a small panel:
+
+| setting | choices | key while playing |
+|---|---|---|
+| Mode | the control modes the scene offers | `M` |
+| Time colouring | off, slight, full (see below) | `T` |
+| Units | m/s, km/h or mph, for the readouts and for the speeds the menu names | |
+| Readouts | shown or hidden | `H` |
+| Pace | everything at ⅛ to 8 times its speed | `[` `]` |
+| Field of view | 50° to 90° (`?fov=70` in the address sets any) | |
+| Look speed | how far the mouse, or a dragging finger, turns the view | |
+| Look up / down | normal or inverted | |
+| Resolution | automatic (lowered when frames are slow), or full, ¾ or ½ | |
+
+All but the mode and the pace are kept in the browser's storage and are there
+again on the next visit; "Back to the defaults" undoes them.
 
 In every mode: `P` freezes you in place so you can look around the slice you
 are in (and tilt it), `[` and `]` run everything in slow motion or fast
@@ -147,6 +177,15 @@ says that the renderer keeps up, not by how much. To see the room there is:
   `--disable-frame-rate-limit --disable-gpu-vsync`; the HUD's counter then
   shows what the machine can do. (In Firefox, set `layout.frame_rate` to 0 in
   `about:config`.)
+* `node tools/cost.mjs <scene>` counts instead of timing: the triangles,
+  tetrahedra and draw calls that a frame hands to the graphics card in a set
+  of standard views, and a score made of them. It needs no graphics card, and
+  it is how the scenes are ranked in the menu and how a change to a scene is
+  held to a budget (see the head of that file).
+* `?cull=0` in the address makes every pass draw everything, which shows what
+  leaving out the unseen saves (compare with `G`). `?order=0` draws static
+  geometry in the order it is stored instead of nearest first, which shows
+  what the depth test saves when the near things are drawn before the far.
 * `?scale=2` in the address renders at twice the resolution in each direction,
   which shows how much of the cost is per pixel. It also switches off the
   automatic lowering of the resolution that otherwise sets in when frames are
@@ -162,7 +201,7 @@ the lower right tilt the view while held.
 | mode | left stick | further buttons |
 |---|---|---|
 | **Walk** | walk; pushed all the way, run | `jump` |
-| **Drive** | up and down change speed, left and right steer | `brake` |
+| **Drive** | up and down speed up and slow down, left and right steer (as does dragging the view sideways) | `brake` |
 | **Fly** | thrust | `▲` `▼` thrust up and down, `brake`; twist two fingers to roll |
 | **Swim** | swim; pushed all the way, sprint | `▲` `▼` rise and sink |
 
@@ -191,10 +230,12 @@ runs backwards), leaning over as you move.
   like a ruler. Beyond 90° the world is mirrored and runs backwards; at 180°
   it is level again, in reverse.
 * Now move forward in a tilted view. You head into the past you are looking
-  at, so your own time slows further: at a speed of `C / tan(tilt)` it stands
-  still before the tilt gets to 90°. Walk backwards and it speeds up again.
+  at, so your own time slows further: fast enough, and it stands still before
+  the tilt gets to 90° ("time flows" reaches zero when the part of your speed
+  "through time" makes up for what the tilt has left). Walk backwards and it
+  speeds up again.
 * Do the same flying. There the tilt leaves the pace of time alone, and only
-  your motion changes it: time stands still at `C / sin(tilt)`.
+  your motion changes it.
 * Watch something that moves in a regular rhythm, such as a chain of flashing
   lights, and see the rhythm change with the tilt: things that move towards you
   bunch up or stretch out, and at the right tilt a running light is everywhere
@@ -204,7 +245,9 @@ runs backwards), leaning over as you move.
 
 The player is a point in `(x, y, z, t)` with a velocity and an orthonormal 4D
 frame: screen right `R`, screen up `U`, facing `F` and a fourth vector `O`,
-all measured with time scaled to length by the scene's constant `C`. What is
+all measured with time scaled to length: every scene fixes how many metres
+stand for one second (10 in the Time Lab, 30 on the Coastal Circuit), which is
+how much time its tilt takes in. What is
 drawn is the 3D slice spanned by `R`, `U` and `F`; `O` is its normal and is
 only there to rotate against. Turning rotates `F` and `R` in their plane,
 looking up rotates `F` and `U`, and tilting rotates `F` and `O` in exactly the
@@ -214,24 +257,40 @@ The velocity is not part of the frame, and has two parts.
 
 Left alone, the player stays put while scene time passes at `cos θ` seconds
 per second: the time component of `O`. One way to read that is that the player
-is always carried along `O` at speed `C`, as in CONCEPT.md, and that whatever
+is always carried along `O` at a fixed speed, as in CONCEPT.md, and that whatever
 stands still in the world (the ground, the water) holds back the spatial part
 of that motion, so that only its time part gets through. Technically it is
 friction: the ground brings the player's time rate to `cos θ` at once, water
 does it with the same sluggishness as it stops a swimmer. In flight there is
 nothing to hold on to, and there the rate is simply 1. (The full rule of
-CONCEPT.md would have a tilted flyer drift off through space at `C·sin θ`.
-That tied what you saw to how fast you went and capped the speed at `C`, and
-it has been dropped.)
+CONCEPT.md would have a tilted flyer drift off through space as well. That
+tied what you saw to how fast you went and capped the speed, and it has been
+dropped.)
 
 On top of that the controls add an ordinary velocity: a walking speed, a car's
 speed along its heading, thrust that accumulates. They do so along the frame's
 own vectors, though, and in a tilted frame `F` has a time component: going
-forward at speed `v` with tilt θ covers `v·cos θ` metres of ground a second
-and `v·sin θ / C` seconds of the past. So on the ground time passes at
-`cos θ − v·sin θ / C`, and stands still at `v = C / tan θ`. There is no top
-speed and nothing special about moving at `C`; `C` is just the exchange rate
-between metres and seconds that the tilt uses.
+forward at speed `v` with tilt θ covers `v·cos θ` metres of ground a second,
+and the rest of it, `v·sin θ`, is motion into the past: metres of time, which
+the scene's scale turns into seconds. Those are the readouts' speed in slice,
+through space and through time. So on the ground time passes at `cos θ` less
+that last part, and stands still when the two are equal. There is no top
+speed, and no speed at which anything special happens.
+
+The car alone has a mark, for the feel of driving and for no deeper reason:
+the scene's scale read as a speed (30 m to the second on the circuit, so
+30 m/s). Its friction is small up to there (a quarter of the engine holds that
+speed) and grows quickly beyond, so that the engine's all is twice the mark,
+or 2.8 times with `Shift`. The speed meant is the car's own along `F`, its
+speed in the slice.
+
+A walker stands upright whatever the ground does, and keeps their pace along
+a slope, so that on the map the part of their motion that goes straight up or
+down it shrinks by the slope's cosine. Going up it shrinks further, by
+`1 − (slope / 60°)²`: at 15° about a tenth is lost, at 45° more than two
+thirds, and ground of 60° or more is like a wall, which can be walked along or
+down but not up, by any zigzag or by jumping at it. (A car leans with the
+ground and is not held back.)
 
 What the tilt does to the view goes as `tan θ` (things are stretched by
 `1 / cos θ`), which runs off to infinity at 90°. So a held tilt key turns at a
@@ -248,7 +307,10 @@ The slice is drawn like this:
   between keys, split into three tetrahedra in `(x, y, z, t)`. A vertex shader
   cuts every tetrahedron with the slice (a 4D version of marching tetrahedra)
   and emits the resulting triangle or quad. Only the chunks of tetrahedra whose
-  4D bounding box the slice passes through are sent to the GPU.
+  4D bounding box the slice passes through are sent to the GPU. The
+  tetrahedra are not stored: a mesh that only moves is kept once, with the
+  matrix that places it at each key, and the vertex shader works out the
+  corners of each tetrahedron from that.
 * Lighting, sky and materials are evaluated at each pixel's own moment, which
   is why clocks, lamps and the sky all show the tilt.
 * Shadows use shadow maps of the slice itself, two or three of them covering
@@ -261,9 +323,24 @@ The slice is drawn like this:
   Meshes can have holes cut per pixel (foliage), with matching shadows, or be
   see-through (smoke, glass), and a scene can hand its shader tables of
   numbers as textures.
+* Each pass draws only what it can see. Static geometry is sorted into cells
+  of neighbouring triangles when a scene is built, and a cell is left out of
+  the picture if it lies outside the view, out of a shadow map if nothing in
+  it can cast a shadow there, and out of a side of the reflection picture that
+  faces away from it. The picture's cells are drawn nearest first, so that
+  what they hide is not shaded. The tilt shears static geometry, but by a linear map, so
+  the view is still a pyramid in space. For the shadow maps the renderer has
+  to know where the light is, which only the scene's shader can say: it reads
+  that back from the GPU for a stretch of time round the player's own.
+* Small parts of things (door handles, faces, wheel spokes) are given by the
+  scenes as detail that is drawn only from near by, so they cost nothing
+  across the rest of the scene.
 
 `src/renderer.js` and `src/wgsl.js` hold the renderer, `src/builder.js` turns
-scene descriptions into those two kinds of geometry.
+scene descriptions into those two kinds of geometry. A scene is built in a
+worker (`src/build-worker.js`), so the page stays alive while it loads and can
+show how far the loading has got; where a worker cannot be had, it is built in
+the page itself.
 
 Collisions (`src/collide.js`) use the static triangles themselves, so nothing
 is authored twice. The player is an upright cylinder on the ground and a sphere
@@ -278,23 +355,27 @@ part of it that points into time is all that is left.
 
 ## Scenes
 
-| scene | mode | C | what shows the tilt |
+In the menu's order, from the lightest to draw to the heaviest:
+
+| scene | mode | at 45°, a second per | what shows the tilt |
 |---|---|---|---|
-| **Old Town** | walk | 10 m/s | a clock tower that follows the sky, street lamps coming on in a wave at dusk, trams, cyclists and walkers on a 200 m avenue |
-| **Coastal Circuit** | drive | 30 m/s | timing boards every 50 m down a 1.2 km straight, traffic at 0.5, 1 and 1.5 C, trains, light pulses along the wall |
-| **Orbital Station** | fly | 200 m/s | a ring station turning every 30 s, lanes of beacons whose pulses run at C, convoys, clocks on the gateway frames |
-| **Coral Reef** | swim | 4 m/s | columns of bubbles all rising at the same pace, vents puffing together, lanes of fish, caustics |
-| **Winter Valley** | walk | 12 m/s | the detailed scene, for desktop GPUs: a ridge's shadow and the alpenglow sweeping over the mountains, lanterns that come on in a wave at dusk with a pulse running up the path, a chairlift, an aerial tram, skaters, skiers, walkers, chimney smoke and clocks that follow the sky |
-| **Time Lab** | walk | 10 m/s | a bare runway of clocks, plus pendulums, traffic and things that pop in and out of existence |
+| **Time Lab** | walk | 10 m | a bare runway of clocks, plus pendulums, traffic and things that pop in and out of existence |
+| **Orbital Station** | fly | 200 m | a ring station turning every 30 s, lanes of beacons whose pulses run at 200 m/s, convoys, clocks on the gateway frames |
+| **Coastal Circuit** | drive | 30 m | timing boards every 50 m down a 1.2 km straight, traffic at 15, 30 and 45 m/s, trains, light pulses along the wall |
+| **Old Town** | walk | 10 m | a clock tower that follows the sky, street lamps coming on in a wave at dusk, trams, cyclists and walkers on a 200 m avenue |
+| **Coral Reef** | swim | 4 m | columns of bubbles all rising at the same pace, vents puffing together, lanes of fish, caustics |
+| **Winter Valley** | walk | 12 m | a detailed scene, for desktop GPUs: a ridge's shadow and the alpenglow sweeping over the mountains, lanterns that come on in a wave at dusk with a pulse running up the path, a chairlift, an aerial tram, skaters, skiers, walkers, chimney smoke and clocks that follow the sky |
+| **Pleasure Pier** | walk | 5 m | the most intricate scene, for desktop GPUs: a Victorian pier at dusk on a day of ten minutes, where everything runs in cycles. Pier trains at 9 m/s that stretch along the whole track at a tilt of 29°, a big wheel and a swing ride that wind into spirals, firework shells that become cones, lighthouse beams, lamps coming on in a wave out along the pier, chasing bulbs, a tide every three minutes, clocks, and walkers, cyclists, cars and boats at speeds from 1 to 17 m/s |
 
 Scenes live in `src/scenes/` and are listed in `src/scenes/index.js`.
 [docs/SCENES.md](docs/SCENES.md) explains how to write one;
 `src/scenes/lab.js` is a commented example, and `src/scenes/enginetest.js`
 (not in the menu: open it with `?scene=enginetest`) shows the engine's newer
-features side by side. The five larger scenes were each written by a separate
-Claude Opus agent against that guide. Winter Valley is
-the heavy one: about a million static triangles and a costlier shader, where
-the others stay within what a phone can draw.
+features side by side. The six larger scenes were each written by a separate
+Claude Opus agent against that guide, and later given their close-up detail
+(faces, wheels, lettering, door handles) the same way. Winter Valley and the
+Pleasure Pier are the heavy ones, with about a million static triangles each
+and costlier shaders, where the others stay within what a phone can draw.
 
 `tools/check-solids.mjs <scene>` builds a scene without a browser and checks
 its collisions: that the spawn point is clear and that roaming about never

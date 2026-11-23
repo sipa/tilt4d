@@ -31,10 +31,17 @@ const BIG = 1e30;
 // Tetrahedra are grouped into chunks: runs of consecutive key intervals of one
 // object.  Each chunk records its bounding box in space and time, which lets
 // the renderer skip every chunk the player's slice cannot touch.
-const CHUNK_TETS = 256;
+const CHUNK_TETS = 48;
+// The numbers given to tetrahedra come in blocks of this many, each block
+// belonging to one chunk (see finalize).
+export const BLOCK = 16;
 // Static pieces with a time window get their own visibility test if they have
 // at least this many triangles (additive ones always do: they cover a lot of screen).
 const WINDOW_CULL_TRIANGLES = 48;
+// Static geometry is sorted into cells of neighbouring triangles of about
+// this size (more in a very large scene), each of which the renderer can
+// leave out of a pass that cannot see it.
+const CELL_TRIANGLES = 2048;
 
 class Grow {
   constructor(stride, cap = 4096) {
@@ -96,13 +103,56 @@ function resolveTimes(o) {
   return times;
 }
 
+// Splits a set of points into groups of neighbours: in two at the middle of
+// its longest side, again and again, until a group has no more than `most`
+// points or is no bigger than `small` across.  px, py, pz: the points.
+// Returns the points' numbers, group after group (their order within a group
+// is the order they came in), and where each group ends: { order, ends }.
+// Groups that are neighbours in the list are neighbours in space, so what a
+// view takes in is mostly a few runs of them.
+function spatialGroups(px, py, pz, most, small = 4) {
+  const n = px.length, order = new Uint32Array(n), tmp = new Uint32Array(n), ends = [];
+  for (let i = 0; i < n; i++) order[i] = i;
+  const split = (lo, hi) => {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let i = lo; i < hi; i++) {
+      const p = order[i], x = px[p], y = py[p], z = pz[p];
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    const ex = x1 - x0, ey = y1 - y0, ez = z1 - z0;
+    if (hi - lo > most && Math.max(ex, ey, ez) > small) {
+      const c = ex >= ey && ex >= ez ? px : ey >= ez ? py : pz;
+      const mid = c === px ? (x0 + x1) / 2 : c === py ? (y0 + y1) / 2 : (z0 + z1) / 2;
+      let l = lo, r = 0;
+      for (let i = lo; i < hi; i++) { const p = order[i]; if (c[p] < mid) order[l++] = p; else tmp[r++] = p; }
+      order.set(tmp.subarray(0, r), l);
+      if (l > lo && l < hi) { split(lo, l); split(l, hi); return; }
+    }
+    ends.push(hi);
+  };
+  if (n) split(0, n);
+  return { order, ends };
+}
+
 export class SceneBuilder {
   constructor() {
     this.sv = new Grow(STATIC_STRIDE);
     this.sIdx = [new Grow(4), new Grow(4), new Grow(4)]; // per layer
+    // Moving geometry.  A mesh that changes shape or colour is stored vertex by
+    // vertex at every key time; one that only moves is stored once, as it is,
+    // with the matrix that places it at each key (`keys`: three rows of four,
+    // then the key's time and the sign of the matrix's determinant).  The
+    // tetrahedra are not stored at all: those of one step from key to key are
+    // the same for every step, so there is one list of them per mesh (`tmpl`:
+    // four corners each, as vertex numbers within the mesh, bit 30 set for
+    // "at the later key" and bit 31 on the first for the orientation), and a
+    // chunk says which list, which vertices and which keys it stands for.
     this.dv = new Grow(DYN_STRIDE);
-    this.tets = [new Grow(16), new Grow(16), new Grow(16)]; // per layer
-    this.chunks = [[], [], []]; // per layer: { first, count, t0, t1, box: [minx, miny, minz, maxx, maxy, maxz] }
+    this.keys = new Grow(64);
+    this.tmpl = new Grow(16);
+    this.shared = new Map(); // meshes and lists already stored, by their contents (see _share)
+    // per layer: { count, t0, t1, box: [minx, miny, minz, maxx, maxy, maxz], tmpl, per, vert, nv, key, rigid, ... }
+    this.chunks = [[], [], []];
     // one entry per static() call and layer: { layer, first, count, from, to, period, box }
     this.sCalls = [];
     this.solidCalls = []; // index ranges { layer, first, count } of what the player cannot pass through
@@ -113,7 +163,28 @@ export class SceneBuilder {
     this.iCalls = [];
     this.solidExtra = []; // corners of the solid triangles of instanced meshes, where they were placed
     this.textures = []; // data for the scene's shader: { name, width, height, channels, float, data, repeat, nearest, horizon }
-    this.counts = { staticObjects: 0, dynamicObjects: 0, instances: 0, instancedTriangles: 0 };
+    this.counts = { staticObjects: 0, dynamicObjects: 0, instances: 0, instancedTriangles: 0, tetrahedra: 0 };
+  }
+
+  // Many moving things are copies of one mesh.  What has just been written at
+  // the end of a store (`n` records from `first`) is dropped again if the same
+  // bytes are in the store already, and the place of those is returned.
+  _share(store, first, n) {
+    const words = store.u32.subarray(first * store.stride / 4, (first + n) * store.stride / 4);
+    let h = 2166136261 ^ words.length;
+    for (let i = 0; i < words.length; i++) h = Math.imul(h ^ words[i], 16777619);
+    const key = `${store.stride}:${n}:${h >>> 0}`;
+    const list = this.shared.get(key) || [];
+    for (const at of list) {
+      const other = store.u32.subarray(at * store.stride / 4, (at + n) * store.stride / 4);
+      let same = true;
+      for (let i = 0; i < words.length && same; i++) same = other[i] === words[i];
+      if (same) return at;
+    }
+    list.push(first);
+    this.shared.set(key, list);
+    store.count = first + n;
+    return first;
   }
 
   // Writes a mesh's vertices into the static vertex buffer, moved by the
@@ -161,6 +232,7 @@ export class SceneBuilder {
   //              true, what is see-through (blended) is solid as well.
   static(geo, o = {}) {
     const from = Math.max(-BIG, o.from ?? -BIG), to = Math.min(BIG, o.to ?? BIG), period = o.period ?? 0;
+    const within = o.within > 0 ? o.within : BIG; // detail: drawn only when the viewer is this near
     const m = o.transform || null;
     const flip = m ? m4.det3(m) < 0 : false;
     const { base, box } = this._putStatic(geo, m, from, to, period);
@@ -177,7 +249,7 @@ export class SceneBuilder {
     }
     for (let layer = 0; layer < LAYERS; layer++) {
       const count = this.sIdx[layer].count - before[layer];
-      if (count) this.sCalls.push({ layer, first: before[layer], count, from, to, period, box });
+      if (count) this.sCalls.push({ layer, first: before[layer], count, from, to, period, box, within });
     }
     if (o.solid !== false && from <= -BIG && to >= BIG) {
       for (const layer of o.solid === true ? [0, 2] : [0]) {
@@ -185,6 +257,7 @@ export class SceneBuilder {
       }
     }
     this.counts.staticObjects++;
+    this._progress();
     return this;
   }
 
@@ -207,33 +280,16 @@ export class SceneBuilder {
     };
     const items = Array.from(at, (a) => (a && a.transform ? a : { transform: a }));
     if (!items.length || !geo.vertexCount) return this;
+    const within = o.within > 0 ? o.within : BIG; // detail: drawn only when the viewer is this near
     const { base, box: local } = this._putStatic(geo, null, -BIG, BIG, 0);
     const idx = geo.idx, inst = this.inst, dst = this.iIdx;
     // Mirrored copies have their triangles wound the other way, so they are
     // drawn as a group of their own.
     for (const mirrored of [false, true]) {
-      const group = items.filter((it) => (m4.det3(it.transform) < 0) === mirrored);
-      if (!group.length) continue;
-      const firstInstance = inst.count;
-      inst.reserve(group.length);
-      // the group's bounds, and its time window if every copy has the same one
-      const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-      let shared = win(group[0]);
-      for (const it of group) {
-        const m = it.transform, o32 = inst.count * (INSTANCE_STRIDE >> 2), w = win(it);
-        // (a tint is given like any colour, in sRGB, and applied to linear ones)
-        const tint = it.tint !== undefined ? parseColor(it.tint).map((v) => Math.pow(v, 2.2)) : [1, 1, 1];
-        inst.f32.set([m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], tint[0], tint[1], tint[2], it.data ?? 0, w[0], w[1], w[2], 0], o32);
-        inst.count++;
-        if (shared && (w[0] !== shared[0] || w[1] !== shared[1] || w[2] !== shared[2])) shared = null;
-        for (let c = 0; c < 8; c++) {
-          const x = local[c & 1 ? 3 : 0], y = local[c & 2 ? 4 : 1], z = local[c & 4 ? 5 : 2];
-          const p = [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
-          for (let k = 0; k < 3; k++) { if (p[k] < box[k]) box[k] = p[k]; if (p[k] > box[k + 3]) box[k + 3] = p[k]; }
-        }
-      }
-      // copies with windows of their own: the group is drawn whenever any of them might be there
-      const [from, to, period] = shared || [-BIG, BIG, 0];
+      const all = items.filter((it) => (m4.det3(it.transform) < 0) === mirrored);
+      if (!all.length) continue;
+      // the mesh's triangles, layer by layer
+      const ranges = [];
       for (let layer = 0; layer < LAYERS; layer++) {
         const first = dst.count;
         for (let i = 0; i < idx.length; i += 3) {
@@ -244,7 +300,52 @@ export class SceneBuilder {
           dst.u32[dst.count + 2] = base + idx[mirrored ? i + 1 : i + 2];
           dst.count += 3;
         }
-        if (dst.count > first) this.iCalls.push({ layer, first, count: dst.count - first, firstInstance, instances: group.length, box, from, to, period });
+        if (dst.count > first) ranges.push({ layer, first, count: dst.count - first });
+      }
+      // Copies that are drawn only from near by are put in clusters, each of
+      // which the renderer tests by itself: the cells of a grid twice as wide
+      // as the distance, so that only a few of them are ever in reach.
+      const cells = new Map();
+      if (within < BIG) {
+        const size = 2 * Math.max(within, 0.5);
+        for (const it of all) {
+          const m = it.transform, key = `${Math.floor(m[12] / size)},${Math.floor(m[13] / size)},${Math.floor(m[14] / size)}`;
+          if (!cells.has(key)) cells.set(key, []);
+          cells.get(key).push(it);
+        }
+      } else if (all.length >= 16 && all.length * geo.triangleCount >= 2 * CELL_TRIANGLES && !ranges.some((r) => r.layer === 2)) {
+        // A large group goes in clusters of neighbours as well, so that the
+        // renderer can leave out the ones no pass can see.  (Not see-through
+        // copies: they are drawn in the order they were given.)
+        const most = Math.max(Math.ceil(all.length / 128), Math.ceil(CELL_TRIANGLES / geo.triangleCount));
+        const { order, ends } = spatialGroups(Float32Array.from(all, (it) => it.transform[12]), Float32Array.from(all, (it) => it.transform[13]), Float32Array.from(all, (it) => it.transform[14]), most, 0);
+        let lo = 0;
+        ends.forEach((hi, k) => { cells.set(k, Array.from(order.subarray(lo, hi), (i) => all[i])); lo = hi; });
+      } else {
+        cells.set('', all);
+      }
+      for (const group of cells.values()) {
+        const firstInstance = inst.count;
+        inst.reserve(group.length);
+        // the group's bounds, and its time window if every copy has the same one
+        const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+        let shared = win(group[0]);
+        for (const it of group) {
+          const m = it.transform, o32 = inst.count * (INSTANCE_STRIDE >> 2), w = win(it);
+          // (a tint is given like any colour, in sRGB, and applied to linear ones)
+          const tint = it.tint !== undefined ? parseColor(it.tint).map((v) => Math.pow(v, 2.2)) : [1, 1, 1];
+          inst.f32.set([m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], tint[0], tint[1], tint[2], it.data ?? 0, w[0], w[1], w[2], 0], o32);
+          inst.count++;
+          if (shared && (w[0] !== shared[0] || w[1] !== shared[1] || w[2] !== shared[2])) shared = null;
+          for (let c = 0; c < 8; c++) {
+            const x = local[c & 1 ? 3 : 0], y = local[c & 2 ? 4 : 1], z = local[c & 4 ? 5 : 2];
+            const p = [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
+            for (let k = 0; k < 3; k++) { if (p[k] < box[k]) box[k] = p[k]; if (p[k] > box[k + 3]) box[k + 3] = p[k]; }
+          }
+      }
+      // copies with windows of their own: the group is drawn whenever any of them might be there
+      const [from, to, period] = shared || [-BIG, BIG, 0];
+      for (const r of ranges) this.iCalls.push({ ...r, firstInstance, instances: group.length, box, from, to, period, within });
       }
     }
     // what is always there is solid
@@ -272,6 +373,7 @@ export class SceneBuilder {
     this.counts.staticObjects++;
     this.counts.instances += items.length;
     this.counts.instancedTriangles += geo.triangleCount * items.length;
+    this._progress();
     return this;
   }
 
@@ -343,10 +445,13 @@ export class SceneBuilder {
     const nv = g0.vertexCount, idx = g0.idx;
     if (nv === 0) return this;
     const dv = this.dv, base = dv.count;
+    const within = o.within > 0 ? o.within : BIG; // detail: drawn only when the viewer is this near
     const capMode = o.caps ?? 'auto';
     const capStart = capMode === 'both' || capMode === 'start' || (capMode === 'auto' && !o.holdBefore);
     const capEnd = capMode === 'both' || capMode === 'end' || (capMode === 'auto' && !o.holdAfter);
-    dv.reserve(nv * nk + (capStart ? nv + 1 : 0) + (capEnd ? nv + 1 : 0));
+    // only moved about: the same mesh at every key, placed by `transform` and not repainted
+    const rigid = typeof geo !== 'function' && !paint;
+    dv.reserve(nv * (rigid ? 1 : nk) + (capStart ? nv + 1 : 0) + (capEnd ? nv + 1 : 0));
 
     const writeKey = (g, t, m, pt, dstBase, extraFlags) => {
       if (g.vertexCount !== nv) throw new Error('dynamic(): the mesh must keep the same vertex count at every key');
@@ -385,11 +490,36 @@ export class SceneBuilder {
     };
 
     const boxes = [];
-    for (let k = 0; k < nk; k++) {
-      const t = times[k];
-      boxes.push(writeKey(k === 0 ? g0 : geoAt(t), t, xf ? xf(t) : null, paint ? paint(t) : null, base + k * nv, 0).box);
+    let vertBase = base, keyBase = 0, mirrored = false;
+    if (rigid) {
+      // the mesh as it is, once (or not at all, if the same mesh is there already) ...
+      const own = writeKey(g0, 0, null, null, base, 0).box;
+      vertBase = this._share(dv, base, nv);
+      // ... and where each key puts it
+      const keys = this.keys;
+      keys.reserve(nk);
+      keyBase = keys.count;
+      for (let k = 0; k < nk; k++) {
+        const t = times[k], m = xf ? xf(t) : m4.identity(), det = m4.det3(m);
+        if (k === 0) mirrored = det < 0;
+        keys.f32.set([m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], t, det < 0 ? -1 : 1, 0, 0], keys.count * 16);
+        keys.count++;
+        // (bounds: the mesh's own box, placed, takes in the placed mesh)
+        const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+        for (let c = 0; c < 8; c++) {
+          const x = own[c & 1 ? 3 : 0], y = own[c & 2 ? 4 : 1], z = own[c & 4 ? 5 : 2];
+          const p = [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
+          for (let j = 0; j < 3; j++) { if (p[j] < box[j]) box[j] = p[j]; if (p[j] > box[j + 3]) box[j + 3] = p[j]; }
+        }
+        boxes.push(box);
+      }
+    } else {
+      for (let k = 0; k < nk; k++) {
+        const t = times[k];
+        boxes.push(writeKey(k === 0 ? g0 : geoAt(t), t, xf ? xf(t) : null, paint ? paint(t) : null, base + k * nv, 0).box);
+      }
+      dv.count += nv * nk;
     }
-    dv.count += nv * nk;
 
     // Order the vertices of each triangle by a rank that is shared between
     // vertices at the same position, so neighbouring prisms split their common
@@ -410,9 +540,9 @@ export class SceneBuilder {
     // mirroring transform reverses it.)  Judged at whichever of the first,
     // middle and last key is least degenerate.
     let agree = 0;
-    for (const k of [0, nk >> 1, nk - 1]) {
+    for (const k of rigid ? [0] : [0, nk >> 1, nk - 1]) {
       let sum = 0;
-      const at = (v) => (base + k * nv + v) * DYN_STRIDE;
+      const at = (v) => (vertBase + k * nv + v) * DYN_STRIDE;
       for (let i = 0; i < ntri; i++) {
         const A = at(idx[i * 3]), B = at(idx[i * 3 + 1]), Cc = at(idx[i * 3 + 2]);
         const f = dv.f32, a4 = A >> 2, b4 = B >> 2, c4 = Cc >> 2;
@@ -425,7 +555,8 @@ export class SceneBuilder {
       }
       if (Math.abs(sum) > Math.abs(agree)) agree = sum;
     }
-    const inward = agree < 0 ? 1 : 0;
+    // (a mesh stored as it is was judged as it is: a mirroring placement turns it round)
+    const inward = (agree < 0) !== (rigid && mirrored) ? 1 : 0;
 
     const tris = new Uint32Array(idx.length);
     const layers = new Uint8Array(ntri);
@@ -446,33 +577,42 @@ export class SceneBuilder {
     const grow = (box, b) => {
       for (let i = 0; i < 3; i++) { if (b[i] < box[i]) box[i] = b[i]; if (b[i + 3] > box[i + 3]) box[i + 3] = b[i + 3]; }
     };
+    const LATER = 0x40000000;
     for (let layer = 0; layer < LAYERS; layer++) {
       const mine = [];
       for (let i = 0; i < ntri; i++) if (layers[i] === layer) mine.push(i);
       if (!mine.length) continue;
-      const tets = this.tets[layer], chunks = this.chunks[layer];
-      tets.reserve(mine.length * 3 * (nk - 1));
+      // the tetrahedra of one step: three to a triangle's prism
+      const per = mine.length * 3, tm = this.tmpl;
+      tm.reserve(per);
+      const at = tm.count;
+      mine.forEach((i, n) => {
+        const a = tris[i * 3], b = tris[i * 3 + 1], c = tris[i * 3 + 2], fb = flipBit[i];
+        tm.u32.set([(a | fb) >>> 0, b, c, a | LATER, (b | fb) >>> 0, c, a | LATER, b | LATER, (c | fb) >>> 0, a | LATER, b | LATER, c | LATER], (at + n * 3) * 4);
+      });
+      const list = this._share(tm, at, per);
+      const chunks = this.chunks[layer];
       let chunk = null;
       for (let k = 0; k < nk - 1; k++) {
-        if (!chunk) chunk = { first: tets.count, count: 0, t0: times[k], t1: times[k], box: boxes[k].slice() };
-        const lo = base + k * nv, hi = lo + nv;
-        for (const i of mine) {
-          const a = tris[i * 3], b = tris[i * 3 + 1], c = tris[i * 3 + 2], fb = flipBit[i];
-          tets.u32.set([(lo + a | fb) >>> 0, lo + b, lo + c, hi + a, (lo + b | fb) >>> 0, lo + c, hi + a, hi + b, (lo + c | fb) >>> 0, hi + a, hi + b, hi + c], tets.count * 4);
-          tets.count += 3;
+        if (!chunk) {
+          chunk = { count: 0, t0: times[k], t1: times[k], box: boxes[k].slice(), within, path: [boxes[k]],
+            tmpl: list, per, vert: rigid ? vertBase : base + k * nv, nv: rigid ? 0 : nv, key: rigid ? keyBase + k : 0, rigid };
         }
-        chunk.count += mine.length * 3;
+        chunk.count += per;
         chunk.t1 = times[k + 1];
         grow(chunk.box, boxes[k + 1]);
+        chunk.path.push(boxes[k + 1]);
         if (chunk.count >= CHUNK_TETS) { chunks.push(chunk); chunk = null; }
       }
       if (chunk) chunks.push(chunk);
+      this.counts.tetrahedra += per * (nk - 1);
     }
 
     // Seal an end in time with the solid interior of the mesh at that moment:
     // a fan of tetrahedra from the centroid, all at one instant.
     const cap = (k) => {
       const t = times[k], g = k === 0 ? g0 : geoAt(t);
+      dv.reserve(nv + 1);
       const cb = dv.count;
       const { centre, box } = writeKey(g, t, xf ? xf(t) : null, paint ? paint(t) : null, cb, FLAG_CAP);
       // centre vertex: a copy of vertex 0 moved to the centroid
@@ -480,33 +620,46 @@ export class SceneBuilder {
       dv.u8.copyWithin(dst, src, src + DYN_STRIDE);
       dv.f32[dst >> 2] = centre[0]; dv.f32[(dst >> 2) + 1] = centre[1]; dv.f32[(dst >> 2) + 2] = centre[2];
       dv.count += nv + 1;
-      const tets = this.tets[0];
-      tets.reserve(ntri);
-      const chunk = { first: tets.count, count: 0, t0: t, t1: t, box };
-      for (let i = 0; i < ntri; i++) {
-        if (layers[i]) continue;
-        tets.u32.set([cb + nv, cb + idx[i * 3], cb + idx[i * 3 + 1], cb + idx[i * 3 + 2]], tets.count * 4);
-        tets.count++; chunk.count++;
-      }
-      if (chunk.count) this.chunks[0].push(chunk);
+      const fan = [];
+      for (let i = 0; i < ntri; i++) if (!layers[i]) fan.push(nv, idx[i * 3], idx[i * 3 + 1], idx[i * 3 + 2]);
+      if (!fan.length) return;
+      const tm = this.tmpl, per = fan.length / 4;
+      tm.reserve(per);
+      const at = tm.count;
+      tm.u32.set(fan, at * 4);
+      this.chunks[0].push({ count: per, t0: t, t1: t, box, within, path: [box], tmpl: this._share(tm, at, per), per, vert: cb, nv: 0, key: 0, rigid: false });
+      this.counts.tetrahedra += per;
     };
     if (capStart) cap(0);
     if (capEnd) cap(nk - 1);
 
     if (o.holdBefore) {
       const g = xf ? g0.clone().transform(xf(times[0])) : g0;
-      this.static(paint ? applyPaint(g === g0 ? g0.clone() : g, paint(times[0])) : g, { to: times[0] });
+      this.static(paint ? applyPaint(g === g0 ? g0.clone() : g, paint(times[0])) : g, { to: times[0], within: o.within });
       this.counts.staticObjects--;
     }
     if (o.holdAfter) {
       const tl2 = times[nk - 1];
       const gl = geoAt(tl2);
       const g = xf ? gl.clone().transform(xf(tl2)) : gl;
-      this.static(paint ? applyPaint(g === gl ? gl.clone() : g, paint(tl2)) : g, { from: tl2 });
+      this.static(paint ? applyPaint(g === gl ? gl.clone() : g, paint(tl2)) : g, { from: tl2, within: o.within });
       this.counts.staticObjects--;
     }
     this.counts.dynamicObjects++;
+    this._progress();
     return this;
+  }
+
+  // Tells whoever is waiting how far the build has got: `onProgress`, if set,
+  // is called after every piece with the bytes of geometry made so far.
+  _progress() {
+    if (this.onProgress) this.onProgress(this._work());
+  }
+
+  // How much has been made so far, as bytes of geometry: what the progress of
+  // a build is measured in (the final figure is in the statistics as `work`).
+  _work() {
+    return this.sv.count * STATIC_STRIDE + this.inst.count * INSTANCE_STRIDE + this.dv.count * DYN_STRIDE + this.keys.count * 64 + this.tmpl.count * 16;
   }
 
   stats() {
@@ -518,32 +671,60 @@ export class SceneBuilder {
       staticTriangles: this.sIdx.reduce((n, s) => n + s.count, 0) / 3 + this.counts.instancedTriangles,
       instances: this.counts.instances,
       dynamicVertices: this.dv.count,
-      tetrahedra: this.tets.reduce((n, t) => n + t.count, 0),
+      tetrahedra: this.counts.tetrahedra,
     };
   }
 
   // Packs everything into the buffers the renderer uploads.
   finalize() {
-    // Tetrahedra are stored chunk by chunk in order of starting time (within
-    // each layer), so that the chunks a slice touches, which lie close
-    // together in time, are also neighbours in the buffer and can be drawn
-    // with few draw calls.
-    const tets = new Uint32Array(Math.max(1, this.tets.reduce((n, t) => n + t.count, 0)) * 4);
+    // Chunks are numbered in order of starting time (within each layer), so
+    // that the chunks a slice touches, which lie close together in time, are
+    // also neighbours and can be drawn with few draw calls.  Detail that is
+    // drawn only from near by comes after everything else, so that it is never
+    // swept up in a draw call that bridges the gap between two other chunks.
+    // Each chunk is given a run of numbers for its tetrahedra, starting at a
+    // multiple of BLOCK; the vertex shader, which is handed one such number,
+    // finds the chunk in a table with an entry per BLOCK numbers (`blocks`),
+    // and in the chunk's own entry (`runs`) what it needs to work out the rest.
     const all = [];
     let tetAt = 0;
     for (let layer = 0; layer < LAYERS; layer++) {
-      const src = this.tets[layer].u32;
-      for (const c of this.chunks[layer].slice().sort((a, b) => a.t0 - b.t0)) {
-        tets.set(src.subarray(c.first * 4, (c.first + c.count) * 4), tetAt * 4);
+      for (const c of this.chunks[layer].slice().sort((a, b) => (a.within < BIG) - (b.within < BIG) || a.t0 - b.t0)) {
         all.push({ ...c, first: tetAt, layer });
-        tetAt += c.count;
+        tetAt += Math.ceil(c.count / BLOCK) * BLOCK;
       }
     }
+    const runs = new Uint32Array(Math.max(1, all.length) * 8);
+    const blocks = new Uint32Array(Math.max(1, tetAt / BLOCK));
+    all.forEach((c, i) => {
+      runs.set([c.first, c.count, c.tmpl, c.per, c.vert, c.nv, c.key, c.rigid ? 1 : 0], i * 8);
+      blocks.fill(i, c.first / BLOCK, c.first / BLOCK + Math.ceil(c.count / BLOCK));
+    });
     // chunk table: [first, count] and [t0, t1, centre xyz, half-size xyz, radius]
     const chunkRange = new Uint32Array(all.length * 2);
     const chunkBox = new Float64Array(all.length * 9);
     const chunkLayer = new Uint8Array(all.length);
+    const chunkNear = new Float32Array(all.length); // how near the viewer has to be for it to be drawn
+    // For chunks of such detail, where the thing is over the chunk's stretch of
+    // time: the middle of its bounds at the start and at the end, and a radius
+    // that takes in the thing itself and any bend of its path in between.  (A
+    // chunk's bounds take in the whole stretch, which for something on a long
+    // straight run says little about how near it is at any one moment.)
+    const chunkPath = new Float32Array(all.length * 7);
     all.forEach((c, i) => {
+      chunkNear[i] = c.within < BIG ? c.within : Infinity;
+      if (c.within < BIG) {
+        const mid = (b) => [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
+        const a = mid(c.path[0]), z = mid(c.path[c.path.length - 1]), d = [z[0] - a[0], z[1] - a[1], z[2] - a[2]];
+        const len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        let r = 0;
+        for (const b of c.path) {
+          const m = mid(b), u = len2 > 0 ? Math.min(1, Math.max(0, ((m[0] - a[0]) * d[0] + (m[1] - a[1]) * d[1] + (m[2] - a[2]) * d[2]) / len2)) : 0;
+          const off = Math.hypot(m[0] - a[0] - d[0] * u, m[1] - a[1] - d[1] * u, m[2] - a[2] - d[2] * u);
+          r = Math.max(r, off + Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2);
+        }
+        chunkPath.set([a[0], a[1], a[2], z[0], z[1], z[2], r], i * 7);
+      }
       chunkRange[i * 2] = c.first; chunkRange[i * 2 + 1] = c.count;
       const b = c.box, h = [(b[3] - b[0]) / 2, (b[4] - b[1]) / 2, (b[5] - b[2]) / 2];
       chunkBox.set([c.t0, c.t1, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, h[0], h[1], h[2], Math.hypot(h[0], h[1], h[2])], i * 9);
@@ -557,12 +738,14 @@ export class SceneBuilder {
     // from the furthest to the nearest.  The meshes of instances() come last.
     const staticIndices = new Uint32Array(Math.max(1, this.sIdx.reduce((n, s) => n + s.count, 0) + this.iIdx.count));
     const staticAlways = [];
+    const cells = []; // { layer, first, count, box } of the always-drawn triangles, cell by cell
     const timed = [];
+    const pos = this.sv.f32, stride = STATIC_STRIDE >> 2;
     let at = 0;
     for (let layer = 0; layer < LAYERS; layer++) {
       const src = this.sIdx[layer].u32;
       const calls = this.sCalls.filter((c) => c.layer === layer);
-      const worth = (c) => layer === 2 || ((c.from > -BIG || c.to < BIG) && (layer === 1 || c.count >= 3 * WINDOW_CULL_TRIANGLES));
+      const worth = (c) => layer === 2 || c.within < BIG || ((c.from > -BIG || c.to < BIG) && (layer === 1 || c.count >= 3 * WINDOW_CULL_TRIANGLES));
       const start = at;
       for (const c of calls) {
         if (worth(c)) continue;
@@ -570,6 +753,30 @@ export class SceneBuilder {
         at += c.count;
       }
       staticAlways.push({ first: start, count: at - start });
+      // ... which are then put in the order of the cells they fall in (by their centres)
+      const n = (at - start) / 3;
+      if (n) {
+        const tri = staticIndices.slice(start, at);
+        const cx = new Float32Array(n), cy = new Float32Array(n), cz = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          const a = tri[i * 3] * stride, b = tri[i * 3 + 1] * stride, c = tri[i * 3 + 2] * stride;
+          cx[i] = (pos[a] + pos[b] + pos[c]) / 3; cy[i] = (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3; cz[i] = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3;
+        }
+        const { order, ends } = spatialGroups(cx, cy, cz, Math.min(4 * CELL_TRIANGLES, Math.max(CELL_TRIANGLES, Math.ceil(n / 256))));
+        let lo = 0;
+        for (const hi of ends) {
+          const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+          for (let i = lo; i < hi; i++) {
+            for (let k = 0; k < 3; k++) {
+              const v = tri[order[i] * 3 + k];
+              staticIndices[start + i * 3 + k] = v;
+              for (let j = 0; j < 3; j++) { const x = pos[v * stride + j]; if (x < box[j]) box[j] = x; if (x > box[j + 3]) box[j + 3] = x; }
+            }
+          }
+          cells.push({ layer, first: start + lo * 3, count: (hi - lo) * 3, box });
+          lo = hi;
+        }
+      }
       for (const c of calls) {
         if (!worth(c)) continue;
         staticIndices.set(src.subarray(c.first, c.first + c.count), at);
@@ -577,10 +784,22 @@ export class SceneBuilder {
         at += c.count;
       }
     }
+    // cell table: [first, count] and [centre xyz, half-size xyz]
+    const cellRange = new Uint32Array(cells.length * 2);
+    const cellBox = new Float64Array(cells.length * 6);
+    const cellLayer = new Uint8Array(cells.length);
+    cells.forEach((c, i) => {
+      cellRange[i * 2] = c.first; cellRange[i * 2 + 1] = c.count;
+      const b = c.box;
+      cellBox.set([(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, (b[3] - b[0]) / 2, (b[4] - b[1]) / 2, (b[5] - b[2]) / 2], i * 6);
+      cellLayer[i] = c.layer;
+    });
     const timedRange = new Uint32Array(timed.length * 2);
     const timedBox = new Float64Array(timed.length * 9);
     const timedLayer = new Uint8Array(timed.length);
+    const timedNear = new Float32Array(timed.length);
     timed.forEach((c, i) => {
+      timedNear[i] = c.within < BIG ? c.within : Infinity;
       timedRange[i * 2] = c.first; timedRange[i * 2 + 1] = c.count;
       const b = c.box;
       timedBox.set([c.from, c.to, c.period, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, (b[3] - b[0]) / 2, (b[4] - b[1]) / 2, (b[5] - b[2]) / 2], i * 9);
@@ -602,19 +821,29 @@ export class SceneBuilder {
       }
     }
     for (const a of this.solidExtra) { solidTris.set(a, st); st += a.length; }
+    const stats = this.stats();
+    stats.work = this._work();
+    // what the graphics card is given to hold
+    stats.bytes = this.sv.count * STATIC_STRIDE + staticIndices.byteLength + this.inst.count * INSTANCE_STRIDE
+      + this.dv.count * DYN_STRIDE + this.keys.count * 64 + this.tmpl.count * 16 + runs.byteLength + blocks.byteLength
+      + this.textures.reduce((sum, t) => sum + t.width * t.height * t.channels * (t.float ? 2 : 1), 0);
     return {
       solidTris,
       staticVerts: this.sv.u8.slice(0, Math.max(1, this.sv.count) * STATIC_STRIDE),
       staticIndices,
       staticAlways,
+      staticCells: { count: cells.length, range: cellRange, box: cellBox, layer: cellLayer },
       instances: this.inst.u8.slice(0, Math.max(1, this.inst.count) * INSTANCE_STRIDE),
       instanced,
       textures: this.textures,
-      staticTimed: { count: timed.length, range: timedRange, box: timedBox, layer: timedLayer },
+      staticTimed: { count: timed.length, range: timedRange, box: timedBox, layer: timedLayer, near: timedNear },
       dynVerts: this.dv.u8.slice(0, Math.max(1, this.dv.count) * DYN_STRIDE),
-      tets,
-      chunks: { count: all.length, range: chunkRange, box: chunkBox, layer: chunkLayer },
-      stats: this.stats(),
+      dynKeys: this.keys.f32.slice(0, Math.max(1, this.keys.count) * 16),
+      dynTmpl: this.tmpl.u32.slice(0, Math.max(1, this.tmpl.count) * 4),
+      dynRuns: runs,
+      dynBlocks: blocks,
+      chunks: { count: all.length, range: chunkRange, box: chunkBox, layer: chunkLayer, near: chunkNear, path: chunkPath },
+      stats,
     };
   }
 }

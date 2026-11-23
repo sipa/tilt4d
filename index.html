@@ -9,6 +9,7 @@
 </head>
 <body>
 <canvas id="view"></canvas>
+<div id="loadbar" hidden><div></div></div>
 
 <div id="hud" hidden>
   <div class="hud-top">
@@ -22,7 +23,9 @@
   <div class="hud-panel">
     <canvas id="gauge" width="300" height="300"></canvas>
     <dl class="readout">
-      <dt>speed</dt><dd id="ro-speed"></dd>
+      <dt>speed in slice</dt><dd id="ro-speed"></dd>
+      <dt class="part">through space</dt><dd class="part" id="ro-space"></dd>
+      <dt class="part">through time</dt><dd class="part" id="ro-time"></dd>
       <dt>time flows</dt><dd id="ro-rate"></dd>
       <dt class="wide-only">scene clock</dt><dd class="wide-only" id="ro-clock"></dd>
       <dt>tilt</dt><dd id="ro-tilt"></dd>
@@ -43,6 +46,13 @@
     <header>
       <h1>tilt4d</h1>
       <p class="tagline">Rendering as a projection from four dimensions to two.</p>
+      <div class="settings-box">
+        <button type="button" id="settings-toggle" aria-expanded="false" aria-controls="settings-panel">Settings</button>
+        <div id="settings-panel" class="settings-panel" hidden>
+          <div id="settings" class="settings"></div>
+          <p class="fine settings-note">Kept in this browser from one visit to the next, apart from the mode and the pace. <button type="button" id="settings-reset">Back to the defaults</button></p>
+        </div>
+      </div>
     </header>
 
     <div class="columns">
@@ -52,7 +62,8 @@
         and you are a camera inside it. What you see is still a three-dimensional slice of it, but the slice need not be level.</p>
         <p>Besides turning left and right and looking up and down, there is one more way to turn: <em>tilting</em>,
         which swings your line of sight out of space and into time. Ahead of you the slice then dips into the <span class="past">past</span>,
-        behind you it rises into the <span class="future">future</span>, by one second for every <b>C</b> metres at a tilt of 45°.
+        behind you it rises into the <span class="future">future</span>, further the further away:
+        by one second for every <b id="about-length">10 m</b> at a tilt of 45°<span id="about-scene"></span>.
         Your own time slows as you tilt: at a right angle it stands still, and beyond that it runs backwards.
         You move about as usual, but within the slice you see: walking forward in a tilted view takes you further back in time.</p>
         <p class="aside">It resembles relativity, but it is not: the rotation is an ordinary Euclidean one and light is instantaneous,

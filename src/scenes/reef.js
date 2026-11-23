@@ -24,8 +24,10 @@ const SUN = v3.norm([-0.28, -0.42, 0.92]);
 const TAU = Math.PI * 2;
 
 const MAT = {
-  TERRAIN: 1, ROCK: 2, CORAL: 3, BRAIN: 4, FAN: 5, KELP: 6, SHAFT: 7, BUBBLE: 8, JELLY: 9,
+  TERRAIN: 1, ROCK: 2, CORAL: 3, BRAIN: 4, FAN: 5, KELP: 6, SHAFT: 7, BUBBLE: 8,
   BEACON: 10, SPOTS: 11, THIN: 12, GLOW: 13, RUST: 14, BEAM: 15, SHELL: 16, SPONGE: 17, LAMP: 18, FROND: 19,
+  // from here on the tag means something else than for the instanced reef life (see `surface`)
+  FISH: 20, FIN: 21, MANTA: 22, JELLY: 23, BITS: 24, HULL: 25, CARGO: 26, TURTLE: 27, SUB: 28, EEL: 29, SHARKFIN: 30, VENT: 31, FLIPPER: 32,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,18 @@ function floorUnder(x, y, r) {
   return z;
 }
 
+// Height of the floor as drawn: the terrain mesh (a grid of 160 by 193 cells,
+// each split along its rising diagonal) between its corners, which can lie a
+// little above or below H.  For setting small things down on it.
+const FLOOR_NX = 160, FLOOR_NY = 193;
+function floorMesh(x, y) {
+  const gx = (x - X0) / (X1 - X0) * FLOOR_NX, gy = (y - Y0) / (Y1 - Y0) * FLOOR_NY;
+  const i = Math.floor(gx), j = Math.floor(gy), fx = gx - i, fy = gy - j;
+  const at = (a, c) => H(X0 + (X1 - X0) * (i + a) / FLOOR_NX, Y0 + (Y1 - Y0) * (j + c) / FLOOR_NY);
+  const z00 = at(0, 0), z11 = at(1, 1);
+  return fx >= fy ? z00 + fx * (at(1, 0) - z00) + fy * (z11 - at(1, 0)) : z00 + fy * (at(0, 1) - z00) + fx * (z11 - at(0, 1));
+}
+
 // ---------------------------------------------------------------------------
 // Colours
 
@@ -115,6 +129,41 @@ const PAL = {
 // the second colours that instanced reef life can take (see "Reef life" below)
 const SECOND = [PAL.cream, PAL.yellow, '#c6f0ff', PAL.magenta, PAL.red, PAL.purple];
 const SECOND_WGSL = SECOND.map((c) => `vec3f(${hex(c).map((v) => v.toFixed(5)).join(', ')})`).join(', ');
+
+// The kinds of fish (see fishGeo).  Sizes in metres; everything else in body
+// lengths, along the fish (the snout at +0.5, the tail stalk at -0.3) and up:
+// the dorsal and anal fins run from one place along the body to another and
+// stand so high; the eye is at (along, up) with a radius.  `tag` picks the
+// pattern painted in `surface`.
+const FISH = {
+  fusilier: { tag: 1, L: 0.48, h: 0.15, w: 0.08, back: '#ffcf3a', flank: '#3f8ff0', belly: '#eef4f8', fins: '#a9c9ec', tail: '#ffd23f',
+    fork: 1.0, tailH: 1.0, dorsal: [0.26, -0.2, 0.07], anal: [0.0, -0.22, 0.05], eye: [0.345, 0.014, 0.032], iris: '#d8d0b0', gloss: 0.35 },
+  snapper: { tag: 2, L: 0.34, h: 0.13, w: 0.06, back: '#e8b812', flank: '#ffd84a', belly: '#f6f0d0', fins: '#f7d34a', tail: '#f0c419',
+    fork: 0.45, tailH: 0.95, dorsal: [0.27, -0.2, 0.09], anal: [0.0, -0.21, 0.07], eye: [0.34, 0.03, 0.037], iris: '#f0d890', gloss: 0.4 },
+  chromis: { tag: 3, L: 0.2, h: 0.085, w: 0.045, back: '#2a74d8', flank: '#5cc4ff', belly: '#b2e6ff', fins: '#7ccfff', tail: '#3a8cf0',
+    fork: 0.9, tailH: 1.05, dorsal: [0.26, -0.21, 0.11], anal: [0.02, -0.22, 0.09], eye: [0.335, 0.03, 0.05], iris: '#2a3a50', gloss: 0.5 },
+  jack: { tag: 4, L: 0.6, h: 0.2, w: 0.08, back: '#4a5c6a', flank: '#c4d0d8', belly: '#eef2f4', fins: '#8d9ba6', tail: '#b8b58a',
+    fork: 1.25, tailH: 1.1, dorsal: [0.2, -0.22, 0.08], anal: [0.0, -0.23, 0.06], eye: [0.345, 0.015, 0.04], iris: '#e8eef0', gloss: 0.85 },
+  tang: { tag: 5, L: 0.26, h: 0.2, w: 0.04, back: '#f2c30f', flank: '#ffd52a', belly: '#ffe680', fins: '#ffd21c', tail: '#ffe14a',
+    fork: 0.05, tailH: 1.05, dorsal: [0.24, -0.24, 0.16], anal: [0.04, -0.24, 0.14], tall: true, head: 0.74, mouth: 0.02,
+    eye: [0.33, 0.08, 0.045], iris: '#20180a', gloss: 0.4 },
+  parrot: { tag: 6, L: 0.7, h: 0.24, w: 0.13, back: '#23877c', flank: '#45c4a0', belly: '#a8e6cf', fins: '#e86fae', tail: '#e86fae',
+    fork: 0.2, tailH: 0.95, dorsal: [0.24, -0.22, 0.06], anal: [0.0, -0.22, 0.05], head: 0.85, mouth: 0.0,
+    eye: [0.35, 0.035, 0.03], iris: '#f0a040', gloss: 0.4 },
+  clown: { tag: 7, L: 0.11, h: 0.05, w: 0.026, back: '#f06a10', flank: '#ff8a1e', belly: '#ffa040', fins: '#ff8a1e', tail: '#ff8a1e',
+    fork: 0.0, tailH: 0.9, dorsal: [0.22, -0.24, 0.14], anal: [0.02, -0.22, 0.11], tall: true, head: 0.78, mouth: -0.01,
+    eye: [0.35, 0.04, 0.05], iris: '#e07010', gloss: 0.5 },
+  humbug: { tag: 8, L: 0.09, h: 0.055, w: 0.022, back: '#f4f4f0', flank: '#f4f4f0', belly: '#ffffff', fins: '#202020', tail: '#e8e8e8',
+    fork: 0.35, tailH: 1.0, dorsal: [0.24, -0.2, 0.16], anal: [0.04, -0.22, 0.12], tall: true, head: 0.8,
+    eye: [0.35, 0.05, 0.05], iris: '#303030', gloss: 0.4 },
+};
+// for the shader, per kind (by tag; 0 is unused): back, belly, eye (along, up, radius), iris, (mouth height, 0, 0)
+const FISH_WGSL = (() => {
+  const list = Object.values(FISH).sort((a, b) => a.tag - b.tag);
+  const v = (c) => `vec3f(${c.map((x) => x.toFixed(4)).join(', ')})`;
+  const rows = [list[0], ...list].map((f) => [v(hex(f.back)), v(hex(f.belly)), v(f.eye), v(hex(f.iris)), v([f.mouth ?? -0.02, 0, 0])]);
+  return `array<vec3f, ${rows.length * 5}>(${rows.flat().join(', ')})`;
+})();
 
 // ---------------------------------------------------------------------------
 // Shader hooks: water, light and materials
@@ -274,7 +323,7 @@ fn cutout(s: Surface) -> f32 {
     let fade = smoothstep(0.2, 0.45, max(fw.y * KELP_BLADES, fw.x * 4.0));
     return mix(saturate(0.5 + kelpLeaf(s.uv) * 5.0), 1.0, fade);
   }
-  if (s.mat == ${MAT.RUST}u && s.aux > 0.0) {
+  if ((s.mat == ${MAT.RUST}u || s.mat == ${MAT.HULL}u) && s.aux > 0.0) {
     // ragged holes rusted through the wreck's plating, where aux allows them
     let r = noise3(s.pos * 0.7 + 3.0) * 0.65 + noise3(s.pos * 2.6 - 1.0) * 0.35 - (1.0 - s.aux) * 0.3;
     return saturate(0.5 + (0.54 - r) * 10.0);
@@ -288,15 +337,87 @@ fn secondColor(i: u32) -> vec3f {
   return c[min(i, 5u)];
 }
 
+// A fish's body (uv: along and up it in body lengths, the snout at +0.5;
+// aux: how high across the body, -1 belly .. 1 back; tag: the kind), painted:
+// countershading, each kind's markings, the gill cover, mouth and eye.  The
+// colours are sRGB.  fw is how much of a body length a pixel covers.
+fn fishSkin(sp: u32, a: f32, v: f32, zn: f32, flank: vec3f, fw: f32) -> vec4f {
+  // each kind's back, belly, eye (along, up, radius), iris and (mouth height, 0, 0)
+  var tab = ${FISH_WGSL};
+  let ti = min(sp, 8u) * 5u;
+  let back = tab[ti];
+  var c = mix(flank, back, smoothstep(0.35, 0.8, zn));
+  c = mix(c, tab[ti + 1u], smoothstep(-0.25, -0.7, zn));
+  let fine = 1.0 - smoothstep(0.004, 0.012, fw);   // markings finer than a pixel fade out
+  if (sp == 1u) {
+    // fusilier: the yellow back widens towards the tail until the stalk is all yellow
+    let edge = mix(0.78, -0.6, smoothstep(0.18, -0.26, a));
+    c = mix(c, back, smoothstep(edge - 0.08, edge + 0.08, zn));
+  } else if (sp == 2u) {
+    // snapper: four blue stripes edged in black, from the snout to the tail
+    let q = abs(fract((zn + 0.7) * 2.4) - 0.5);
+    let on = smoothstep(-0.72, -0.62, zn) * (1.0 - smoothstep(0.75, 0.85, zn)) * (1.0 - smoothstep(0.43, 0.47, a));
+    c = mix(c, vec3f(0.08, 0.1, 0.12), on * (1.0 - smoothstep(0.12, 0.15, q)) * fine);
+    c = mix(c, vec3f(0.25, 0.62, 1.0), on * (1.0 - smoothstep(0.075, 0.105, q)));
+  } else if (sp == 4u) {
+    // jack: a black spot high on the gill cover, and a row of dark scutes along the tail stalk
+    c = mix(c, vec3f(0.06, 0.07, 0.08), 1.0 - smoothstep(0.016, 0.022, length(vec2f(a - 0.305, v - 0.055))));
+    let sc = (1.0 - smoothstep(0.1, 0.18, abs(zn))) * smoothstep(0.02, -0.06, a);
+    c = mix(c, c * (0.7 + 0.2 * step(0.5, fract(a * 60.0))), sc * fine);
+  } else if (sp == 5u) {
+    // tang: the white spine at the root of the tail
+    c = mix(c, vec3f(0.97, 0.97, 0.92), 1.0 - smoothstep(0.7, 1.0, length(vec2f((a + 0.24) / 0.035, zn / 0.3))));
+  } else if (sp == 7u) {
+    // clownfish: three white bands edged in black
+    let bd = min(min(abs(a - 0.29 + 0.03 * zn), abs(a - 0.03 - 0.05 * zn)), abs(a + 0.24));
+    c = mix(c, vec3f(0.05), 1.0 - smoothstep(0.045, 0.055, bd));
+    c = mix(c, vec3f(0.98, 0.98, 0.96), 1.0 - smoothstep(0.03, 0.04, bd));
+  } else if (sp == 8u) {
+    // humbug damselfish: three black bars, through the eye, mid-body and at the tail
+    let bd = min(min(abs(a - 0.36 + 0.08 * zn), abs(a - 0.06 + 0.1 * zn)), abs(a + 0.22));
+    c = mix(c, vec3f(0.04), 1.0 - smoothstep(0.045, 0.06, bd));
+  } else if (sp == 6u) {
+    // parrotfish: big scales edged in pink, pink bands across the face, a pale beak
+    let q = vec2f(a * 26.0 + 0.5 * step(0.5, fract(v * 13.0)), v * 13.0);
+    let e = abs(fract(q) - 0.5);
+    c = mix(c, vec3f(0.85, 0.42, 0.62), smoothstep(0.36, 0.48, max(e.x, e.y)) * fine * 0.7 * step(a, 0.33));
+    let band = abs(fract((v - 0.45 * a) * 18.0) - 0.5);
+    c = mix(c, vec3f(0.9, 0.45, 0.65), (1.0 - smoothstep(0.12, 0.2, band)) * smoothstep(0.33, 0.37, a) * fine);
+    c = mix(c, vec3f(0.9, 0.92, 0.85), smoothstep(0.462, 0.47, a));
+  }
+  // the edge of the gill cover, a curve just ahead of the widest point
+  let gd = abs(a - (0.292 - 0.05 * zn * zn));
+  c *= 1.0 - 0.5 * (1.0 - smoothstep(0.003, 0.006 + fw, gd)) * (1.0 - smoothstep(0.75, 0.9, abs(zn))) * fine;
+  // the mouth: a dark line running back from the snout
+  let mv = tab[ti + 4u].x;
+  c *= 1.0 - 0.8 * (1.0 - smoothstep(0.004, 0.006 + fw, abs(v - mv))) * smoothstep(0.445, 0.455, a);
+  // the eye: a ring of iris round a black pupil, with a dark rim and a glint
+  let e = tab[ti + 2u];
+  let d = length(vec2f(a, v) - e.xy) / e.z;
+  var eye = 0.0;
+  if (d < 1.1) {
+    var ec = mix(tab[ti + 3u], vec3f(0.01), 1.0 - smoothstep(0.5, 0.6, d));
+    ec = mix(ec, vec3f(0.04), smoothstep(0.85, 0.95, d));
+    let glint = 1.0 - smoothstep(0.12, 0.2, length(vec2f(a, v) - e.xy - vec2f(0.2, 0.25) * e.z) / e.z);
+    ec = mix(ec, vec3f(1.0), glint);
+    eye = 1.0 - smoothstep(1.0, 1.08, d);
+    c = mix(c, ec, eye);
+  }
+  return vec4f(c, eye);
+}
+
 fn surface(sIn: Surface) -> Surface {
   var s = sIn;
   let m = s.mat;
+  let fwUV = fwidth(s.uv);
   // instanced reef life: parts that keep their own colour, or take the copy's second one
-  if (s.tag == 1u) {
-    s.color /= max(s.inst.rgb, vec3f(1e-4));
-  } else if (s.tag >= 2u) {
-    let c2 = secondColor(u32(s.inst.w + 0.5));
-    s.color = srgbToLinear(select(c2, mix(pow(s.inst.rgb, vec3f(1.0 / 2.2)), c2, 0.55), s.tag == 2u));
+  if (m < ${MAT.FISH}u) {
+    if (s.tag == 1u) {
+      s.color /= max(s.inst.rgb, vec3f(1e-4));
+    } else if (s.tag >= 2u) {
+      let c2 = secondColor(u32(s.inst.w + 0.5));
+      s.color = srgbToLinear(select(c2, mix(pow(s.inst.rgb, vec3f(1.0 / 2.2)), c2, 0.55), s.tag == 2u));
+    }
   }
   let depth = max(SURF - s.pos.z, 0.0);
   var causticAmt = 1.0;
@@ -317,7 +438,7 @@ fn surface(sIn: Surface) -> Surface {
   }
 
   // thin sheets are lit from whichever side is seen
-  if (m == ${MAT.THIN}u || m == ${MAT.KELP}u || m == ${MAT.FROND}u || m == ${MAT.FAN}u || m == ${MAT.JELLY}u) {
+  if (m == ${MAT.THIN}u || m == ${MAT.KELP}u || m == ${MAT.FROND}u || m == ${MAT.FAN}u || m == ${MAT.JELLY}u || m == ${MAT.FIN}u || m == ${MAT.SHARKFIN}u || m == ${MAT.FLIPPER}u) {
     if (dot(s.n, s.view) > 0.0) { s.n = -s.n; }
   }
 
@@ -367,12 +488,18 @@ fn surface(sIn: Surface) -> Surface {
     // tiny polyps
     let pp = noise3(s.pos * 14.0);
     s.color *= 0.82 + 0.36 * pp * (1.0 - smoothstep(4.0, 12.0, s.dist));
+    if (s.dist < 5.0) {
+      // close by, the polyps: pale specks with dark mouths
+      let c = noise3(s.pos * 45.0);
+      s.color *= 1.0 + (1.0 - smoothstep(2.5, 5.0, s.dist)) * (0.35 * smoothstep(0.55, 0.68, c) - 0.5 * smoothstep(0.74, 0.8, c));
+    }
   } else if (m == ${MAT.BRAIN}u) {
-    // meandering grooves
+    // meandering ridges with narrow dark valleys between them
     let g = sin(noise3(s.pos * 2.2) * 34.0);
     let k = (1.0 - smoothstep(6.0, 20.0, s.dist));
-    s.color *= 1.0 + 0.3 * g * k;
-    s.ambient *= 1.0 - 0.25 * (g * 0.5 + 0.5) * k;
+    let valley = smoothstep(-0.55, -0.9, g);
+    s.color *= 1.0 + k * (0.18 * g - 0.5 * valley);
+    s.ambient *= 1.0 - 0.3 * valley * k;
   } else if (m == ${MAT.FAN}u) {
     // a net of branches with water showing between them (see \`cutout\`),
     // a little darker towards their edges
@@ -386,7 +513,26 @@ fn surface(sIn: Surface) -> Surface {
   } else if (m == ${MAT.SPONGE}u) {
     let pits = noise3(s.pos * 9.0);
     s.color *= 0.7 + 0.6 * smoothstep(0.25, 0.6, pits);
-  } else if (m == ${MAT.RUST}u) {
+  } else if (m == ${MAT.RUST}u || m == ${MAT.HULL}u) {
+    if (m == ${MAT.HULL}u && s.dist < 14.0) {
+      // the hull's plates (uv: along and up the hull in metres): seams every 2 m
+      // along and 0.9 m up, each with a row of rivets beside it
+      let q = s.uv / vec2f(2.0, 0.9);
+      let dy = (0.5 - abs(fract(q.x) - 0.5)) * 2.0;
+      let dz = (0.5 - abs(fract(q.y) - 0.5)) * 0.9;
+      let r1 = length(vec2f(dy - 0.07, (fract(s.uv.y / 0.13) - 0.5) * 0.13));
+      let r2 = length(vec2f(dz - 0.07, (fract(s.uv.x / 0.13) - 0.5) * 0.13));
+      let fine = 1.0 - smoothstep(6.0, 14.0, s.dist);
+      let rivet = 1.0 - smoothstep(0.014, 0.022, min(r1, r2));
+      s.color *= 1.0 - fine * (0.45 * (1.0 - smoothstep(0.012, 0.025, min(dy, dz))) - 0.35 * rivet);
+      // patches of barnacles: pale cones with dark middles
+      let bq = s.uv * 14.0;
+      let bh = hash22(floor(bq));
+      let bd = length(fract(bq) - 0.5 - 0.45 * (bh - 0.5)) / (0.6 + 0.6 * bh.x);
+      let bar = step(0.7, noise2(s.uv * 0.6 + 3.0) + 0.1 * bh.y) * step(0.3, bh.y) * fine;
+      let cone = 1.0 - smoothstep(0.1, 0.2, bd);
+      s.color = mix(s.color, vec3f(0.55, 0.52, 0.45) * (0.7 + 0.3 * cone), bar * cone * smoothstep(0.03, 0.06, bd));
+    }
     // rust, sponges and weed on the wreck
     let a = noise3(s.pos * 0.9);
     let b = noise3(s.pos * 1.7 + 9.0);
@@ -405,16 +551,154 @@ fn surface(sIn: Surface) -> Surface {
     s.color *= 0.6 + 0.4 * smoothstep(0.03, 0.15, min(e.x, e.y)) + 0.25 * noise2(q * 3.0);
     s.color = mix(s.color, vec3f(0.62, 0.55, 0.32), 1.0 - smoothstep(-0.6, -0.25, s.n.z));
   } else if (m == ${MAT.SPOTS}u) {
-    // whale shark: pale spots on the dark back
-    let belly = 1.0 - smoothstep(-0.45, -0.1, s.n.z);
+    // whale shark (uv: x around the body, 0 on its right, 0.25 under it, 0.75
+    // on top; y along it, 0 at the tip of the tail and 1 at the snout): a pale
+    // belly, a chequer of pale lines on the flanks with a pale spot in each
+    // square and smaller ones on the head, gill slits, the mouth and the eyes
+    let ph = s.uv.x * TAU;
+    let up = -sin(ph);
+    let y = s.uv.y * 9.05;
+    let belly = 1.0 - smoothstep(-0.55, -0.2, up);
     let back = 1.0 - belly;
     s.color = mix(s.color, vec3f(0.72, 0.76, 0.78), belly);
-    let q = s.uv * vec2f(22.0, 30.0);
-    let cell = floor(q);
-    let jit = hash22(cell) - 0.5;
-    let d = length(fract(q) - 0.5 - jit * 0.4);
-    let spot = (1.0 - smoothstep(0.16, 0.24, d)) * back;
-    s.color = mix(s.color, vec3f(0.75, 0.78, 0.78), spot);
+    let head = smoothstep(7.0, 7.4, y);
+    let q = vec2f(s.uv.x * mix(22.0, 40.0, head), y * mix(3.3, 6.5, head));
+    let e = abs(fract(q) - 0.5);
+    let jit = hash22(floor(q)) - 0.5;
+    let d = length(fract(q) - 0.5 - jit * 0.35);
+    // (no spots on the very snout, where the cells round the body narrow to slivers)
+    let spot = (1.0 - smoothstep(0.15, 0.23, d)) * back * (1.0 - smoothstep(8.65, 8.8, y));
+    let fine = 1.0 - smoothstep(4.0, 25.0, s.dist);
+    let lines = smoothstep(0.44, 0.48, max(e.x, e.y) + 0.03 * jit.x) * back * (1.0 - head) * smoothstep(2.0, 4.0, y) * fine;
+    s.color = mix(s.color, vec3f(0.75, 0.78, 0.78), max(spot, lines * 0.35));
+    let side = smoothstep(0.2, 0.4, abs(cos(ph))) * (1.0 - smoothstep(0.45, 0.6, up)) * smoothstep(-0.6, -0.45, up);
+    let slit = (1.0 - smoothstep(0.06, 0.12, abs(fract((y - 6.45) / 0.18) - 0.5))) * step(6.45, y) * step(y, 7.35) * side;
+    s.color = mix(s.color, vec3f(0.08, 0.09, 0.11), slit * fine);
+    let mouth = (1.0 - smoothstep(0.035, 0.06, abs(y - 8.86 - 0.08 * up))) * smoothstep(-0.8, -0.65, up) * (1.0 - smoothstep(0.1, 0.2, up));
+    s.color = mix(s.color, vec3f(0.03, 0.03, 0.04), mouth);
+    let eye = (1.0 - smoothstep(0.045, 0.06, length(vec2f((up - 0.05) * 0.7, y - 8.45)))) * smoothstep(0.5, 0.6, abs(cos(ph)));
+    s.color = mix(s.color, vec3f(0.02), eye);
+  } else if (m == ${MAT.FISH}u) {
+    let f = fishSkin(s.tag, s.uv.x, s.uv.y, clamp(s.aux, -1.0, 1.0), pow(s.color, vec3f(1.0 / 2.2)), max(fwUV.x, fwUV.y));
+    s.color = srgbToLinear(clamp(f.rgb, vec3f(0.0), vec3f(1.0)));
+    s.gloss = mix(s.gloss, 0.9, f.a);
+  } else if (m == ${MAT.FIN}u) {
+    // fins: fine rays (along the tail, across the others), paler towards the rim
+    let tailFin = s.uv.x < -0.3;
+    let ray = select(s.uv.x, s.uv.y, tailFin);
+    let fine = 1.0 - smoothstep(0.004, 0.012, max(fwUV.x, fwUV.y));
+    let rim = saturate(s.aux);
+    s.color *= (1.0 - 0.28 * fine * (0.5 + 0.5 * sin(ray * 260.0))) * (0.8 + 0.35 * rim);
+    // the fusilier's tail lobes are tipped with black
+    if (s.tag == 1u && tailFin) { s.color = mix(s.color, vec3f(0.01), smoothstep(0.8, 0.9, rim)); }
+  } else if (m == ${MAT.MANTA}u) {
+    // manta (uv: place on the ray in metres, the mouth at y = 0.97)
+    let x = abs(s.uv.x);
+    let y = s.uv.y;
+    let mot = noise2(s.uv * 3.0);
+    if (s.tag == 1u) {
+      // the back: pale shoulder patches behind the head, sweeping out along the wings
+      let band = y - (0.62 - 0.4 * x);
+      let pale = smoothstep(-0.42, -0.34, band) * (1.0 - smoothstep(-0.08, 0.0, band)) * smoothstep(0.26, 0.36, x) * (1.0 - smoothstep(1.1, 1.5, x));
+      s.color = mix(s.color, vec3f(0.42, 0.45, 0.47), pale * smoothstep(0.3, 0.5, mot + 0.2));
+    } else {
+      // the belly: dark spots of its own, gill slits, the mouth, and dark wing edges
+      let cell = floor(s.uv * 7.0);
+      let h = hash22(cell + 17.0);
+      let sp = (1.0 - smoothstep(0.1, 0.16, length(fract(s.uv * 7.0) - 0.25 - 0.5 * h))) * step(0.72, h.x + h.y * 0.2);
+      s.color = mix(s.color, vec3f(0.12, 0.13, 0.15), sp * (1.0 - smoothstep(0.35, 0.6, x)) * smoothstep(-0.7, -0.4, y) * (1.0 - smoothstep(0.2, 0.3, y)));
+      let gq = (0.7 - y - 0.18 * (x - 0.2)) / 0.085;
+      let slit = (1.0 - smoothstep(0.08, 0.16, abs(fract(gq) - 0.5) - 0.32)) * step(0.0, gq) * step(gq, 5.0) * smoothstep(0.18, 0.21, x) * (1.0 - smoothstep(0.43, 0.46, x));
+      s.color = mix(s.color, vec3f(0.18, 0.2, 0.24), slit * 0.85);
+      s.color = mix(s.color, vec3f(0.05, 0.05, 0.07), smoothstep(0.9, 0.93, y) * (1.0 - smoothstep(0.15, 0.18, x)));
+      s.color = mix(s.color, vec3f(0.22, 0.25, 0.3), smoothstep(1.5, 2.3, x + 0.6 * mot));
+    }
+    // the eyes, on either side of the head behind the horns
+    let ed = length(vec2f(x - 0.4, y - 0.8));
+    s.color = mix(s.color, vec3f(0.55, 0.58, 0.6), 1.0 - smoothstep(0.05, 0.058, ed));
+    s.color = mix(s.color, vec3f(0.01), 1.0 - smoothstep(0.034, 0.042, ed));
+  } else if (m == ${MAT.TURTLE}u) {
+    // the turtle's head (uv: round it, the snout at u = 0.25, and down it from
+    // the crown): plates edged darker, a pale throat, dark glossy eyes
+    let sc = abs(fract(vec2f(s.uv.x * 28.0, s.uv.y * 9.0)) - 0.5);
+    s.color *= 1.0 - 0.4 * smoothstep(0.38, 0.47, max(sc.x, sc.y)) * (1.0 - smoothstep(0.5, 0.6, s.uv.y));
+    s.color = mix(s.color, vec3f(0.85, 0.8, 0.62), smoothstep(0.55, 0.68, s.uv.y));
+    let ed = min(length(vec2f((s.uv.x - 0.165) * 34.0, (s.uv.y - 0.43) * 15.0)), length(vec2f((s.uv.x - 0.335) * 34.0, (s.uv.y - 0.43) * 15.0)));
+    let eye = 1.0 - smoothstep(0.8, 1.0, ed);
+    s.color = mix(s.color, vec3f(0.02), eye);
+    s.gloss = mix(s.gloss, 0.85, eye);
+  } else if (m == ${MAT.FLIPPER}u) {
+    // the turtle's flippers (uv: their flat outline in metres): dark scales edged pale
+    let q = s.uv * vec2f(22.0, 26.0) + vec2f(0.5 * step(0.5, fract(s.uv.y * 13.0)), 0.0);
+    let e = abs(fract(q) - 0.5);
+    s.color *= mix(1.0, 0.6 + 0.6 * smoothstep(0.32, 0.46, max(e.x, e.y)), 1.0 - smoothstep(0.25, 0.5, max(fwUV.x, fwUV.y) * 26.0));
+  } else if (m == ${MAT.SUB}u) {
+    // the submarine (uv: x round the hull, 0 on its right and 0.5 on its left;
+    // y along it in metres): three portholes a side with brass rims, and a dark band
+    let side = min(min(abs(s.uv.x), abs(1.0 - s.uv.x)), abs(s.uv.x - 0.5)) * 4.1;
+    let py = (fract((s.uv.y + 0.6) / 0.6 + 0.5) - 0.5) * 0.6;
+    let pd = length(vec2f(side, py)) * step(-0.9, s.uv.y) * step(s.uv.y, 0.95) + step(0.95, s.uv.y) + step(s.uv.y, -0.9);
+    s.color = mix(s.color, vec3f(0.55, 0.4, 0.12), 1.0 - smoothstep(0.13, 0.15, pd));
+    s.color = mix(s.color, vec3f(0.02, 0.04, 0.06), 1.0 - smoothstep(0.095, 0.11, pd));
+    s.gloss = mix(s.gloss, 0.95, 1.0 - smoothstep(0.095, 0.11, pd));
+    s.color = mix(s.color, vec3f(0.12, 0.14, 0.18), (1.0 - smoothstep(0.02, 0.03, abs(side - 0.55))) * step(abs(s.uv.y), 1.3));
+  } else if (m == ${MAT.VENT}u) {
+    // a vent's crater (uv.y: 0 at its foot, 0.5 on the rim, 1 down its throat):
+    // white and sulphur-yellow crusts round the rim, darkening into the throat
+    let crust = smoothstep(0.2, 0.45, s.uv.y) * (1.0 - smoothstep(0.55, 0.7, s.uv.y));
+    let n = noise2(vec2f(s.uv.x * 23.0, s.uv.y * 9.0));
+    s.color = mix(s.color, mix(vec3f(0.85, 0.82, 0.72), vec3f(0.8, 0.72, 0.3), smoothstep(0.5, 0.8, n)), crust * smoothstep(0.25, 0.5, n + 0.2));
+    s.color *= 1.0 - 0.9 * smoothstep(0.6, 0.9, s.uv.y);
+  } else if (m == ${MAT.SHARKFIN}u) {
+    // the whale shark's fins (uv 0..1 across each): pale spots, fewer towards the tips
+    let q = s.uv * 7.0;
+    let d = length(fract(q) - 0.5 - 0.3 * (hash22(floor(q) + 5.0) - 0.5));
+    s.color = mix(s.color, vec3f(0.75, 0.78, 0.78), (1.0 - smoothstep(0.14, 0.22, d)) * (1.0 - smoothstep(0.5, 0.9, s.uv.y)));
+  } else if (m == ${MAT.EEL}u) {
+    // garden eels: dark spots along the body (uv.y up it), black eyes either side of the head (uv: round it, down it)
+    if (s.tag == 1u) {
+      let q = vec2f(s.uv.x * 4.0, s.uv.y * 30.0);
+      let h = hash22(floor(q));
+      s.color *= 1.0 - 0.75 * (1.0 - smoothstep(0.15, 0.25, length(fract(q) - 0.5 - 0.3 * (h - 0.5)))) * step(0.4, h.x);
+    } else {
+      let ed = min(length(vec2f(s.uv.x - 0.25, s.uv.y - 0.45)), length(vec2f(s.uv.x - 0.75, s.uv.y - 0.45)));
+      s.color = mix(s.color, vec3f(0.01), 1.0 - smoothstep(0.08, 0.11, ed));
+    }
+  } else if (m == ${MAT.CARGO}u) {
+    // crates of planks, barrels with iron hoops; both grown over a little
+    if (s.tag == 1u) {
+      let e = abs(fract(s.uv * vec2f(1.0, 4.0)) - 0.5);
+      s.color *= (0.75 + 0.25 * noise2(s.uv * vec2f(2.0, 40.0))) * (1.0 - 0.5 * (1.0 - smoothstep(0.02, 0.05, 0.5 - e.y))) * (1.0 - 0.4 * smoothstep(0.42, 0.47, e.x));
+    } else {
+      let h = abs(fract(s.uv.y * 3.0) - 0.5);
+      s.color = mix(s.color * (0.8 + 0.2 * sin(s.uv.x * 150.0)), vec3f(0.3, 0.16, 0.08), 1.0 - smoothstep(0.04, 0.07, abs(h - 0.35)));
+    }
+    s.color = mix(s.color, vec3f(0.25, 0.33, 0.12), smoothstep(0.55, 0.95, s.n.z) * smoothstep(0.4, 0.7, noise3(s.pos * 3.0)) * 0.6);
+  } else if (m == ${MAT.BITS}u) {
+    // small things on the sea bed (see bitsKit)
+    let k = s.tag;
+    if (k == 1u) {
+      // cone shell: brown zigzag bands winding round it
+      let q = s.uv.y * 7.0 + 0.6 * abs(fract(s.uv.x * 3.0) - 0.5);
+      s.color *= 0.55 + 0.45 * smoothstep(0.3, 0.45, abs(fract(q) - 0.5));
+      s.gloss = 0.5;
+    } else if (k == 2u) {
+      // scallop: ribs fanning out from the hinge, and growth rings
+      s.color *= (0.8 + 0.2 * cos(s.uv.x * 50.0)) * (0.85 + 0.15 * smoothstep(0.2, 0.5, abs(fract(s.uv.y * 6.0) - 0.5)));
+    } else if (k == 3u) {
+      // starfish: rows of pale knobs, and a darker middle
+      let q = s.uv * 90.0;
+      let d = length(fract(q) - 0.5);
+      let fade = 1.0 - smoothstep(0.25, 0.5, max(fwUV.x, fwUV.y) * 90.0);
+      s.color = mix(s.color * (0.75 + 0.25 * smoothstep(0.02, 0.06, length(s.uv))), vec3f(0.95, 0.85, 0.7), (1.0 - smoothstep(0.18, 0.3, d)) * 0.5 * fade);
+    } else if (k == 4u) {
+      // sea cucumber: warty
+      s.color *= 0.7 + 0.6 * smoothstep(0.55, 0.75, noise3(s.pos * 60.0));
+    } else if (k == 5u) {
+      // feather-duster crown: banded rays round the funnel
+      s.color *= (0.6 + 0.4 * smoothstep(0.1, 0.3, abs(fract(s.uv.x * 14.0) - 0.5))) * (0.75 + 0.35 * step(0.5, fract(s.uv.y * 3.0)));
+      s.light += s.color * 0.15;
+    }
   } else if (m == ${MAT.BUBBLE}u) {
     // silvery bubbles (additive light): a faint body and a bright rim, dimmer in the depths
     let rim = pow(saturate(1.0 - abs(dot(s.n, s.view))), 2.0);
@@ -427,7 +711,25 @@ fn surface(sIn: Surface) -> Surface {
     // lets most light through; its glow is not dimmed by its clearness (both
     // sides of it glow now)
     s.alpha = mix(0.1, 0.75, rim);
-    s.emissive *= (0.15 + 1.6 * rim) * 0.6 / s.alpha;
+    if (s.tag == 1u) {
+      // the bell, laid out as seen from above: four pink gonad rings round the
+      // middle, fine radial canals, and eight sense organs on the margin
+      let p = s.uv;
+      let r = length(p);
+      let gon = 1.0 - smoothstep(0.012, 0.028, abs(length(abs(p) - vec2f(0.1)) - 0.07));
+      let ang = atan2(p.y, p.x) * 1.2732;   // eighths of a turn
+      let canal = (1.0 - smoothstep(0.004, 0.01, abs(fract(ang * 2.0) - 0.5) * r * 0.39)) * smoothstep(0.17, 0.25, r);
+      let organ = (1.0 - smoothstep(0.015, 0.025, length(vec2f((fract(ang + 0.5) - 0.5) * r * 0.785, r - 0.43)))) * step(r, 0.47);
+      s.color = mix(s.color, vec3f(0.95, 0.4, 0.75), gon);
+      s.color = mix(s.color, vec3f(1.0, 0.95, 0.85), max(canal * 0.6, organ));
+      s.alpha = max(s.alpha, max(gon * 0.55, max(canal * 0.25, organ * 0.8)));
+    } else if (s.tag == 3u) {
+      // oral arms with frilled, wavy edges
+      let edge = 0.55 + 0.25 * sin(s.uv.y * 38.0) + 0.15 * sin(s.uv.y * 91.0 + 1.0);
+      let frill = 1.0 - smoothstep(edge - 0.08, edge, abs(s.uv.x));
+      s.alpha = mix(0.0, 0.65, frill) * (1.0 - smoothstep(0.75, 1.0, s.uv.y));
+    }
+    s.emissive *= (0.15 + 1.6 * rim) * 0.6 / max(s.alpha, 0.1);
     s.sun *= 0.5;
     return s;
   } else if (m == ${MAT.GLOW}u) {
@@ -476,12 +778,229 @@ function triAway(g, a, b, c, centre) {
   return g.add(Geo.triangle(a, b, c));
 }
 
+// A unit sphere like Geo.sphere(1, seg, rings), with each vertex stored once.
+function seamlessSphere(seg, rings) {
+  const g = new Geo();
+  const at = (j, i) => (j === 0 ? 0 : j === rings ? 1 + (rings - 1) * seg : 1 + (j - 1) * seg + (i % seg));
+  for (let j = 0; j <= rings; j++) {
+    const th = Math.PI * j / rings;
+    for (let i = 0; i < (j === 0 || j === rings ? 1 : seg); i++) {
+      const ph = TAU * i / seg, n = [Math.sin(th) * Math.cos(ph), Math.sin(th) * Math.sin(ph), Math.cos(th)];
+      g.vert(n[0], n[1], n[2], n[0], n[1], n[2]);
+    }
+  }
+  for (let j = 0; j < rings; j++) {
+    for (let i = 0; i < seg; i++) {
+      if (j > 0) g.tri(at(j, i), at(j + 1, i), at(j, i + 1));
+      if (j < rings - 1) g.tri(at(j, i + 1), at(j + 1, i), at(j + 1, i + 1));
+    }
+  }
+  return g.orientByNormals();
+}
+
 // Pushes every vertex out or in from the origin by a noise factor.
 function lumpy(g, amp, freq, seed) {
   for (let i = 0; i < g.p.length; i += 3) {
     const x = g.p[i], y = g.p[i + 1], z = g.p[i + 2];
     const k = 1 + amp * (noise3(x * freq + seed, y * freq, z * freq) - 0.5) * 2;
     g.p[i] = x * k; g.p[i + 1] = y * k; g.p[i + 2] = z * k;
+  }
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Small things on the sea bed, drawn only from near by (see "sea-bed detail"
+// in build()).  Each stands on z = 0, a few centimetres across; most are
+// painted in `surface` (MAT.BITS, by tag):
+//   1 a cone shell (uv: around, along it)    2 a scallop (uv: across 0..1, out from the hinge 0..1)
+//   3 a starfish (uv: x, y across it)        4 a sea cucumber
+//   5 a feather-duster worm's crown (uv: around, up)
+// a domed starfish, 0.26 m across (uv: x, y across it)
+function starfishGeo() {
+  const g = new Geo();
+  const c = g.vert(0, 0, 0.026, 0, 0, 1, 0, 0);
+  const ring = [];
+  for (let i = 0; i < 10; i++) {
+    const a = i / 10 * TAU, r = i % 2 ? 0.045 : 0.13, x = Math.cos(a) * r, y = Math.sin(a) * r;
+    ring.push(g.vert(x, y, i % 2 ? 0.012 : 0.003, 0, 0, 1, x, y));
+  }
+  for (let i = 0; i < 10; i++) g.tri(c, ring[i], ring[(i + 1) % 10]);
+  return g.orientByNormals().computeNormals(true).color(WHITE).mat(MAT.BITS).tag(3);
+}
+
+function bitsKit() {
+  const k = {};
+  k.cone = Geo.lathe([[0.012, 0], [0.04, 0.03], [0.026, 0.07], [0.003, 0.1]], 4).rotateY(Math.PI / 2).rotateX(Math.PI / 4)
+    .translate(-0.05, 0, 0.028).color(WHITE).mat(MAT.BITS).tag(1);
+  {
+    const g = new Geo(), n = 6;
+    const hinge = g.vert(0, -0.03, 0.012, 0, 0, 1, 0.5, 0);
+    const rim = [];
+    for (let i = 0; i <= n; i++) {
+      const a = (-0.55 + 1.1 * i / n) * Math.PI;
+      rim.push(g.vert(Math.sin(a) * 0.05, -0.03 + Math.cos(a) * 0.05, 0.003, 0, 0, 1, i / n, 1));
+    }
+    for (let i = 0; i < n; i++) g.tri(hinge, rim[i], rim[i + 1]);
+    k.clam = g.orientByNormals().computeNormals(true).color(WHITE).mat(MAT.BITS).tag(2);
+  }
+  k.star = starfishGeo();
+  k.cuke = Geo.lathe([[0.02, 0], [0.04, 0.06], [0.036, 0.19], [0.01, 0.24]], 5).rotateX(-Math.PI / 2)
+    .translate(0, -0.12, 0).scale(1, 1, 0.75).translate(0, 0, 0.026).color(WHITE).mat(MAT.BITS).tag(4);
+  k.pebble = lumpy(seamlessSphere(5, 3), 0.35, 1.7, 61).computeNormals(true).scale(1, 1, 0.55).color(WHITE).mat(MAT.ROCK);
+  k.sponge = lumpy(seamlessSphere(6, 3), 0.4, 2.3, 17).computeNormals(true).scale(1, 1, 0.6).color(WHITE).mat(MAT.SPONGE);
+  {
+    // a sea urchin: a dark ball bristling with long spines
+    const g = seamlessSphere(6, 4).scale(0.05, 0.05, 0.045).translate(0, 0, 0.04).color('#1d1a24');
+    for (let i = 0; i < 14; i++) {
+      const a = i * 2.4, e = Math.asin(1 - (i + 0.5) / 14 * 1.2), len = 0.16 + 0.05 * Math.sin(i * 3.1);
+      const dir = [Math.cos(a) * Math.cos(e), Math.sin(a) * Math.cos(e), Math.sin(e)];
+      g.add(Geo.cylinder(0.008, len, 3, { r2: 0, caps: false }).color('#2a2433'), alongDir([dir[0] * 0.04, dir[1] * 0.04, 0.04 + dir[2] * 0.035], dir));
+    }
+    k.urchin = g;
+  }
+  k.worm = Geo.cylinder(0.008, 0.12, 4, { caps: false }).color('#8a7660').untinted()
+    .add(Geo.cylinder(0.008, 0.035, 6, { r2: 0.05, caps: false }).translate(0, 0, 0.115).color(WHITE).mat(MAT.BITS).tag(5));
+  {
+    // a crab, side on to its course: a squat shell, three legs a side, two claws and eye stalks
+    const g = Geo.sphere(0.05, 6, 3).scale(1, 0.72, 0.42).translate(0, 0, 0.035).color('#d0502c');
+    const legs = new Geo();
+    for (const sx of [1, -1]) {
+      for (let i = 0; i < 3; i++) {
+        const y = -0.022 + i * 0.022, fx = sx * (0.1 + 0.01 * i), fy = y * 1.8 - 0.01;
+        legs.add(Geo.triangle([sx * 0.04, y - 0.007, 0.035], [sx * 0.04, y + 0.007, 0.035], [fx, fy, 0.0]));
+        legs.add(Geo.triangle([sx * 0.07, y * 1.4 - 0.005, 0.05], [sx * 0.07, y * 1.4 + 0.005, 0.05], [fx, fy, 0.0]));
+      }
+      legs.add(Geo.triangle([sx * 0.025, 0.03, 0.035], [sx * 0.045, 0.028, 0.03], [sx * 0.05, 0.085, 0.04]));
+      legs.add(Geo.triangle([sx * 0.045, 0.06, 0.04], [sx * 0.07, 0.065, 0.03], [sx * 0.035, 0.1, 0.035]));
+      legs.add(Geo.triangle([sx * 0.012, 0.03, 0.05], [sx * 0.02, 0.03, 0.05], [sx * 0.018, 0.04, 0.075]).color('#101010'));
+    }
+    k.crab = g.add(legs.color('#c84a28').mat(MAT.THIN));
+  }
+  return k;
+}
+
+// ---------------------------------------------------------------------------
+// The wreck's fittings (see "the wreck" in build()).  The hull runs from the
+// stern at y = -L/2 to the bow at +L/2 (f from 0 to 1), its gunwale hullS(f)
+// up and its half-width there hullW(f).
+
+const hullW = (f) => (f < 0.35 ? 2.5 + 0.7 * Math.sin(f / 0.35 * Math.PI / 2) : 3.2 * (1 - Math.pow((f - 0.35) / 0.65, 2)));
+const hullS = (f) => 4 + 0.9 * f * f;
+
+// Crates (tag 1, uv 0..1 on each face) and barrels (tag 2, uv.y up them), painted in `surface`.
+const crateGeo = () => Geo.box(1, 1, 1).translate(0, 0, 0.5).color('#8a6a48').mat(MAT.CARGO).tag(1);
+const barrelGeo = () => Geo.lathe([[0.27, 0], [0.32, 0.25], [0.32, 0.65], [0.27, 0.9], [0.0, 0.9]], 8).color('#6a5a4a').mat(MAT.CARGO).tag(2);
+
+function wreckFittings(L) {
+  const g = new Geo();
+  const fOf = (y) => y / L + 0.5;
+  // rails along both gunwales on stanchions, broken where a stanchion is gone
+  for (const side of [1, -1]) {
+    let run = [];
+    const flush = () => {
+      if (run.length >= 2) {
+        for (const h of [0.45, 0.9]) g.add(Geo.tube(run.map(([x, y, z], i) => [x, y, z + h - 0.04 * Math.sin(i * 1.7)]), 0.03, 4, { caps: false }));
+      }
+      run = [];
+    };
+    for (let y = -11.2; y <= 10.3; y += 1.2) {
+      const f = fOf(y), x = side * (hullW(f) - 0.05), z = hullS(f);
+      if (hash2(Math.round(y * 10), side) < 0.2) { flush(); continue; }
+      g.add(Geo.cylinder(0.03, 0.95, 4, { caps: false }).translate(x, y, z - 0.05));
+      run.push([x, y, z]);
+    }
+    flush();
+  }
+  g.color('#7a6048').mat(MAT.RUST);
+  // portholes down both sides and on the deck house: brass rims round dark glass
+  const port = (pos, dir, r) => {
+    g.add(Geo.lathe([[r, -0.02], [r * 1.25, 0.03], [r * 1.25, 0.07], [r * 0.95, 0.09]], 8).color('#7a8a5a').mat(MAT.RUST), alongDir(pos, dir));
+    g.add(Geo.disc(r, 8).translate(0, 0, 0.045).color('#0c1418').gloss(0.8), alongDir(pos, dir));
+  };
+  for (const side of [1, -1]) {
+    for (let y = -9.5; y <= 7; y += 2.2) {
+      const f = fOf(y), w = hullW(f), sz = hullS(f), z = sz - 1.1;
+      port([side * w * (0.98 + 0.02 * (z - 0.55 * sz) / (0.45 * sz)), y, z], [side, 0, 0.02], 0.17);
+    }
+    for (const y of [-8.6, -6.4]) port([side * 1.8, y, 5.3], [side, 0, 0], 0.15);
+  }
+  // a door in the front of the deck house, and its frame
+  g.add(Geo.box(0.9, 0.06, 1.7).translate(0.6, -5.39, 4.75).color('#0a0c10'));
+  g.add(Geo.box(1.1, 0.1, 0.1).translate(0.6, -5.37, 5.65).color('#7a6048').mat(MAT.RUST));
+  for (const x of [0.07, 1.13]) g.add(Geo.box(0.1, 0.1, 1.8).translate(x, -5.37, 4.75).color('#7a6048').mat(MAT.RUST));
+  // two hatches in the deck: raised coamings, one open onto the dark hold, the other's cover slid half off
+  for (const [y, open] of [[-3.4, true], [5.4, false]]) {
+    const f = fOf(y), z = 3.6 + 0.9 * f * f + 0.075;
+    for (const [sx, sy, dx, dy] of [[1.6, 0.1, 0, 0.75], [1.6, 0.1, 0, -0.75], [0.1, 1.6, 0.75, 0], [0.1, 1.6, -0.75, 0]]) {
+      g.add(Geo.box(sx, sy, 0.35).translate(dx, y + dy, z + 0.175).color('#806650').mat(MAT.RUST));
+    }
+    if (open) g.add(Geo.quad([-0.7, y - 0.7, z + 0.05], [0.7, y - 0.7, z + 0.05], [0.7, y + 0.7, z + 0.05], [-0.7, y + 0.7, z + 0.05]).color('#050608'));
+    else g.add(Geo.box(1.5, 1.5, 0.08).translate(0, 0, 0.04).color('#806650').mat(MAT.RUST), m4.mul(m4.translation(0.6, y + 0.2, z + 0.32), m4.rotationZ(0.25), m4.rotationY(-0.12)));
+  }
+  // cargo in the open hold
+  g.add(crateGeo().scale(0.9), m4.mul(m4.translation(0.3, -3.3, 2.6), m4.rotationZ(0.3)));
+  g.add(crateGeo().scale(0.8), m4.mul(m4.translation(-0.6, -2.9, 2.5), m4.rotationZ(-0.2), m4.rotationX(0.15)));
+  g.add(barrelGeo(), m4.mul(m4.translation(0.1, -3.9, 2.4), m4.rotationX(Math.PI / 2 - 0.1), m4.rotationZ(0.2)));
+  return g;
+}
+
+// Around the wreck, in world coordinates: the anchor lying on the sand off the
+// bow, its chain running up to the hawse, and crates and barrels spilled
+// beside the hull.
+function wreckSurroundings(pose, L) {
+  const g = new Geo();
+  const onSand = (lx, ly) => { const p = m4.point(pose, [lx, ly, 0]); return [p[0], p[1], floorMesh(p[0], p[1])]; };
+  // the anchor: shank, stock and two flukes, lying on its side
+  const a0 = onSand(2.2, L / 2 + 3.4), ad = v3.norm(v3.sub(onSand(2.6, L / 2 + 5), a0));
+  const side = v3.norm(v3.cross(ad, [0, 0, 1]));
+  const anc = new Geo();
+  anc.add(Geo.cylinder(0.07, 1.7, 5, { caps: false }).rotateX(-Math.PI / 2).translate(0, 0, 0.09));
+  anc.add(Geo.cylinder(0.05, 1.5, 5).rotateY(Math.PI / 2).translate(-0.75, 0.15, 0.35));
+  anc.add(Geo.torus(0.13, 0.03, 8, 3).rotateY(Math.PI / 2).translate(0, -0.1, 0.12));
+  for (const s of [1, -1]) {
+    anc.add(Geo.cylinder(0.06, 0.8, 5, { caps: false }).rotateX(-Math.PI / 2).rotateZ(s * 0.9).translate(0, 1.7, 0.09));
+    const tip = [s * Math.sin(0.9) * 0.8, 1.7 + Math.cos(0.9) * 0.8, 0.09];
+    anc.add(Geo.quad([tip[0] * 0.55, tip[1] - 0.25, 0.09], [tip[0] * 1.15, tip[1] - 0.2, 0.09], [tip[0] * 1.05, tip[1] + 0.12, 0.12], [tip[0] * 0.6, tip[1] - 0.02, 0.12]).mat(MAT.THIN));
+  }
+  g.add(anc.color('#5a4a3c').mat(MAT.RUST), m4.fromBasis(side, ad, [0, 0, 1], a0));
+  // the chain: links alternately turned, hanging from the hawse to the anchor's ring
+  const hawse = m4.point(pose, [0.9, L / 2 - 1.6, 4.2]);
+  const ring = v3.add(a0, v3.scale(ad, -0.1));
+  const links = 26;
+  let prev = null;
+  for (let i = 0; i <= links; i++) {
+    const t = i / links;
+    const p = v3.add(v3.add(v3.scale(hawse, 1 - t), v3.scale(ring, t)), [0, 0, -1.2 * Math.sin(Math.PI * t) * (1 - t)]);
+    p[2] = Math.max(p[2], floorMesh(p[0], p[1]) + 0.03);
+    if (prev) {
+      const mid = v3.scale(v3.add(prev, p), 0.5), d = v3.norm(v3.sub(p, prev));
+      const ref = i % 2 ? [0, 0, 1] : v3.cross(d, [0, 0, 1]);
+      const x = v3.norm(v3.cross(d, ref)), z = v3.cross(x, d);
+      g.add(Geo.torus(0.1, 0.025, 6, 3).scale(0.75, 1.3, 1).color('#4a3c30').mat(MAT.RUST), m4.fromBasis(x, d, z, mid));
+    }
+    prev = p;
+  }
+  // the propeller, broken off its shaft and lying against the sand by the stern
+  {
+    const prop = Geo.cylinder(0.12, 0.5, 6).translate(0, 0, -0.25).add(Geo.sphere(0.2, 6, 3).scale(1, 1, 1.4).translate(0, 0, 0.1));
+    for (let i = 0; i < 4; i++) {
+      const a = i / 4 * TAU + 0.4, c = Math.cos(a), sn = Math.sin(a);
+      const P = (r, dz, t) => [c * r - sn * t, sn * r + c * t, dz];
+      prop.add(Geo.quad(P(0.15, 0.12, -0.08), P(0.95, 0.06, -0.14), P(0.95, -0.06, 0.14), P(0.15, -0.12, 0.08)).mat(MAT.THIN));
+    }
+    const p = onSand(4.6, -9.2);
+    g.add(prop.color('#8a7a4a').gloss(0.35), m4.mul(m4.translation(p[0], p[1], p[2] + 0.5), m4.rotationZ(1.1), m4.rotationX(1.15)));
+  }
+  // cargo spilled on the sand
+  const spill = [[4.5, -2, 0.3, 1.0], [5.3, -0.6, 1.1, 0.8], [4.2, 0.8, 2.0, 0.9], [-4.6, 3.5, 0.7, 0.85], [-5.2, 5, 2.6, 0.8]];
+  for (const [lx, ly, rot, sz] of spill) {
+    const p = onSand(lx, ly);
+    g.add(crateGeo().scale(sz), m4.mul(m4.translation(p[0], p[1], p[2] - 0.15), m4.rotationZ(rot), m4.rotationX(0.08 * Math.sin(rot * 5))));
+  }
+  for (const [lx, ly, rot, up] of [[4.9, 2.4, 0.4, false], [-4.4, 1.5, 1.3, true], [5.8, -3.4, 2.2, false]]) {
+    const p = onSand(lx, ly);
+    g.add(barrelGeo(), up ? m4.mul(m4.translation(p[0], p[1], p[2] - 0.05), m4.rotationZ(rot))
+      : m4.mul(m4.translation(p[0], p[1], p[2] + 0.27), m4.rotationZ(rot), m4.rotationY(Math.PI / 2), m4.translation(0, 0, -0.45)));
   }
   return g;
 }
@@ -665,14 +1184,8 @@ const KIND = {
   },
   starfish: {
     variants: 1,
-    mesh: () => {
-      const pts = [];
-      for (let i = 0; i < 10; i++) {
-        const a = i / 10 * TAU, r = i % 2 ? 0.07 : 0.2;
-        pts.push([Math.cos(a) * r, Math.sin(a) * r]);
-      }
-      return Geo.extrude(pts, 0.04).color(WHITE).mat(MAT.CORAL);
-    },
+    // (the domed, knobbly starfish of the sea-bed detail, at the size these always had)
+    mesh: () => starfishGeo().scale(1.55, 1.55, 1.55),
   },
   urchin: {
     variants: 1, seed: 909,
@@ -764,27 +1277,84 @@ function garden(b) {
 // ---------------------------------------------------------------------------
 // Animals (dynamic).  Models face +Y with +Z up.
 
-// A fish of thirteen triangles: a six-sided double pyramid body, coloured in
-// bands (back, flanks, belly), and a tail fin.  Every triangle has a single
-// colour: tiny moving triangles must not carry colour gradients, because a
-// pixel that only grazes one gets its colour extrapolated, possibly below zero.
-function fishGeo(len, height, width, cTop, cSide, cBelly, cTail, gloss = 0.35) {
+// A fish of 26 triangles on 28 vertices (28 on 30 for the kinds with tall
+// fins, whose dorsal and anal fins are quads): a smooth body (a pointed snout, a
+// four-sided ring at the head, a six-sided one at the widest point, and the
+// tail stalk), a forked tail, a dorsal and an anal fin and two pectoral fins.
+// It is painted in `surface` (see FISH_WGSL): the body's uv is the point's
+// place along and up the fish in body lengths (the snout at +0.5, the tail
+// stalk at -0.3), its aux how high it lies across the body (-1 belly .. 1
+// back), and its tag the kind of fish.  The vertex colours are flat (one per
+// part): tiny moving triangles must not carry colour gradients, because a pixel
+// that only grazes one gets its colour extrapolated, possibly below zero; the
+// shader's patterns are clamped instead.  The vertices are shared where the
+// body is smooth, since every key stores every vertex again.
+function fishGeo(f) {
+  const L = f.L, h = f.h / 2, w = f.w / 2;
+  const yA = 0.37 * L, yB = 0.03 * L, hA = (f.head ?? 0.66) * h, wA = 0.82 * w, zN = (f.mouth ?? -0.02) * L, zT = 0.02 * L;
   const g = new Geo();
-  const L = len, h = height / 2, w = width / 2, y = 0.1 * L;
-  const nose = [0, 0.5 * L, -0.02 * L], tail = [0, -0.3 * L, 0.02 * L];
-  const ring = [[0, y, h], [w, y, h * 0.45], [w * 0.9, y, -h * 0.45], [0, y, -h * 0.9], [-w * 0.9, y, -h * 0.45], [-w, y, h * 0.45]];
-  const band = [cTop, cSide, cBelly, cBelly, cSide, cTop];
-  const c = [0, y, 0];
-  for (let i = 0; i < 6; i++) {
-    const a = ring[i], b = ring[(i + 1) % 6];
-    const part = new Geo();
-    triAway(part, nose, a, b, c);
-    triAway(part, tail, a, b, c);
-    g.add(part.color(band[i]));
+  const V = (x, y, z, zn) => { const k = g.vert(x, y, z, 0, 0, 1, y / L, z / L); g.x[k * 2] = zn; return k; };
+  const N = V(0, 0.5 * L, zN, 0), T = V(0, -0.3 * L, zT, 0);
+  const A = [[0, hA, 1], [wA, 0, 0], [0, -0.9 * hA, -1], [-wA, 0, 0]].map(([x, z, zn]) => V(x, yA, z, zn));
+  const B = [[0, h, 1], [w, 0.45 * h, 0.45], [0.9 * w, -0.45 * h, -0.45], [0, -0.9 * h, -1], [-0.9 * w, -0.45 * h, -0.45], [-w, 0.45 * h, 0.45]]
+    .map(([x, z, zn]) => V(x, yB, z, zn));
+  // a triangle wound to face away from the body's axis
+  const tri = (i, j, k) => {
+    const P = (q) => [g.p[q * 3], g.p[q * 3 + 1], g.p[q * 3 + 2]];
+    const a = P(i), b = P(j), c = P(k), mid = v3.scale(v3.add(v3.add(a, b), c), 1 / 3);
+    const n = v3.cross(v3.sub(b, a), v3.sub(c, a));
+    if (v3.dot(n, v3.sub(mid, [0, mid[1], 0])) < 0) g.tri(i, k, j); else g.tri(i, j, k);
+  };
+  for (let i = 0; i < 4; i++) tri(N, A[i], A[(i + 1) % 4]);
+  for (let i = 0; i < 6; i++) tri(T, B[i], B[(i + 1) % 6]);
+  // head ring to body ring: each side vertex of the head meets two of the body
+  const pairs = [[0, 0], [1, 1], [1, 2], [2, 3], [3, 4], [3, 5], [0, 0]];
+  for (let k = 0; k < 6; k++) {
+    const [a0, b0] = pairs[k], [a1, b1] = pairs[k + 1];
+    tri(A[a0], B[b0], B[b1 % 6]);
+    if (a1 !== a0) tri(A[a0], B[b1 % 6], A[a1]);
   }
-  g.gloss(gloss);
-  g.add(Geo.triangle(tail, [0, -0.52 * L, 0.24 * L], [0, -0.52 * L, -0.2 * L]).color(cTail).mat(MAT.THIN));
-  return g;
+  g.computeNormals(true).color(f.flank).mat(MAT.FISH).gloss(f.gloss);
+  // the outline of the back and belly at y, for setting the fins on
+  const prof = (y, top) => {
+    const pts = [[0.5 * L, zN], [yA, top ? hA : -0.9 * hA], [yB, top ? h : -0.9 * h], [-0.3 * L, zT]];
+    for (let i = 1; i < pts.length; i++) {
+      if (y >= pts[i][0]) { const [y0, z0] = pts[i - 1], [y1, z1] = pts[i]; return z1 + (z0 - z1) * (y - y1) / (y0 - y1); }
+    }
+    return zT;
+  };
+  // a flat fin: a fan of triangles; `edge` (aux) is 0 at its root and 1 at its rim
+  const fin = (pts, edge, col) => {
+    const n = v3.norm(v3.cross(v3.sub(pts[1], pts[0]), v3.sub(pts[2], pts[0])));
+    const ks = pts.map((p, i) => { const k = g.vert(p[0], p[1], p[2], n[0], n[1], n[2], p[1] / L, p[2] / L); g.x[k * 2] = edge[i]; return k; });
+    for (let i = 1; i + 1 < ks.length; i++) g.tri(ks[0], ks[i], ks[i + 1]);
+    const c = hex(col);
+    for (const k of ks) {
+      g.c[k * 3] = c[0]; g.c[k * 3 + 1] = c[1]; g.c[k * 3 + 2] = c[2];
+      g.a[k * 4 + 1] = 0.2; g.a[k * 4 + 2] = MAT.FIN;
+    }
+  };
+  // tail: two lobes and the notch between them
+  const yt = -0.52 * L, th = 0.22 * L * f.tailH, ty = -0.3 * L;
+  fin([[0, ty, zT], [0, yt, zT + th * 1.1], [0, yt + 0.15 * L * f.fork, zT], [0, yt, zT - th]], [0, 1, 0.6, 1], f.tail);
+  // dorsal and anal fins along the back and belly (a quad for the tall fins of a tang)
+  const [d0, d1, dh] = f.dorsal, [a0, a1, ah] = f.anal;
+  const yd0 = d0 * L, yd1 = d1 * L, ya0 = a0 * L, ya1 = a1 * L;
+  const sink = 0.06 * h;
+  if (f.tall) {
+    fin([[0, yd0, prof(yd0, true) - sink], [0, yd1, prof(yd1, true) - sink], [0, yd1 + 0.04 * L, prof(yd1, true) + dh * L * 0.8], [0, yd0 - 0.12 * L, prof(yd0, true) + dh * L]], [0, 0, 1, 1], f.fins);
+    fin([[0, ya0, prof(ya0, false) + sink], [0, ya1, prof(ya1, false) + sink], [0, ya1 + 0.04 * L, prof(ya1, false) - ah * L * 0.8], [0, ya0 - 0.12 * L, prof(ya0, false) - ah * L]], [0, 0, 1, 1], f.fins);
+  } else {
+    const yd = yd0 + (yd1 - yd0) * 0.7, ya = ya0 + (ya1 - ya0) * 0.7;
+    fin([[0, yd0, prof(yd0, true) - sink], [0, yd1, prof(yd1, true) - sink], [0, yd, prof(yd, true) + dh * L]], [0, 0, 1], f.fins);
+    fin([[0, ya0, prof(ya0, false) + sink], [0, ya1, prof(ya1, false) + sink], [0, ya, prof(ya, false) - ah * L]], [0, 0, 1], f.fins);
+  }
+  // pectoral fins just behind the gill covers, swept back and out
+  for (const s of [1, -1]) {
+    const x = s * 0.8 * w, out = s * (0.8 * w + 0.11 * L);
+    fin([[x, 0.25 * L, -0.12 * h], [x, 0.21 * L, -0.42 * h], [out, 0.07 * L, -0.45 * h]], [0, 0, 1], f.fins);
+  }
+  return g.tag(f.tag);
 }
 
 // Moves a model along a closed path (either way round, by the sign of `speed`)
@@ -822,7 +1392,8 @@ function turtleGeo(t) {
   shell.color('#6b4e2e');
   for (let i = 2; i < shell.p.length; i += 3) if (shell.p[i] < 0) shell.p[i] *= 0.45;
   g.add(shell.scale(0.42, 0.56, 0.17).mat(MAT.SHELL));
-  g.add(Geo.sphere(0.12, 6, 3).scale(1, 1.3, 0.85).translate(0, 0.64, 0.01).color('#8a7c58'));
+  // the head (painted in `surface`: scales, eyes, a pale throat)
+  g.add(Geo.sphere(0.12, 6, 3).scale(1, 1.3, 0.85).translate(0, 0.64, 0.01).color('#8a7c58').mat(MAT.TURTLE));
   const a = 0.75 * Math.sin(TAU * t / 4), sweep = 0.25 * Math.cos(TAU * t / 4);
   for (const side of [1, -1]) {
     // front flipper: a long blade rowing up and down around its root
@@ -832,10 +1403,17 @@ function turtleGeo(t) {
       [dx, dy] = [dx * Math.cos(sweep) - dy * Math.sin(sweep), dx * Math.sin(sweep) + dy * Math.cos(sweep)];
       return [side * (root[0] + dx * Math.cos(a)), root[1] + dy, -dx * Math.sin(a)];
     });
-    g.add(Geo.triangle(blade[0], blade[1], blade[2]).color('#8a7c58').mat(MAT.THIN));
-    g.add(Geo.triangle(blade[0], blade[2], blade[3]).color('#8a7c58').mat(MAT.THIN));
+    // (the flippers' uv is their flat outline, for the scales painted in `surface`)
+    const flipper = (p, flat) => {
+      const f = Geo.triangle(...p).color('#8a7c58').mat(MAT.FLIPPER);
+      flat.forEach(([u, v], i) => { f.uv[i * 2] = u; f.uv[i * 2 + 1] = v; });
+      g.add(f);
+    };
+    const flat = [[0.28, 0.36], [0.72, 0.3], [1.02, 0.02], [0.28, 0.16]];
+    flipper([blade[0], blade[1], blade[2]], [flat[0], flat[1], flat[2]]);
+    flipper([blade[0], blade[2], blade[3]], [flat[0], flat[2], flat[3]]);
     const b2 = 0.2 * Math.sin(TAU * t / 4 + 1.5);
-    g.add(Geo.triangle([side * 0.18, -0.32, 0], [side * 0.4, -0.52, -b2], [side * 0.14, -0.48, 0]).color('#8a7c58').mat(MAT.THIN));
+    flipper([[side * 0.18, -0.32, 0], [side * 0.4, -0.52, -b2], [side * 0.14, -0.48, 0]], [[0.18, -0.32], [0.4, -0.52], [0.14, -0.48]]);
   }
   return g;
 }
@@ -855,7 +1433,9 @@ function mantaGeo(t) {
         const y = yF + (yB - yF) * r / (rows - 1);
         const flap = 1.0 * Math.pow(s, 1.6) * Math.sin(ph - 1.3 * s - 0.25 * r);
         const thick = 0.18 * Math.pow(1 - s, 1.5) * (r === 1 ? 1 : 0.55);
-        const k = g.vert(W * cc / 4 * (1 - 0.06 * r * s), y, flap + sgn * thick, 0, 0, sgn);
+        // (uv: the point's place on the flat ray, for the markings painted in `surface`)
+        const x = W * cc / 4 * (1 - 0.06 * r * s);
+        const k = g.vert(x, y, flap + sgn * thick, 0, 0, sgn, x, y);
         const col = sgn > 0 ? hex('#262d36') : hex('#f2f6f7');
         g.c[k * 3] = col[0]; g.c[k * 3 + 1] = col[1]; g.c[k * 3 + 2] = col[2];
       }
@@ -867,13 +1447,14 @@ function mantaGeo(t) {
         else g.quadIdx(a, a + 1, a + cols + 1, a + cols);
       }
     }
-    g.computeNormals(true);
+    g.computeNormals(true).mat(MAT.MANTA).tag(sgn > 0 ? 1 : 2);
     // the white belly catches the light thrown up from the sand
     if (sgn < 0) g.emissive(0.3);
     out.add(g);
   }
+  // the cephalic fins ("horns") either side of the mouth, rolled half up
   for (const side of [1, -1]) {
-    out.add(Geo.triangle([side * 0.22, L * 0.4, 0], [side * 0.3, L * 0.58, -0.06], [side * 0.14, L * 0.52, -0.1]).color('#1e242c').mat(MAT.THIN));
+    out.add(Geo.quad([side * 0.2, 0.91, -0.02], [side * 0.32, 0.87, -0.13], [side * 0.36, 1.36, -0.17], [side * 0.27, 1.4, -0.06]).color('#1e242c').mat(MAT.THIN));
   }
   const tw = 0.15 * Math.sin(ph - 1);
   out.add(Geo.triangle([-0.05, -L * 0.36, 0], [0.05, -L * 0.36, 0], [tw, -L * 0.36 - 1.4, 0.05]).color('#1e242c').mat(MAT.THIN));
@@ -884,9 +1465,11 @@ function mantaGeo(t) {
 const SHARK_L = 9;
 function sharkBase() {
   const L = SHARK_L;
-  const body = Geo.lathe([[0.03, 0], [0.24, 0.7], [0.45, 2.0], [0.68, 3.8], [0.8, 5.6], [0.78, 7.2], [0.6, 8.4], [0.3, 8.95], [0, 9.05]], 7)
+  const body = Geo.lathe([[0.03, 0], [0.24, 0.7], [0.45, 2.0], [0.68, 3.8], [0.8, 5.6], [0.78, 7.2], [0.6, 8.4], [0.3, 8.95], [0, 9.05]], 10)
     .rotateX(-Math.PI / 2).translate(0, -L / 2, 0).scale(1.2, 1, 0.8);
   body.color('#3f4d60').mat(MAT.SPOTS).gloss(0.3);
+  // (uv.y: along the body from the tip of the tail, for the markings in `surface`)
+  for (let i = 0; i < body.vertexCount; i++) body.uv[i * 2 + 1] = (body.p[i * 3 + 1] + L / 2) / 9.05;
   const fins = new Geo();
   const fin = (a, b, c) => fins.add(Geo.triangle(a, b, c));
   fin([0, -0.4, 0.55], [0, -1.8, 0.48], [0, -1.5, 1.9]);
@@ -895,7 +1478,7 @@ function sharkBase() {
   fin([-0.8, 1.6, -0.25], [-0.8, 0.6, -0.3], [-2.2, 0.2, -0.85]);
   fin([0, -4.2, 0.08], [0, -4.75, 0.0], [0, -5.7, 2.1]);
   fin([0, -4.3, -0.05], [0, -4.8, 0.0], [0, -5.3, -1.1]);
-  fins.color('#3f4d60').mat(MAT.THIN);
+  fins.color('#3f4d60').mat(MAT.SHARKFIN);
   return body.add(fins);
 }
 function sharkAt(base, t) {
@@ -914,20 +1497,38 @@ function sharkAt(base, t) {
 }
 
 function jellyGeo(color) {
-  const g = Geo.lathe([[0.42, 0.0], [0.52, 0.08], [0.44, 0.34], [0.0, 0.52]], 6).color(color).mat(MAT.JELLY);
-  for (let i = 0; i < 6; i++) {
-    const a = (i + 0.5) / 6 * TAU, r = 0.4, len = 1.2 + 0.5 * (i % 2);
-    g.add(Geo.triangle([Math.cos(a) * r, Math.sin(a) * r, 0.02], [Math.cos(a + 0.12) * r, Math.sin(a + 0.12) * r, 0.02],
-      [Math.cos(a) * r * 0.6, Math.sin(a) * r * 0.6, -len]).color(color).mat(MAT.JELLY));
+  // the bell (uv: where it lies seen from above, for its markings), open underneath
+  const g = Geo.lathe([[0.42, 0.0], [0.52, 0.08], [0.44, 0.34], [0.0, 0.52]], 8).color(color).mat(MAT.JELLY).tag(1);
+  for (let i = 0; i < g.vertexCount; i++) { g.uv[i * 2] = g.p[i * 3]; g.uv[i * 2 + 1] = g.p[i * 3 + 1]; }
+  // a fringe of fine tentacles round the margin
+  for (let i = 0; i < 12; i++) {
+    const a = (i + 0.5) / 12 * TAU, r = 0.41, len = 1.1 + 0.6 * ((i * 5) % 3) / 2;
+    g.add(Geo.triangle([Math.cos(a) * r, Math.sin(a) * r, 0.02], [Math.cos(a + 0.06) * r, Math.sin(a + 0.06) * r, 0.02],
+      [Math.cos(a) * r * 0.55, Math.sin(a) * r * 0.55, -len]).color(color).mat(MAT.JELLY).tag(2));
   }
-  g.add(Geo.quad([-0.06, 0, 0.05], [0.06, 0, 0.05], [0.02, 0.02, -0.9], [-0.03, 0.02, -0.9]).color('#f0b8e8').mat(MAT.JELLY));
+  // four frilled oral arms hanging from the middle (uv: across -1..1, down 0..1)
+  for (const [dx, dy] of [[1, 0], [0, 1]]) {
+    const q = Geo.quad([-0.08 * dx, -0.08 * dy, 0.08], [0.08 * dx, 0.08 * dy, 0.08], [0.05 * dx + 0.03, 0.05 * dy, -0.95], [-0.05 * dx + 0.03, -0.05 * dy, -0.95]);
+    const uvs = [[-1, 0], [1, 0], [1, 1], [-1, 1]];
+    for (let i = 0; i < 4; i++) { q.uv[i * 2] = uvs[i][0]; q.uv[i * 2 + 1] = uvs[i][1]; }
+    g.add(q.color('#f0b8e8').mat(MAT.JELLY).tag(3));
+  }
   // see-through (the bell's opacity is set in `surface`)
   return g.emissive(0.4).blend(0.6);
 }
 
 function subGeo() {
   const g = Geo.lathe([[0.04, 0], [0.38, 0.3], [0.62, 0.9], [0.66, 1.8], [0.6, 2.6], [0.38, 3.05], [0, 3.22]], 8)
-    .rotateX(-Math.PI / 2).translate(0, -1.6, 0).color('#f2c12e').gloss(0.6);
+    .rotateX(-Math.PI / 2).translate(0, -1.6, 0).color('#f2c12e').gloss(0.6).mat(MAT.SUB);
+  // (uv.y: along the hull in metres, for the portholes painted in `surface`)
+  for (let i = 0; i < g.vertexCount; i++) g.uv[i * 2 + 1] = g.p[i * 3 + 1];
+  // a three-bladed propeller behind the tail fins
+  g.add(Geo.cylinder(0.07, 0.25, 6, { caps: false }).rotateX(Math.PI / 2).translate(0, -1.6, 0).color('#2b3440'));
+  for (let i = 0; i < 3; i++) {
+    const a = i / 3 * TAU, c = Math.cos(a), sn = Math.sin(a);
+    const P = (r, dy, t) => [c * r - sn * t, -1.75 + dy, sn * r + c * t];
+    g.add(Geo.quad(P(0.05, 0.05, -0.06), P(0.42, 0.03, -0.09), P(0.42, -0.03, 0.09), P(0.05, -0.05, 0.06)).color('#c8a040').gloss(0.5).mat(MAT.THIN));
+  }
   g.add(Geo.box(0.5, 0.95, 0.55).translate(0, 0.25, 0.75).color('#f2c12e').gloss(0.6));
   g.add(Geo.box(1.3, 0.3, 0.05).translate(0, -1.35, 0).color('#2b3440'));
   g.add(Geo.box(0.05, 0.3, 1.1).translate(0, -1.35, 0).color('#2b3440'));
@@ -976,7 +1577,7 @@ export default {
     // ---- the sea floor ------------------------------------------------------
     {
       const sandA = [], wallA = [];
-      const g = Geo.heightfield(X0, Y0, X1, Y1, 160, 193, H, (x, y) => {
+      const g = Geo.heightfield(X0, Y0, X1, Y1, FLOOR_NX, FLOOR_NY, H, (x, y) => {
         const { reef, wall } = terrain(x, y);
         const sand = (1 - reef) * (1 - wall);
         sandA.push(sand); wallA.push(wall);
@@ -1222,7 +1823,9 @@ export default {
       // it may be, from nothing at the gunwale and down at the sand to most
       // half way up the side
       g.aux((p) => { const s = 4 + 0.9 * Math.pow(p[1] / L + 0.5, 2); return clamp(1 - Math.abs(p[2] - 0.55 * s) / (0.35 * s)); });
-      g.color('#9a6c52').mat(MAT.RUST).cutout();
+      // (uv: along and up the hull, for its riveted plates)
+      for (let i = 0; i < g.vertexCount; i++) { g.uv[i * 2] = g.p[i * 3 + 1]; g.uv[i * 2 + 1] = g.p[i * 3 + 2]; }
+      g.color('#9a6c52').mat(MAT.HULL).cutout();
       // broken deck planking, a deck house and a snapped mast
       for (let k = 0; k < 9; k++) {
         if (k === 4 || k === 5) continue;
@@ -1237,7 +1840,13 @@ export default {
       g.add(Geo.cylinder(0.2, 6, 8).rotateY(Math.PI / 2).translate(3.5, 1.5, 0.1).color('#7d6450').mat(MAT.RUST));
       const pose = m4.mul(m4.translation(wreck.x, wreck.y, H(wreck.x, wreck.y) - 1.3), m4.rotationZ(0.6), m4.rotationY(0.24), m4.rotationX(0.04));
       b.static(g, { transform: pose });
+      wreck.pose = pose;
       taken.push([wreck.x, wreck.y, 12]);
+      // its fittings, drawn only from near by: rails, portholes, hatches,
+      // propeller and rudder, cargo in the hold; and on the sand the anchor
+      // with its chain and cargo that spilled
+      b.static(wreckFittings(L), { transform: pose, within: 40, solid: false });
+      b.static(wreckSurroundings(pose, L), { within: 40, solid: false });
       // life on and around the wreck
       for (let i = 0; i < 14; i++) {
         const local = [rand.range(-2.5, 2.5), rand.range(-10, 9), 4.1];
@@ -1268,8 +1877,10 @@ export default {
 
     // ---- bubbles: rising at a constant speed, two keys each ------------------
     // small stream bubbles can be coarse; the big ones from the vents need rounder outlines
-    const bubbleSmall = Geo.sphere(1, 6, 4).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
-    const bubbleBig = Geo.sphere(1, 9, 5).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
+    // (the same triangles as Geo.sphere's, without the seam and the poles'
+    // repeated vertices, which every bubble would store at both of its keys)
+    const bubbleSmall = seamlessSphere(6, 4).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
+    const bubbleBig = seamlessSphere(9, 5).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
     const RISE = 0.9;
     const emitBubble = (x, y, z0, te, r, spread) => {
       const z1 = SURF - 0.15;
@@ -1286,9 +1897,13 @@ export default {
       });
     };
     // puffing vents down the middle of the channel: all puff together every 4 s
+    // Each is a low crater crusted pale round its dark throat (see MAT.VENT).
+    const crater = Geo.lathe([[0.85, -0.12], [0.6, 0.08], [0.32, 0.2], [0.2, 0.15], [0.13, -0.25]], 10).color('#8a8070').mat(MAT.VENT);
+    const craters = new Geo();
     for (let y = -36; y <= 56; y += 10) {
       const x = chanX(y);
       const z0 = H(x, y) + 0.1;
+      craters.add(crater, m4.mul(m4.translation(x, y, floorMesh(x, y)), m4.rotationZ(y)));
       // a ring of stones around the vent
       for (let k = 0; k < 4; k++) {
         const a = k / 4 * TAU + rand() * 0.6, d = rand.range(0.45, 0.6);
@@ -1298,6 +1913,7 @@ export default {
         for (let j = 0; j < 5; j++) emitBubble(x, y, z0 + 0.2, k * 4 + j * 0.14, rand.range(0.09, 0.15), 0.35);
       }
     }
+    b.static(craters, { solid: false });
     // steady streams from cracks in the reef and on the sand
     const streams = [];
     for (let tries = 0; tries < 400 && streams.length < 14; tries++) {
@@ -1326,8 +1942,9 @@ export default {
 
     // ---- garden eels: they duck into the sand in a wave that runs up the channel
     {
-      const eel = Geo.tube([[0, 0, -0.85], [0, 0, 0.1], [0.04, 0, 0.45], [0.12, 0, 0.6]], 0.035, 4, { caps: false }).color('#efe6cc');
-      eel.add(Geo.sphere(0.04, 4, 2).translate(0.12, 0, 0.6).color('#efe6cc'));
+      // (painted in `surface`: dark spots down the body, eyes on the head)
+      const eel = Geo.tube([[0, 0, -0.85], [0, 0, 0.1], [0.04, 0, 0.45], [0.12, 0, 0.6]], 0.035, 4, { caps: false }).color('#efe6cc').mat(MAT.EEL).tag(1);
+      eel.add(Geo.sphere(0.04, 4, 2).translate(0.12, 0, 0.6).color('#efe6cc').mat(MAT.EEL).tag(2));
       for (let i = 0; i < 46; i++) {
         const y = rand.range(-44, -20), x = chanX(y) + rand.range(-4.5, 4.5);
         if (Math.abs(x - chanX(y)) < 0.8) continue;
@@ -1391,8 +2008,94 @@ export default {
         b.dynamic(geoAt, { times: timeRange(0, P, 7.5 / 8), caps: 'none' });
       }
     }
+    // more growth on the wreck: sponges, soft corals, fans and tube sponges on
+    // its sides (planted last, with random numbers of their own, so that the
+    // copies above keep their shapes)
+    {
+      const gr = rng(919);
+      for (let i = 0; i < 16; i++) {
+        const side = i % 2 ? 1 : -1, y = gr.range(-9, 9), f = y / 24 + 0.5, w = hullW(f), sh = hullS(f);
+        const z = gr.range(0.3, 0.9) * sh;
+        const x = side * (z > 0.55 * sh ? w * (0.98 + 0.02 * (z - 0.55 * sh) / (0.45 * sh)) : w * (0.85 + 0.13 * (z - 0.2 * sh) / (0.35 * sh)));
+        const base = m4.point(wreck.pose, [x - side * 0.05, y, z]);
+        if (base[2] < H(base[0], base[1]) + 0.3) continue;
+        const out = v3.norm(m4.dir(wreck.pose, [side, 0, 0])), up = v3.norm(v3.add(out, [0, 0, 0.9]));
+        const sideV = v3.norm(v3.cross(up, out)), fwd = v3.cross(up, sideV);
+        const k = gr();
+        const copy = k < 0.3 ? barrel(gr.range(0.3, 0.5), gr.range(0.5, 0.9), gr.pick(['#a5533b', '#c08040', '#9c4a6a']))
+          : k < 0.55 ? softCoral(gr, gr.pick([PAL.pink, PAL.cream, PAL.violet]))
+            : k < 0.8 ? tubes(gr, gr.pick([PAL.yellow, PAL.purple, PAL.orange])) : fan(gr, gr.range(0.6, 1.0), gr.pick([PAL.red, PAL.orange, PAL.purple]));
+        life.plant(copy, m4.mul(m4.fromBasis(sideV, fwd, up, base), m4.scaling(gr.range(0.8, 1.1))));
+      }
+    }
+
     // (every coral, sponge and rock has been placed by now)
     life.grow();
+
+    // ---- sea-bed detail along the channel: shells, starfish, sea cucumbers,
+    // pebbles, crabs and feather-duster worms, drawn only from near by (they
+    // are lost in the haze further off).  They are merged into strips across
+    // the channel, 8 m long, one static piece each: the few strips in reach
+    // lie next to each other in the index buffer and are drawn together.
+    {
+      const kit = bitsKit();
+      const rnd = rng(4242); // (its own random numbers, so that nothing else moves)
+      const shellCols = ['#e8d6b8', '#d9b48a', '#f0e6d8', '#c99a70', '#e0c0c8'];
+      const starCols = ['#e0533c', '#f08a2c', '#3f6fd0', '#d84a8a', '#e8b030'];
+      const crumbCols = ['#a49a8c', '#8c8478', '#c8c0b0', '#b0a090', '#9a8c94', '#d8c8c0'];
+      const wormCols = ['#ff5a3c', '#f2f2f2', '#ffcf3a', '#c060ff', '#40d0c0'];
+      // a copy of a kit mesh with its white parts in a colour
+      const tinted = (geo, col) => {
+        const g = geo.clone(), c = hex(col);
+        for (let i = 0; i < g.c.length; i += 3) if (g.c[i] + g.c[i + 1] + g.c[i + 2] > 2.99) { g.c[i] = c[0]; g.c[i + 1] = c[1]; g.c[i + 2] = c[2]; }
+        return g;
+      };
+      // (strips down the channel, and then a few on the sand round the wreck, sparser)
+      for (let y0 = -64; y0 < 112; y0 += 8) {
+        const strip = new Geo();
+        const nearWreck = y0 >= 64;
+        for (let n = 0; n < (nearWreck ? 45 : 75); n++) {
+          // (thicker down the middle of the channel)
+          const y = y0 + rnd() * 8, x = nearWreck ? wreck.x + rnd.range(-22, 22) : chanX(y) + rnd.range(-13, 13) * (0.35 + 0.65 * rnd());
+          const tr = terrain(x, y);
+          const kind = rnd();
+          if (tr.wall > 0.05 || !free(x, y, 0.25)) continue;
+          const z = floorMesh(x, y), e = 0.2;
+          const nrm = v3.norm([floorMesh(x - e, y) - floorMesh(x + e, y), floorMesh(x, y - e) - floorMesh(x, y + e), 2 * e]);
+          const lying = (sink, size) => m4.mul(alongDir([x, y, z - sink], nrm), m4.rotationZ(rnd() * TAU), m4.scaling(size));
+          const sand = tr.reef < 0.3;
+          if (sand ? kind < 0.22 : kind < 0.12) strip.add(tinted(kit.cone, rnd.pick(shellCols)), lying(0.015, rnd.range(1.2, 2.0)));
+          else if (sand ? kind < 0.38 : kind < 0.18) strip.add(tinted(kit.clam, rnd.pick(shellCols)), lying(0.006, rnd.range(1.2, 2.0)));
+          else if (sand ? kind < 0.5 : kind < 0.3) strip.add(tinted(kit.star, rnd.pick(starCols)), lying(0.005, rnd.range(1.0, 1.6)));
+          else if (sand ? kind < 0.57 : kind < 0.33) strip.add(tinted(kit.cuke, rnd.pick(['#6a5040', '#3c3836', '#9a7048'])), lying(0.02, rnd.range(1.4, 2.0)));
+          else if (sand ? kind < 0.61 : kind < 0.4) strip.add(kit.crab, lying(0.0, rnd.range(1.2, 1.8)));
+          else if (sand ? kind < 0.63 : kind < 0.46) strip.add(kit.urchin, lying(0.01, rnd.range(0.8, 1.2)));
+          else if (!sand && kind < 0.56) {
+            // encrusting sponges in bright colours
+            const r = rnd.range(0.06, 0.14);
+            strip.add(tinted(kit.sponge, rnd.pick(['#f08a2c', '#f2cf4a', '#d94f9e', '#8e5ad6', '#e0533c'])), lying(0.3 * r, r * rnd.range(0.8, 1.4)));
+          }
+          else if (sand ? kind < 0.7 : kind < 0.68) {
+            // a little group of feather-duster worms, their crowns in one colour
+            const worm = tinted(kit.worm, rnd.pick(wormCols)), m = rnd.int(2, 4);
+            for (let i = 0; i < m; i++) {
+              const a = rnd() * TAU, d = rnd.range(0.03, 0.15), px = x + Math.cos(a) * d, py = y + Math.sin(a) * d;
+              strip.add(worm, m4.mul(m4.translation(px, py, floorMesh(px, py) - 0.02),
+                m4.rotationAxis(v3.norm([rnd() - 0.5, rnd() - 0.5, 0]), rnd.range(0, 0.35)), m4.scaling(rnd.range(1.0, 1.7))));
+            }
+          } else {
+            // pebbles and bits of broken coral
+            const m = rnd.int(1, 3);
+            for (let i = 0; i < m; i++) {
+              const a = rnd() * TAU, d = rnd.range(0, 0.3), px = x + Math.cos(a) * d, py = y + Math.sin(a) * d, r = rnd.range(0.03, 0.09);
+              strip.add(tinted(kit.pebble, rnd.pick(crumbCols)), m4.mul(m4.translation(px, py, floorMesh(px, py) + r * 0.15),
+                m4.rotationZ(rnd() * TAU), m4.rotationX(rnd.range(-0.3, 0.3)), m4.scaling(r * rnd.range(0.8, 1.5), r, r)));
+            }
+          }
+        }
+        b.static(strip, { within: 14, solid: false });
+      }
+    }
 
     // ---- fish ----------------------------------------------------------------
     // A lane of fusiliers up the west half of the channel and back down the
@@ -1414,7 +2117,7 @@ export default {
       const lane = new Path(pts, { closed: true, smooth: 10 });
       const mult = 4, ranks = 28, dur = mult * P;
       const speed = lane.length / dur;
-      const geo = fishGeo(0.48, 0.15, 0.08, '#ffcf3a', '#3f8ff0', '#eef4f8', '#ffd23f');
+      const geo = fishGeo(FISH.fusilier);
       for (let rk = 0; rk < ranks; rk++) {
         for (let j = 0; j < 3; j++) {
           const offset = (rk + rand.range(-0.08, 0.08)) * lane.length / (ranks * mult);
@@ -1432,7 +2135,7 @@ export default {
         return [x, y, Math.max(H(x, y), 0) + 2.6 + 0.8 * Math.sin(a)];
       });
       const loop = new Path(pts, { closed: true, smooth: 5 });
-      const geo = fishGeo(0.34, 0.13, 0.06, '#f0c419', '#ffd84a', '#f6f0d0', '#f0c419', 0.4);
+      const geo = fishGeo(FISH.snapper);
       for (let i = 0; i < 40; i++) {
         const offset = (Math.floor(i / 2) / 20 + rand.range(-0.006, 0.006)) * loop.length;
         addFollower(b, geo, laneTf(loop, { speed: loop.length / P, offset, dx: (i % 2) * 0.5 - 0.25, dz: rand.range(-0.25, 0.25) }), P, 0.2);
@@ -1443,7 +2146,7 @@ export default {
     {
       const [u, y] = bommies[0];
       const x = chanX(y) + u, z = H(x, y) + 3.0;
-      const geo = fishGeo(0.2, 0.085, 0.045, '#3a8cf0', '#5cc4ff', '#b2e6ff', '#3a8cf0', 0.5);
+      const geo = fishGeo(FISH.chromis);
       for (let i = 0; i < 24; i++) {
         const ring = i % 3, rr = 1.4 + ring * 0.7, h = z + ring * 0.5 + rand.range(-0.2, 0.2);
         const loop = new Path(Array.from({ length: 16 }, (_, k) => [x + Math.cos(k / 16 * TAU) * rr, y + Math.sin(k / 16 * TAU) * rr, h]), { closed: true, smooth: 3 });
@@ -1455,7 +2158,7 @@ export default {
     // a ring of silver jacks off the drop-off
     {
       const cx = dropX(28) + 6, cy = 28;
-      const geo = fishGeo(0.6, 0.2, 0.08, '#5d7280', '#c4d0d8', '#eef2f4', '#a9b8c2', 0.85);
+      const geo = fishGeo(FISH.jack);
       for (let i = 0; i < 36; i++) {
         const layer = i % 3, rr = 5 + layer * 0.8, h = 5 + layer * 1.6;
         const loop = new Path(Array.from({ length: 20 }, (_, k) => [cx + Math.cos(k / 20 * TAU) * rr, cy + Math.sin(k / 20 * TAU) * rr, h + Math.sin(k / 20 * TAU * 2) * 0.6]), { closed: true, smooth: 3 });
@@ -1468,7 +2171,7 @@ export default {
       const cx = chanX(0) - 26;
       const pts = [[cx - 8, -14], [cx + 4, -10], [cx + 8, 2], [cx + 2, 12], [cx - 9, 8], [cx - 12, -4]].map(([x, y]) => [x, y, H(x, y) + 1.8]);
       const loop = new Path(pts, { closed: true, smooth: 6 });
-      const geo = fishGeo(0.26, 0.2, 0.04, '#f2c30f', '#ffd52a', '#ffe680', '#fff0a0', 0.4);
+      const geo = fishGeo(FISH.tang);
       for (let i = 0; i < 16; i++) {
         addFollower(b, geo, laneTf(loop, { speed: loop.length / P, offset: rand.range(0, 5), dx: rand.range(-1.2, 1.2), dz: rand.range(-0.5, 0.6) }), P, 0.15);
       }
@@ -1476,7 +2179,7 @@ export default {
 
     // parrotfish grazing along the ridges
     {
-      const geo = fishGeo(0.7, 0.24, 0.13, '#23877c', '#45c4a0', '#a8e6cf', '#e86fae', 0.4);
+      const geo = fishGeo(FISH.parrot);
       const loops = [[-17, -38, 5], [16, -26, 6], [-20, 10, 5], [18, 30, 6]];
       for (const [u, y0, r] of loops) {
         const cx = chanX(y0) + u;
@@ -1486,6 +2189,40 @@ export default {
         });
         const loop = new Path(pts, { closed: true, smooth: 5 });
         addFollower(b, geo, laneTf(loop, { speed: loop.length / P, offset: rand() * loop.length }), P, 0.35);
+      }
+    }
+
+    // ---- clownfish over two anemones near the spawn point, and humbug
+    // damselfish hiding in a branching coral there: each pacing a little loop
+    // of its own; small, so drawn only from near by
+    {
+      const homes = [
+        // the fish, where (across the channel and along it), the floor under the host, its height, the loops' size, how many
+        { kind: FISH.clown, u: -7.2, y: -31.5, r: 0.585, top: 0.62, size: 0.35, n: 2 },
+        { kind: FISH.clown, u: 7.6, y: -33.5, r: 0.65, top: 0.68, size: 0.4, n: 2 },
+        { kind: FISH.humbug, u: 9.5, y: -41, r: 1.43, top: 2.2, size: 0.9, n: 4 },
+      ];
+      // and more humbugs in the branching corals on two of the bommies further up the channel
+      for (const [u, y] of [bommies[1], bommies[2]]) {
+        const x = chanX(y) + u;
+        homes.push({ kind: FISH.humbug, at: [x - 0.8, y + 0.5, H(x, y) + 1.1 + 1.0], size: 0.6, n: 3 });
+      }
+      const fr = rng(777);
+      for (const h of homes) {
+        const geo = fishGeo(h.kind);
+        const [cx, cy, cz] = h.at ?? [chanX(h.y) + h.u, h.y, floorUnder(chanX(h.y) + h.u, h.y, h.r) - 0.13 + h.top];
+        for (let i = 0; i < h.n; i++) {
+          const a0 = fr() * TAU, d = fr() * h.size * 0.25, rr = fr.range(0.1, 0.2) * (h.size / 0.4) ** 0.5;
+          const ox = cx + Math.cos(a0) * d, oy = cy + Math.sin(a0) * d, oz = cz + fr.range(-0.1, 0.25) * h.size;
+          const turns = fr.int(3, 5), sense = fr() < 0.5 ? 1 : -1, ph = fr() * TAU;
+          const pts = Array.from({ length: 10 }, (_, k) => {
+            const a = sense * k / 10 * TAU + ph;
+            return [ox + Math.cos(a) * rr, oy + Math.sin(a) * rr * 0.6, oz + 0.04 * Math.sin(2 * a)];
+          });
+          const loop = new Path(pts, { closed: true, smooth: 3 });
+          const tf = laneTf(loop, { speed: turns * loop.length / P, offset: fr() * loop.length });
+          b.dynamic(geo, { times: adaptiveTimes(tf, 0, P, { tolerance: 0.04, maxStep: 4, size: 0.06 }), transform: tf, caps: 'none', within: 16 });
+        }
       }
     }
 

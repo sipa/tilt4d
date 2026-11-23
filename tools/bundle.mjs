@@ -46,7 +46,18 @@ const shaders = {
     });
   },
 };
-const js = (await build({ ...options, entryPoints: [path.join(ROOT, 'src/main.js')], format: 'esm', plugins: minify ? [shaders] : [] })).outputFiles[0].text;
+// The one script serves two masters: the page, and the worker in which the
+// page has its scenes built (src/build-worker.js), which is started from a
+// copy of this same script's text.  TILT4D_ONE_FILE tells the page so.  It is
+// written as a plain script, not a module, because a page opened from disk
+// cannot start a worker from a module in every browser.  (The page's own
+// way to its worker's file, by import.meta, is not used in this build: hence
+// the silenced warning.)
+const entry = "if (typeof document === 'undefined') import('./src/build-worker.js'); else import('./src/main.js');";
+const js = '"use strict";\n' + (await build({
+  ...options, stdin: { contents: entry, resolveDir: ROOT, sourcefile: 'entry.js', loader: 'js' }, format: 'iife',
+  define: { TILT4D_ONE_FILE: 'true' }, plugins: minify ? [shaders] : [], logOverride: { 'empty-import-meta': 'silent' },
+})).outputFiles[0].text;
 const css = (await build({ ...options, entryPoints: [path.join(ROOT, 'style.css')] })).outputFiles[0].text;
 
 // Inside a page, a script ends at the first "</script" whatever it stands in

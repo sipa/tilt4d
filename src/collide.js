@@ -25,6 +25,11 @@ const Q = new Float64Array(3);
 const polyA = new Float64Array(24), polyB = new Float64Array(24);
 
 export class Colliders {
+  // A structure made in a worker arrives as a plain object: this makes it one of these again.
+  static revive(plain) {
+    return Object.assign(Object.create(Colliders.prototype), plain, { cand: new Int32Array(256) });
+  }
+
   // tris: 9 numbers per triangle.  ground: (x, y, t) -> z or null; triangles
   // lying on it (terrain, paving, road markings) are left out, because the
   // ground is followed rather than run into.

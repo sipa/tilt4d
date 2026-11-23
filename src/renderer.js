@@ -6,10 +6,15 @@
 //      tetrahedra, sky, then see-through geometry from the furthest to the
 //      nearest, then additive geometry
 //   4. bloom and tone mapping onto the canvas
+// Each of the passes 1 to 3 is handed only what it can see: static geometry
+// comes from the builder in cells of neighbouring triangles and clusters of
+// neighbouring copies, moving geometry in chunks of one key step, each with
+// its bounds, and what lies wholly outside a pass's view volume is left out
+// of it (see _staticDraws and _dynDraws).
 
 import { COMMON, SCENE_PIPELINES, POST, DEFAULT_SURFACE, DEFAULT_REFLECT, DEFAULT_CUTOUT, textureDecls } from './wgsl.js';
 import { dayNightEnv } from './env.js';
-import { STATIC_STRIDE, INSTANCE_STRIDE, MAX_TEXTURES, toHalf } from './builder.js';
+import { STATIC_STRIDE, INSTANCE_STRIDE, MAX_TEXTURES, BLOCK, toHalf } from './builder.js';
 import { f4 } from './math.js';
 
 const HDR = 'rgba16float';
@@ -19,21 +24,34 @@ const SHADOW_SIZE = 2048;
 const PROBE_SIZE = 256;
 const GLOBALS = 60; // floats in the Globals uniform (see wgsl.js)
 const MAX_COPIES = 24;
+const SUN_SAMPLES = 256, SUN_STEP = 0.25; // the light's direction is read back for this many moments, this far apart (s)
 const SLOT = 256;
 const BLOOM_LEVELS = 5;
 const ENV_HOOKS = ['envSun', 'envSky', 'envAmbient', 'envFog'];
 
 // A list of instance ranges to draw, one list per time-repeat slot.  Chunks
 // are visited in buffer order; ones that are neighbours, or separated only by
-// a small gap, merge into a single draw call (tetrahedra in the gap do not
-// meet the slice, so the vertex shader throws them away).
-const BRIDGE = 768;
+// a small gap, merge into a single draw call.  (Most tetrahedra in a gap do
+// not meet the slice, and the vertex shader throws those away; the few that
+// do are things out of sight or too far off, drawn after all.)  The gap is
+// what a draw call is worth: bridging more than this costs more in wasted
+// vertex work than the call it saves.
+const BRIDGE = 192;
+// a 16-bit float, as the GPU stores them, as a number
+function fromHalf(h) {
+  const e = (h >> 10) & 31, f = h & 1023;
+  return (h & 0x8000 ? -1 : 1) * (e === 0 ? f * 2 ** -24 : e === 31 ? (f ? NaN : Infinity) : (1 + f / 1024) * 2 ** (e - 15));
+}
+
 class DrawList {
   constructor() { this.slots = []; this.tets = 0; }
-  add(slot, first, count) {
+  // bridge: how many tetrahedra that were not asked for may be drawn along
+  // with these to save a draw call (none for detail that is only drawn from
+  // near by: what lies between two pieces of it is other things' detail)
+  add(slot, first, count, bridge = BRIDGE) {
     const list = this.slots[slot] || (this.slots[slot] = []);
     const last = list[list.length - 1];
-    if (last && first - (last.first + last.count) <= BRIDGE) {
+    if (last && first - (last.first + last.count) <= bridge) {
       this.tets += first + count - (last.first + last.count);
       last.count = first + count - last.first;
     } else {
@@ -68,7 +86,15 @@ export class Renderer {
     this.scene = null;
     this.size = [0, 0];
     this.frame = 0;
-    this.info = { tets: 0, triangles: 0, draws: 0, liveDraws: 0 };
+    this.info = { tets: 0, triangles: 0, draws: 0, liveDraws: 0, frame: { triangles: 0, tets: 0, draws: 0 } };
+    // What is left out of a pass that cannot see it, as a sum of: 1 static
+    // geometry from the picture, 2 static geometry from the shadow maps,
+    // 4 moving geometry from the picture, 8 moving geometry from the shadow
+    // maps, 16 static geometry from the sides of the reflection picture.
+    // (0 draws everything in every pass, to compare with.)
+    this.cull = 31;
+    this.detail = 1;   // a factor on the distances from which detail given with `within` is drawn
+    this.nearFirst = true; // draw the picture's opaque static geometry nearest first (false: in the order it is stored)
     this.onError = (msg) => console.error(msg);
     device.addEventListener('uncapturederror', (e) => this.onError('WebGPU: ' + e.error.message));
 
@@ -112,6 +138,9 @@ export class Renderer {
         { binding: 0, visibility: S.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 1, visibility: S.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: S.VERTEX, buffer: { hasDynamicOffset: true, minBindingSize: 16 } },
+        { binding: 3, visibility: S.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: S.VERTEX, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: S.VERTEX, buffer: { type: 'read-only-storage' } },
       ],
     });
 
@@ -268,7 +297,9 @@ export class Renderer {
 
   // Uploads a built scene and compiles its shader.  Throws with readable
   // messages if the scene's WGSL does not compile.
-  async setScene(data, def) {
+  // onProgress, if given, is called with how far this has got, 0..1 (most of
+  // the time goes on compiling the scene's shader into its pipelines).
+  async setScene(data, def, onProgress = null) {
     const d = this.device, U = GPUBufferUsage;
     const { code, hookLine } = Renderer.shaderSource(def, data.textures);
     d.pushErrorScope('validation');
@@ -299,8 +330,11 @@ export class Renderer {
       instBuf: instanced.length ? buffer(data.instances, U.VERTEX) : null,
       instanced: [0, 1, 2].map((layer) => instanced.filter((c) => c.layer === layer)),
       dynVerts: buffer(data.dynVerts, U.STORAGE),
-      dynTets: buffer(data.tets, U.STORAGE),
-      staticAlways: data.staticAlways,
+      dynTmpl: buffer(data.dynTmpl, U.STORAGE),
+      dynRuns: buffer(data.dynRuns, U.STORAGE),
+      dynBlocks: buffer(data.dynBlocks, U.STORAGE),
+      dynKeys: buffer(data.dynKeys, U.STORAGE),
+      staticCells: data.staticCells,
       staticTimed: data.staticTimed,
       chunks: data.chunks,
       stats: data.stats,
@@ -319,7 +353,10 @@ export class Renderer {
       layout: this.bglDyn,
       entries: [
         { binding: 0, resource: { buffer: next.dynVerts } },
-        { binding: 1, resource: { buffer: next.dynTets } },
+        { binding: 1, resource: { buffer: next.dynTmpl } },
+        { binding: 3, resource: { buffer: next.dynRuns } },
+        { binding: 4, resource: { buffer: next.dynBlocks } },
+        { binding: 5, resource: { buffer: next.dynKeys } },
         { binding: 2, resource: { buffer: this.drawBuf, size: 16 } },
       ],
     });
@@ -425,6 +462,21 @@ export class Renderer {
     // reflection picture leaves see-through geometry out.)
     const kinds = instanced.length ? ['static', 'inst', 'dyn'] : ['static', 'dyn'];
     const jobs = [];
+    // what it takes to read back the direction of the light (see _sunDir)
+    next.sun = null;
+    if (next.cascades > 0) {
+      const tex = d.createTexture({ size: [SUN_SAMPLES, 1], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+      const globals = d.createBuffer({ size: GLOBALS * 4, usage: U.UNIFORM | U.COPY_DST });
+      const read = d.createBuffer({ size: SUN_SAMPLES * 8, usage: U.MAP_READ | U.COPY_DST });
+      const sun = next.sun = { tex, view: tex.createView(), globals, read, bg: mainGroup(globals, this.blankCube), pipe: null, table: null, pending: false };
+      jobs.push(d.createRenderPipelineAsync({
+        layout: layout(this.bglMain),
+        vertex: { module, entryPoint: 'vs_sky', buffers: [] },
+        fragment: { module, entryPoint: 'fs_sun', targets: [{ format: HDR }] },
+        primitive: { topology: 'triangle-list' },
+      }).then((p) => { sun.pipe = p; }));
+    }
+    onProgress?.(0.25);
     const set = (samples, layers) => {
       const out = { sky: null };
       for (const kind of kinds) {
@@ -438,6 +490,8 @@ export class Renderer {
     next.probePipes = next.reflections ? set(1, [0, 1]) : null;
     next.shadowPipes = {};
     for (const kind of kinds) jobs.push(shadow(kind).then((p) => { next.shadowPipes[kind] = [p]; }));
+    let done = 0;
+    for (const j of jobs) j.then(() => onProgress?.(0.25 + 0.75 * ++done / jobs.length), () => {});
     try {
       await Promise.all(jobs);
     } catch (e) {
@@ -449,26 +503,19 @@ export class Renderer {
 
     const old = this.scene;
     this.scene = next;
-    if (old) for (const b of [old.vbuf, old.ibuf, old.instBuf, old.dynVerts, old.dynTets, ...old.textures]) b?.destroy();
+    if (old) for (const b of [old.vbuf, old.ibuf, old.instBuf, old.dynVerts, old.dynTmpl, old.dynRuns, old.dynBlocks, old.dynKeys, ...old.textures, old.sun?.tex, old.sun?.globals, old.sun?.pending ? null : old.sun?.read]) b?.destroy();
   }
 
-  // Static geometry to draw, as index ranges per layer: everything without a
-  // time window, plus those windowed pieces whose window the slice reaches
-  // somewhere within their bounding box.  (The time at which the slice meets
-  // a static point is linear in its position, so over a box it spans a simple
-  // interval.)  Ranges separated by only a small gap are joined, since the
-  // shader discards out-of-window pixels anyway.  See-through pieces (layer
-  // 2) are listed one by one with their distance, to be drawn in order.
-  // Instanced groups are listed likewise, each of them unless it has one time
-  // window for all its copies that the slice cannot reach.
-  // Returns { ranges, groups }, each a list per layer.
-  _staticDraws(cam, sc, invOw) {
-    const out = [[], [], []];
-    for (let layer = 0; layer < 3; layer++) {
-      const a = sc.staticAlways[layer];
-      if (a && a.count) out[layer].push({ first: a.first, count: a.count });
-    }
-    const T = sc.staticTimed, B = T.box, R = T.range, O = cam.O, P = cam.P, C = cam.C;
+  // Static geometry, in two steps.  First what there is to draw at all this
+  // frame, whichever way anything looks: the cells of always-drawn triangles
+  // need no test, but the pieces with a time window that the builder kept
+  // apart, the pieces that are only drawn from near by, and the instanced
+  // groups are each tested here.  A piece with a time window is skipped when
+  // the slice, anywhere within the piece's bounds, stays outside the window;
+  // the shader discards out-of-window pixels anyway.
+  // Returns { timed: [numbers of pieces], groups: [per layer] }.
+  _staticSet(cam, sc, invOw) {
+    const T = sc.staticTimed, B = T.box, O = cam.O, P = cam.P, C = cam.C;
     const k = invOw / C, ak = Math.abs(k);
     // whether the slice, somewhere within a box, comes to a moment inside a time window
     const reached = (b, o, from, to, period) => {
@@ -480,26 +527,191 @@ export class Renderer {
       }
       return mid + half >= from && mid - half < to;
     };
+    // how far the viewer is from a box (centre and half-size at b[o..]), for detail that is drawn only from near by
+    const away = (b, o) => Math.hypot(Math.max(Math.abs(b[o] - P[0]) - b[o + 3], 0), Math.max(Math.abs(b[o + 1] - P[1]) - b[o + 4], 0), Math.max(Math.abs(b[o + 2] - P[2]) - b[o + 5], 0));
     const groups = [[], [], []];
     for (let layer = 0; layer < 3; layer++) {
       for (const g of sc.instanced[layer]) {
+        if (g.within < 1e29 && away(g.box, 0) > g.within * this.detail) continue;
         if ((g.from > -1e29 || g.to < 1e29) && !reached(g.box, 0, g.from, g.to, g.period)) continue;
-        groups[layer].push(layer === 2 ? { group: g, dist: Math.hypot(g.box[0] - P[0], g.box[1] - P[1], g.box[2] - P[2]) } : g);
+        groups[layer].push(g);
       }
     }
+    const timed = [];
     for (let i = 0; i < T.count; i++) {
       const o = i * 9;
+      if (T.near[i] < Infinity && away(B, o + 3) > T.near[i] * this.detail) continue;
       if (!reached(B, o + 3, B[o], B[o + 1], B[o + 2])) continue;
-      const list = out[T.layer[i]], last = list[list.length - 1];
-      const first = R[i * 2], count = R[i * 2 + 1];
-      if (T.layer[i] === 2) list.push({ first, count, dist: Math.hypot(B[o + 3] - P[0], B[o + 4] - P[1], B[o + 5] - P[2]) });
-      else if (last && first - (last.first + last.count) <= 600) last.count = first + count - last.first;
-      else list.push({ first, count });
+      timed.push(i);
     }
-    this.info.triangles = 0;
-    for (const list of out) for (const r of list) this.info.triangles += r.count / 3;
-    for (const list of groups) for (const e of list) { const g = e.group || e; this.info.triangles += g.count / 3 * g.instances; }
-    return { ranges: out, groups };
+    return { timed, groups };
+  }
+
+  // Then, for one pass, the part of that which lies inside the pass's
+  // planes (see _viewPlanes and _cascadePlanes; none: everything), in the
+  // layers of `mask` (bit 0: opaque, 1: additive, 2: see-through).  Cells and
+  // pieces that are neighbours in the index buffer go into one draw call, and
+  // so do neighbouring clusters of one instanced mesh.  See-through pieces
+  // are listed one by one with their distance, to be drawn in order.
+  // nearFirst: put the opaque draw calls in order of distance, nearest first,
+  // so that what is hidden behind them fails the depth test before it is
+  // shaded (for the picture; a shadow map has nothing to gain by it).
+  // Returns { ranges, groups (each a list per layer), triangles }.
+  _staticDraws(sc, set, planes, mask, P, nearFirst = false) {
+    const ranges = [[], [], []], groups = [[], [], []];
+    const np = planes.length;
+    const inside = (b, o) => {
+      for (let i = 0; i < np; i++) {
+        const p = planes[i];
+        if (p[0] * b[o] + p[1] * b[o + 1] + p[2] * b[o + 2] + Math.abs(p[0]) * b[o + 3] + Math.abs(p[1]) * b[o + 4] + Math.abs(p[2]) * b[o + 5] + p[3] < 0) return false;
+      }
+      return true;
+    };
+    // how far the viewer is from a box (centre and half-size at b[o..])
+    const away = (b, o) => (nearFirst ? Math.hypot(Math.max(Math.abs(b[o] - P[0]) - b[o + 3], 0), Math.max(Math.abs(b[o + 1] - P[1]) - b[o + 4], 0), Math.max(Math.abs(b[o + 2] - P[2]) - b[o + 5], 0)) : 0);
+    let triangles = 0;
+    const add = (layer, first, count, near) => {
+      const list = ranges[layer], last = list[list.length - 1];
+      triangles += count / 3;
+      if (last && first >= last.first + last.count && first - (last.first + last.count) <= 600) {
+        triangles += (first - (last.first + last.count)) / 3;
+        last.count = first + count - last.first;
+        if (near < last.near) last.near = near;
+      } else {
+        list.push({ first, count, near });
+      }
+    };
+    const cells = sc.staticCells, CB = cells.box, CR = cells.range;
+    for (let i = 0; i < cells.count; i++) {
+      const layer = cells.layer[i];
+      if ((mask >> layer & 1) && inside(CB, i * 6)) add(layer, CR[i * 2], CR[i * 2 + 1], away(CB, i * 6));
+    }
+    const T = sc.staticTimed, B = T.box, R = T.range;
+    for (const i of set.timed) {
+      const layer = T.layer[i], o = i * 9;
+      if (!(mask >> layer & 1) || !inside(B, o + 3)) continue;
+      if (layer === 2) {
+        ranges[2].push({ first: R[i * 2], count: R[i * 2 + 1], dist: Math.hypot(B[o + 3] - P[0], B[o + 4] - P[1], B[o + 5] - P[2]) });
+        triangles += R[i * 2 + 1] / 3;
+      } else {
+        add(layer, R[i * 2], R[i * 2 + 1], away(B, o + 3));
+      }
+    }
+    for (let layer = 0; layer < 3; layer++) {
+      if (!(mask >> layer & 1)) continue;
+      const list = groups[layer];
+      for (const g of set.groups[layer]) {
+        if (!inside(g.box, 0)) continue;
+        triangles += g.count / 3 * g.instances;
+        const last = list[list.length - 1];
+        if (layer === 2) {
+          list.push({ group: g, dist: Math.hypot(g.box[0] - P[0], g.box[1] - P[1], g.box[2] - P[2]) });
+        } else if (last && last.first === g.first && last.count === g.count && last.firstInstance + last.instances === g.firstInstance) {
+          last.instances += g.instances;
+          last.near = Math.min(last.near, away(g.box, 0));
+        } else {
+          list.push({ first: g.first, count: g.count, firstInstance: g.firstInstance, instances: g.instances, near: away(g.box, 0) });
+        }
+      }
+    }
+    if (nearFirst) {
+      ranges[0].sort((a, b) => a.near - b.near);
+      groups[0].sort((a, b) => a.near - b.near);
+    }
+    return { ranges, groups, triangles };
+  }
+
+  // The planes that bound what a view takes in, for static geometry: each is
+  // [a.x, a.y, a.z, d], with a point p inside where a.p + d >= 0.  The view
+  // is of the slice, in which static geometry is sheared by the tilt (see
+  // staticDelta in wgsl.js); that is a linear map of space, so the pyramid of
+  // view is a pyramid in space as well.  R, U, F: the view's axes; fx, fy:
+  // its projection scales.
+  _viewPlanes(R, U, F, O, P, invOw, fx, fy, near) {
+    const row = (A) => [A[0] - A[3] * invOw * O[0], A[1] - A[3] * invOw * O[1], A[2] - A[3] * invOw * O[2]];
+    const x = row(R), y = row(U), z = row(F);
+    const plane = (a, d) => [a[0], a[1], a[2], d - (a[0] * P[0] + a[1] * P[1] + a[2] * P[2]) + 0.05 * Math.hypot(a[0], a[1], a[2])];
+    const mix = (v, f) => [z[0] + f * v[0], z[1] + f * v[1], z[2] + f * v[2]];
+    return [plane(z, -near), plane(mix(x, -fx), 0), plane(mix(x, fx), 0), plane(mix(y, -fy), 0), plane(mix(y, fy), 0)];
+  }
+
+  // The same for a shadow map: the box of space it covers, round the player
+  // and along the direction l of the light (as shadowBasis and shadowCoord in
+  // wgsl.js), with some room for that direction being known only roughly
+  // (see _sunDir) and for the shader's own rounding.
+  _cascadePlanes(l, P, r, depth) {
+    const up = Math.abs(l[2]) > 0.99 ? [0, 1, 0] : [0, 0, 1];
+    let ex = [up[1] * l[2] - up[2] * l[1], up[2] * l[0] - up[0] * l[2], up[0] * l[1] - up[1] * l[0]];
+    const n = Math.hypot(ex[0], ex[1], ex[2]);
+    ex = [ex[0] / n, ex[1] / n, ex[2] / n];
+    const ey = [l[1] * ex[2] - l[2] * ex[1], l[2] * ex[0] - l[0] * ex[2], l[0] * ex[1] - l[1] * ex[0]];
+    const dot = (a) => a[0] * P[0] + a[1] * P[1] + a[2] * P[2];
+    const texel = 2 * r / SHADOW_SIZE;
+    const cx = Math.floor(dot(ex) / texel) * texel, cy = Math.floor(dot(ey) / texel) * texel, cl = dot(l);
+    const m = r + 2 * texel + 1 + 0.004 * depth, dm = depth + 1;
+    return [
+      [ex[0], ex[1], ex[2], m - cx], [-ex[0], -ex[1], -ex[2], m + cx],
+      [ey[0], ey[1], ey[2], m - cy], [-ey[0], -ey[1], -ey[2], m + cy],
+      [l[0], l[1], l[2], dm - cl], [-l[0], -l[1], -l[2], dm + cl],
+    ];
+  }
+
+  // The direction of the light at time t, or null if it is not known.  The
+  // light is whatever the scene's envSun says, which only the GPU can work
+  // out: so a stretch of it round the player's time is drawn into a strip of
+  // pixels and read back, a few frames late, and looked up here.  Where it
+  // jumps (the moon taking over from the sun) it counts as unknown, and the
+  // shadow maps are then drawn in full, as they are until the first strip
+  // has arrived.
+  _sunDir(sc, t) {
+    const s = sc.sun;
+    if (!s) return null;
+    const tb = s.table;
+    if (!tb || t < tb.t0 + 8 * tb.dt || t > tb.t0 + (tb.n - 9) * tb.dt) this._sunRequest(sc, t);
+    if (!tb) return null;
+    const f = (t - tb.t0) / tb.dt, i = Math.floor(f), u = f - i;
+    if (i < 0 || i >= tb.n - 1) return null;
+    const d = tb.dirs, a = i * 3, b = a + 3;
+    if (!(d[a] * d[b] + d[a + 1] * d[b + 1] + d[a + 2] * d[b + 2] > 0.9995)) return null;
+    const v = [d[a] + (d[b] - d[a]) * u, d[a + 1] + (d[b + 1] - d[a + 1]) * u, d[a + 2] + (d[b + 2] - d[a + 2]) * u];
+    const len = Math.hypot(v[0], v[1], v[2]);
+    return [v[0] / len, v[1] / len, v[2] / len];
+  }
+
+  // Resolves when what has been drawn is done and a read-back of the light's
+  // direction, if one is on its way, has arrived (for stills and for tools:
+  // the next frame then leaves out of the shadow maps what it can).
+  async settle() {
+    await this.device.queue.onSubmittedWorkDone();
+    const s = this.scene?.sun;
+    for (let i = 0; i < 100 && s && s.pending; i++) await new Promise((r) => setTimeout(r, 10));
+  }
+
+  _sunRequest(sc, t) {
+    const s = sc.sun, d = this.device;
+    if (s.pending) return;
+    s.pending = true;
+    const n = SUN_SAMPLES, dt = SUN_STEP, t0 = t - n * dt / 2;
+    const g = this.sunGlobals || (this.sunGlobals = new Float32Array(GLOBALS));
+    g.set(this.globals);
+    g[19] = t0; g[42] = dt; // (the strip's first moment in place of the player's, and its step)
+    d.queue.writeBuffer(s.globals, 0, g);
+    const enc = d.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: s.view, clearValue: [0, 0, 0, 0], loadOp: 'clear', storeOp: 'store' }] });
+    pass.setPipeline(s.pipe);
+    pass.setBindGroup(0, s.bg);
+    pass.draw(3);
+    pass.end();
+    enc.copyTextureToBuffer({ texture: s.tex }, { buffer: s.read, bytesPerRow: n * 8 }, [n, 1]);
+    d.queue.submit([enc.finish()]);
+    s.read.mapAsync(GPUMapMode.READ).then(() => {
+      const h = new Uint16Array(s.read.getMappedRange());
+      const dirs = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) dirs[i * 3 + k] = fromHalf(h[i * 4 + k]);
+      s.read.unmap();
+      s.table = { t0, dt, n, dirs };
+      s.pending = false;
+    }, () => { s.pending = false; });
   }
 
   // Works out which chunks of tetrahedra the slice can touch.  A chunk is a
@@ -510,8 +722,13 @@ export class Renderer {
   // { lists, blend }: draw lists [main, shadow cascade 0, 1, 2], each
   // [opaque, additive], and the see-through chunks one by one with their
   // distance.
-  _dynDraws(cam, sc, radii) {
-    const out = [0, 1, 2, 3].map(() => [new DrawList(), new DrawList()]);
+  // shadowPlanes: for each shadow map, the planes that bound what can cast a
+  // shadow into it (see _cascadePlanes), or null where that is not known and
+  // distance has to do instead.
+  _dynDraws(cam, sc, radii, fx, fy, near, shadowPlanes) {
+    // the view, the three shadow maps, and everything (for the reflection picture, which looks all ways)
+    const out = [0, 1, 2, 3, 4].map(() => [new DrawList(), new DrawList()]);
+    const wantAll = sc.reflections;
     const blend = [];
     const ch = sc.chunks;
     this.info.tets = 0;
@@ -539,12 +756,32 @@ export class Renderer {
     const step = O[3] * C * period; // how far one repeat moves a chunk along O
     const reach = [viewDist, 3 * radii[0], 1.5 * radii[1], sc.cascades > 2 ? 1.5 * radii[2] : 0];
     const B = ch.box, R = ch.range;
+    // The view's pyramid, as planes over (x, y, z, C t) measured from the
+    // player: [a.x, a.y, a.z, a.t, d], inside where a . delta + d >= 0.  A
+    // chunk is a box in space and a stretch of time; if all of that lies
+    // outside one of the planes, so does the part of it in the slice.
+    const planes = [];
+    if (this.cull & 4) {
+      const along = (f, V) => {
+        const a = [cam.F[0] + f * V[0], cam.F[1] + f * V[1], cam.F[2] + f * V[2], cam.F[3] + f * V[3]];
+        return [...a, 0.05 * Math.hypot(...a)];
+      };
+      planes.push([cam.F[0], cam.F[1], cam.F[2], cam.F[3], 0.05 - near], along(-fx, cam.R), along(fx, cam.R), along(-fy, cam.U), along(fy, cam.U));
+    }
+    const tm = (o) => (B[o] + B[o + 1]) / 2;
+    const seen = (o, dx, dy, dz, dt) => {
+      const ht = (B[o + 1] - B[o]) / 2 * C;
+      for (const p of planes) {
+        if (p[0] * dx + p[1] * dy + p[2] * dz + p[3] * dt + Math.abs(p[0]) * B[o + 5] + Math.abs(p[1]) * B[o + 6] + Math.abs(p[2]) * B[o + 7] + Math.abs(p[3]) * ht + p[4] < 0) return false;
+      }
+      return true;
+    };
     let blendTets = 0;
     for (let i = 0; i < ch.count; i++) {
       const o = i * 9;
       const dx = B[o + 2] - P[0], dy = B[o + 3] - P[1], dz = B[o + 4] - P[2];
       const centre = Math.hypot(dx, dy, dz), dist = centre - B[o + 8];
-      if (dist > viewDist) continue;
+      if (dist > viewDist || dist > ch.near[i] * this.detail) continue; // (near: detail that is drawn only from close by)
       const d0 = O[0] * dx + O[1] * dy + O[2] * dz + O[3] * C * ((B[o] + B[o + 1]) / 2 - now);
       const ext = ax * B[o + 5] + ay * B[o + 6] + az * B[o + 7] + at * (B[o + 1] - B[o]) / 2 + 0.02;
       let ka = k0, kb = k1;
@@ -556,15 +793,45 @@ export class Renderer {
         continue;
       }
       const layer = ch.layer[i], first = R[i * 2], count = R[i * 2 + 1];
+      // (a chunk's run of numbers is rounded up to whole blocks: that much lies between neighbours anyway)
+      const bridge = ch.near[i] < Infinity ? BLOCK - 1 : BRIDGE;
+      // which shadow maps it can cast into: wherever the slice finds it, that is inside its box
+      const casts = [false, false, false, false];
+      if (layer === 0) {
+        for (let c = 1; c <= 3; c++) {
+          const pl = shadowPlanes[c - 1];
+          if (!pl) { casts[c] = dist < reach[c]; continue; }
+          let inside = true;
+          for (const p of pl) {
+            if (p[0] * B[o + 2] + p[1] * B[o + 3] + p[2] * B[o + 4] + Math.abs(p[0]) * B[o + 5] + Math.abs(p[1]) * B[o + 6] + Math.abs(p[2]) * B[o + 7] + p[3] < 0) { inside = false; break; }
+          }
+          casts[c] = inside;
+        }
+      }
       for (let k = ka; k <= kb; k++) {
+        if (ch.near[i] < Infinity) {
+          // Detail that is drawn only from near by: near to where the slice
+          // finds the thing, that is, somewhere along this chunk's stretch of
+          // its path (all but straight within a chunk).
+          const Q = ch.path, q = i * 7, shift = (k * period - now) * C * O[3];
+          const da = O[0] * (Q[q] - P[0]) + O[1] * (Q[q + 1] - P[1]) + O[2] * (Q[q + 2] - P[2]) + B[o] * C * O[3] + shift;
+          const db = O[0] * (Q[q + 3] - P[0]) + O[1] * (Q[q + 4] - P[1]) + O[2] * (Q[q + 5] - P[2]) + B[o + 1] * C * O[3] + shift;
+          const u = da === db ? 0.5 : Math.min(1, Math.max(0, da / (da - db)));
+          const far = Math.hypot(Q[q] + (Q[q + 3] - Q[q]) * u - P[0], Q[q + 1] + (Q[q + 4] - Q[q + 1]) * u - P[1], Q[q + 2] + (Q[q + 5] - Q[q + 2]) * u - P[2]) - Q[q + 6];
+          if (far > ch.near[i] * this.detail) continue;
+        }
+        const inView = seen(o, dx, dy, dz, (tm(o) + k * period - now) * C);
         if (layer === 2) {
-          blend.push({ slot: k - k0, first, count, dist: centre });
-          blendTets += count;
+          if (inView) {
+            blend.push({ slot: k - k0, first, count, dist: centre });
+            blendTets += count;
+          }
           continue;
         }
-        out[0][layer].add(k - k0, first, count);
+        if (inView) out[0][layer].add(k - k0, first, count, bridge);
+        if (wantAll) out[4][layer].add(k - k0, first, count, bridge);
         if (layer === 0) {
-          for (let c = 1; c <= 3; c++) if (dist < reach[c]) out[c][0].add(k - k0, first, count);
+          for (let c = 1; c <= 3; c++) if (casts[c]) out[c][0].add(k - k0, first, count, bridge);
         }
       }
     }
@@ -631,10 +898,20 @@ export class Renderer {
     }
     d.queue.writeBuffer(this.globalsBuf, 0, g);
 
-    const { lists: [draws, ...shadowDraws], blend: blendDyn } = this._dynDraws(cam, sc, radii);
-    const { ranges: staticDraws, groups } = this._staticDraws(cam, sc, g[24]);
+    // What each pass draws.  Each has its own view volume, and static
+    // geometry that lies wholly outside it is left out (this.cull = false
+    // draws everything in every pass, for comparison).
+    const cull = this.cull;
+    const sun = (cull & 10) && sc.cascades ? this._sunDir(sc, cam.P[3]) : null;
+    const cascadePlanes = [0, 1, 2].map((c) => (c < sc.cascades ? (sun ? this._cascadePlanes(sun, cam.P, radii[c], g[31]) : null) : [[0, 0, 0, -1]]));
+    const { lists: [draws, s1, s2, s3, allDyn], blend: blendDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22], cull & 8 ? cascadePlanes : [null, null, null]);
+    const shadowDraws = [s1, s2, s3];
+    const set = this._staticSet(cam, sc, g[24]);
+    const view = this._staticDraws(sc, set, cull & 1 ? this._viewPlanes(cam.R, cam.U, cam.F, cam.O, cam.P, g[24], g[20], g[21], g[22]) : [], 7, cam.P, this.nearFirst);
+    this.info.triangles = view.triangles;
     const enc = d.createCommandEncoder();
-    let nDraws = 0;
+    // what is handed to the GPU, over all passes: draw calls, triangles and tetrahedra
+    let nDraws = 0, nTris = 0, nTets = 0;
     const drawStatic = (pass, pipes, bg, layer, ranges, batches) => {
       if (!ranges.length && !batches.length) return;
       pass.setBindGroup(0, bg);
@@ -644,7 +921,7 @@ export class Renderer {
         pass.setPipeline(pipes.static[layer]);
         for (const r of ranges) {
           pass.drawIndexed(r.count, 1, r.first);
-          nDraws++;
+          nDraws++; nTris += r.count / 3;
         }
       }
       if (batches.length) {
@@ -652,7 +929,7 @@ export class Renderer {
         pass.setVertexBuffer(1, sc.instBuf);
         for (const b of batches) {
           pass.drawIndexed(b.count, b.instances, b.first, 0, b.firstInstance);
-          nDraws++;
+          nDraws++; nTris += b.count / 3 * b.instances;
         }
       }
     };
@@ -664,7 +941,7 @@ export class Renderer {
         pass.setBindGroup(1, sc.bgDyn, [slot * SLOT]);
         for (const r of ranges) {
           pass.draw(4, r.count, 0, r.first);
-          nDraws++;
+          nDraws++; nTets += r.count;
         }
       });
     };
@@ -674,16 +951,17 @@ export class Renderer {
         colorAttachments: [],
         depthStencilAttachment: { view: this.shadowLayers[c], depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' },
       });
-      drawStatic(pass, sc.shadowPipes, sc.bgShadow[c], 0, staticDraws[0], groups[0]);
+      const lit = this._staticDraws(sc, set, (cull & 2 && cascadePlanes[c]) || [], 1, cam.P);
+      drawStatic(pass, sc.shadowPipes, sc.bgShadow[c], 0, lit.ranges[0], lit.groups[0]);
       drawDyn(pass, sc.shadowPipes.dyn[0], sc.bgShadow[c], shadowDraws[c][0]);
       pass.end();
     }
 
     // The reflection picture: normally one side a frame, in turn; all six for
     // a still, for a scene's first frame, and when its axes have jumped.
-    let probeDraws = 0, probeSides = 0;
+    let probeDraws = 0, probeSides = 0, probeTris = 0, probeTets = 0;
     if (sc.reflections) {
-      const p = this.probe, before = nDraws;
+      const p = this.probe, before = nDraws, trisBefore = nTris, tetsBefore = nTets;
       const jumped = sc.probeAxes && sc.probeAxes.some((a, i) => f4.dot(a, axes[i]) < 0.95);
       const all = cam.still || sc.probeAge === 0 || jumped;
       sc.probeAxes = axes;
@@ -704,18 +982,20 @@ export class Renderer {
           colorAttachments: [{ view: p.faces[side], clearValue: [0, 0, 0, 1], loadOp: 'clear', storeOp: 'store' }],
           depthStencilAttachment: { view: p.depth, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
         });
-        drawStatic(pass, pipes, bg, 0, staticDraws[0], groups[0]);
-        drawDyn(pass, pipes.dyn[0], bg, draws[0]);
+        const S = SIDES[side];
+        const seen = this._staticDraws(sc, set, cull & 16 ? this._viewPlanes(S[0], S[1], S[2], cam.O, cam.P, g[24], 1, 1, g[22]) : [], 3, cam.P);
+        drawStatic(pass, pipes, bg, 0, seen.ranges[0], seen.groups[0]);
+        drawDyn(pass, pipes.dyn[0], bg, allDyn[0]);
         pass.setPipeline(pipes.sky);
         pass.setBindGroup(0, bg);
         pass.draw(3);
-        drawStatic(pass, pipes, bg, 1, staticDraws[1], groups[1]);
-        drawDyn(pass, pipes.dyn[1], bg, draws[1]);
+        drawStatic(pass, pipes, bg, 1, seen.ranges[1], seen.groups[1]);
+        drawDyn(pass, pipes.dyn[1], bg, allDyn[1]);
         pass.end();
         probeSides++;
       }
       sc.probeAge++;
-      probeDraws = nDraws - before;
+      probeDraws = nDraws - before; probeTris = nTris - trisBefore; probeTets = nTets - tetsBefore;
     }
 
     {
@@ -724,7 +1004,7 @@ export class Renderer {
         depthStencilAttachment: { view: this.depthMS, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
       });
       const pipes = sc.pipes, bg = sc.bgMain;
-      drawStatic(pass, pipes, bg, 0, staticDraws[0], groups[0]);
+      drawStatic(pass, pipes, bg, 0, view.ranges[0], view.groups[0]);
       drawDyn(pass, pipes.dyn[0], bg, draws[0]);
       pass.setPipeline(pipes.sky);
       pass.setBindGroup(0, bg);
@@ -732,7 +1012,7 @@ export class Renderer {
       // See-through geometry, from the furthest to the nearest.  (An
       // instanced group goes by the middle of all its copies, which are not
       // put in order among themselves.)
-      const seeThrough = [...staticDraws[2], ...groups[2], ...blendDyn].sort((a, b) => b.dist - a.dist);
+      const seeThrough = [...view.ranges[2], ...view.groups[2], ...blendDyn].sort((a, b) => b.dist - a.dist);
       let bound = '';
       for (const r of seeThrough) {
         const kind = r.slot !== undefined ? 'dyn' : r.group ? 'inst' : 'static';
@@ -749,14 +1029,17 @@ export class Renderer {
         if (kind === 'dyn') {
           pass.setBindGroup(1, sc.bgDyn, [r.slot * SLOT]);
           pass.draw(4, r.count, 0, r.first);
+          nTets += r.count;
         } else if (kind === 'inst') {
           pass.drawIndexed(r.group.count, r.group.instances, r.group.first, 0, r.group.firstInstance);
+          nTris += r.group.count / 3 * r.group.instances;
         } else {
           pass.drawIndexed(r.count, 1, r.first);
+          nTris += r.count / 3;
         }
         nDraws++;
       }
-      drawStatic(pass, pipes, bg, 1, staticDraws[1], groups[1]);
+      drawStatic(pass, pipes, bg, 1, view.ranges[1], view.groups[1]);
       drawDyn(pass, pipes.dyn[1], bg, draws[1]);
       pass.end();
     }
@@ -793,7 +1076,11 @@ export class Renderer {
     d.queue.submit([enc.finish()]);
     this.info.draws = nDraws;
     // (a still brings all six sides of the reflection picture up to date, a running frame one)
-    this.info.liveDraws = probeSides > 1 ? Math.round(nDraws - probeDraws * (probeSides - 1) / probeSides) : nDraws;
+    const spare = probeSides > 1 ? (probeSides - 1) / probeSides : 0;
+    this.info.liveDraws = Math.round(nDraws - probeDraws * spare);
+    // The work of one running frame over all its passes (the view, the shadow
+    // maps, one side of the reflection picture): see tools/cost.mjs.
+    this.info.frame = { triangles: Math.round(nTris - probeTris * spare), tets: Math.round(nTets - probeTets * spare), draws: this.info.liveDraws };
     this.frame++;
   }
 }

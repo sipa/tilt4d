@@ -13,7 +13,7 @@
 //   town     blocks of houses round both, inside a rectangular city wall
 
 import { Geo } from '../geom.js';
-import { m4 } from '../math.js';
+import { m4, v3 } from '../math.js';
 import { dayNightEnv } from '../env.js';
 import { Path, follow, adaptiveTimes, timeRange, rng } from '../util.js';
 
@@ -29,6 +29,7 @@ const WALL = { x0: -236, x1: 96, y: 96 }; // city wall (inner faces)
 const TRAM_Y = 2.1;       // tram tracks either side of the avenue's centre line
 const BIKE_Y = 5.2;       // cycle lanes
 const FOUNTAIN = [-17, 17];
+const WHEEL_R = 0.34;     // bicycle wheels
 const CAROUSEL = [17, -17];
 
 // window rectangle inside one bay x storey cell of a facade (cell units); the
@@ -38,7 +39,7 @@ const WIN = { hw: 0.2, b: 0.27, t: 0.86 };
 const MAT = {
   GROUND: 1, FACADE: 2, WALL: 3, ROOF: 4, STONE: 5, TOWER: 6, CLOCK: 7, LAMP: 8,
   WATER: 9, AWNING: 10, TRAM: 11, BULB: 12, DISPLAY: 13, LEAF: 14, GABLE: 15,
-  JET: 16, CANOPY: 17, DOOR: 18, GLASS: 19, CURTAIN: 20, NEON: 21,
+  JET: 16, CANOPY: 17, DOOR: 18, GLASS: 19, CURTAIN: 20, NEON: 21, PERSON: 22, WHEEL: 23, SIGN: 24, HORSE: 25,
 };
 
 // street lamps: positions shared by the geometry and the shader's light pools
@@ -163,6 +164,7 @@ const WB = ${f1(WIN.b)};
 const WT = ${f1(WIN.t)};
 const LAMP_Z = ${f1(LAMP_Z)};
 const LAMP_COL = vec3f(1.0, 0.68, 0.36);
+const WHEEL_R = ${WHEEL_R.toFixed(3)};
 const FOUNTAIN = vec2f(${f1(FOUNTAIN[0])}, ${f1(FOUNTAIN[1])});
 const STOP_T_E = ${STOP_T[0].toFixed(3)};
 const STOP_T_W = ${STOP_T[1].toFixed(3)};
@@ -254,6 +256,7 @@ fn facade(sIn: Surface, fw: vec2f) -> Surface {
   var lit = 0.0;
   var litCol = mix(vec3f(1.0, 0.62, 0.3), vec3f(1.0, 0.8, 0.55), hash21(cell + 0.5));
   var inside = lin(vec3f(0.07, 0.085, 0.1));
+  var shine = 0.0;
   if (cell.y >= 1.0) {
     let win = rectAA(f, vec2f(0.5 - WHW, WB), vec2f(0.5 + WHW, WT), w);
     let frm = rectAA(f, vec2f(0.5 - WHW - 0.035, WB - 0.02), vec2f(0.5 + WHW + 0.035, WT + 0.03), w);
@@ -286,6 +289,21 @@ fn facade(sIn: Surface, fw: vec2f) -> Surface {
       let panel = rectAA(f, vec2f(0.37, 0.08), vec2f(0.63, 0.48), w);
       c = mix(c, trim, dfr);
       c = mix(c, paint(fract(hr2 + 0.37)) * (0.75 + 0.15 * panel), d);
+      // its furniture: a brass knob, letterbox and bell, the house number on
+      // an enamel plate, a worn stone step
+      let m = vec2f(2.65, 4.1);                   // roughly metres to a cell
+      let wm = max(w.x * m.x, 0.003);
+      let knob = ellipse((f - vec2f(0.625, 0.245)) * m, vec2f(0.026, 0.026), wm);
+      let slot = rectAA(f, vec2f(0.455, 0.3), vec2f(0.545, 0.316), w);
+      let bell = ellipse((f - vec2f(0.69, 0.27)) * m, vec2f(0.017, 0.017), wm);
+      shine = max(max(knob, slot), bell);
+      c = mix(c, lin(vec3f(0.78, 0.6, 0.26)), shine);
+      c *= 1.0 - 0.6 * rectAA(f, vec2f(0.465, 0.304), vec2f(0.535, 0.312), w);
+      let plate = rectAA(f, vec2f(0.72, 0.47), vec2f(0.8, 0.53), w);
+      let num = number7((f - vec2f(0.732, 0.478)) / vec2f(0.056, 0.044), 1.0 + floor(fract(cell.x * 0.1373 + 0.31) * 89.0), 2);
+      c = mix(c, lin(vec3f(0.08, 0.17, 0.45)), plate);
+      c = mix(c, vec3f(0.92), num * plate);
+      c = mix(c, lin(vec3f(0.55, 0.53, 0.5)), rectAA(f, vec2f(0.29, 0.0), vec2f(0.71, 0.022), w));
       glass = fan;
       lit = step(0.5, hr) * nightOf(s.t);
     } else {
@@ -297,7 +315,17 @@ fn facade(sIn: Surface, fw: vec2f) -> Surface {
       let shelf = 1.0 - smoothstep(0.012, 0.012 + w.y, abs(fract((f.y - 0.12) / 0.58 * 3.0) - 0.5) * 0.19);
       let goods = noise2(f * vec2f(14.0, 5.0) + cell * 3.1);
       inside = lin(vec3f(0.2, 0.17, 0.14) * (0.75 + 0.5 * goods));
-      inside = mix(inside, lin(vec3f(0.4, 0.34, 0.27)), shelf * 0.5);
+      // things on the shelves: boxes, jars and bottles in rows, each its own colour and height
+      let sq = vec2f(f.x * 26.0, (f.y - 0.12) / 0.58 * 3.0 + 0.5);
+      let item = vec2f(floor(sq.x), floor(sq.y));
+      let ih = hash22(item + cell * 7.3);
+      let stand = step(0.18, fract(sq.x)) * step(fract(sq.x), 0.88) * step(0.08, fract(sq.y)) * step(fract(sq.y), 0.25 + 0.5 * ih.y) * step(0.25, ih.x) * step(0.5, sq.y) * step(sq.y, 3.5);
+      inside = mix(inside, paint(fract(ih.x * 3.7 + hr)) * (0.6 + 0.5 * ih.y), stand * (1.0 - smoothstep(0.01, 0.03, w.x)) * step(f.y, 0.69));
+      // the shop's name in gold along the top of the glass, for some
+      let lq = vec2f((f.x - 0.2) / 0.6, (f.y - 0.6) / 0.06);
+      let letters = step(0.0, lq.x) * step(lq.x, 1.0) * step(0.0, lq.y) * step(lq.y, 1.0) * step(0.3, fract(lq.x * 9.0)) * step(0.35, noise2(vec2f(lq.x * 40.0, lq.y * 3.0) + cell)) * step(0.5, hr2);
+      shine = max(shine, letters);
+      inside = mix(inside, lin(vec3f(0.85, 0.66, 0.25)), letters);
       // shops stay open into the evening
       let h = hours(s.t);
       lit = step(0.3, hr2) * step(16.5 + hr * 1.5, h) * step(h, 21.5 + hr2 * 2.0);
@@ -311,7 +339,7 @@ fn facade(sIn: Surface, fw: vec2f) -> Surface {
   let glassC = mix(inside, litCol * 0.9, lit);
   s.color = mix(c, glassC, glass);
   s.emissive = glass * lit * select(1.7, 1.2, cell.y < 1.0);
-  s.gloss = mix(0.08, mix(0.6, 0.2, lit), glass);
+  s.gloss = max(mix(0.08, mix(0.6, 0.2, lit), glass), shine * 0.7);
   return s;
 }
 
@@ -410,16 +438,47 @@ fn ground(sIn: Surface, fwp: vec3f) -> Surface {
   } else if (p.x < -${f1(SQ)} && p.x > ${f1(GATE_X - 12)} && ay < ${f1(AW)}) {
     if (ay > 9.0) {
       c = slabs(p, px, vec2f(0.6, 0.6));
-      let kerb = 1.0 - smoothstep(0.15, 0.15 + px, abs(ay - 9.0));
+      // the kerb, in stones a metre long
+      let kerb = (1.0 - smoothstep(0.15, 0.15 + px, abs(ay - 9.0))) * (1.0 - 0.5 * (1.0 - smoothstep(0.006, 0.006 + px, abs(fract(p.x) - 0.5) - 0.49)));
       c = mix(c, lin(vec3f(0.5, 0.5, 0.52)), kerb);
+      // studded paving where the zebra crossing meets the pavement
+      if (abs(p.x - ${f1(CROSS_X)}) < 1.8 && ay < 9.95) {
+        let dot_ = 1.0 - smoothstep(0.2, 0.3, length(fract(p * 14.0) - 0.5));
+        c = mix(lin(vec3f(0.78, 0.72, 0.5)), lin(vec3f(0.9, 0.85, 0.62)), dot_ * (1.0 - smoothstep(0.01, 0.03, px)));
+      }
+      // a manhole cover now and then
+      let mq = vec2f(fract((p.x + 7.0) / 23.0) * 23.0 - 11.5, ay - 11.1);
+      let mr = length(mq);
+      if (mr < 0.36) {
+        let rings = step(0.5, fract(mr * 28.0)) * step(mr, 0.3);
+        let grid = step(0.6, fract((mq.x + mq.y) * 14.0)) * step(0.6, fract((mq.x - mq.y) * 14.0));
+        c = mix(lin(vec3f(0.2, 0.2, 0.21)), lin(vec3f(0.32, 0.31, 0.3)), max(rings, grid) * (1.0 - smoothstep(0.02, 0.06, px)));
+        c *= 1.0 - 0.5 * (1.0 - smoothstep(0.008, 0.008 + px, abs(mr - 0.33)));
+        gl = 0.35;
+      }
     } else if (ay > 7.0) {
-      // strip of fine gravel for the trees and lamps
+      // strip of fine gravel for the trees and lamps, an iron grate round each tree
       c = lin(vec3f(0.6, 0.55, 0.46)) * (0.85 + 0.25 * noise2(p * 9.0));
+      let tq = vec2f((fract((p.x - ${f1(AV_LAMP.x0 + AV_LAMP.dx * 0.5)}) / ${f1(-AV_LAMP.dx)} + 0.5) - 0.5) * ${f1(-AV_LAMP.dx)}, ay - ${f1(AV_LAMP.y + 0.2)});
+      if (max(abs(tq.x), abs(tq.y)) < 0.72 && p.x < ${f1(AV_LAMP.x0 + AV_LAMP.dx * 0.5 + 1)} && p.x > ${f1(AV_LAMP.x0 + AV_LAMP.dx * (AV_LAMP.n - 1.5) - 1)}) {
+        let tr = length(tq);
+        let slot = step(0.45, fract(atan2(tq.y, tq.x) * ${f1(24 / (2 * Math.PI))})) * step(0.3, tr) * step(max(abs(tq.x), abs(tq.y)), 0.64) * (1.0 - smoothstep(0.02, 0.05, px));
+        c = mix(lin(vec3f(0.16, 0.16, 0.17)), lin(vec3f(0.06, 0.05, 0.04)), slot);
+        gl = 0.25;
+      }
     } else if (ay > ${f1(BIKE_Y - 0.85)} && ay < ${f1(BIKE_Y + 0.85)}) {
       c = lin(vec3f(0.55, 0.3, 0.25)) * (0.92 + 0.1 * noise2(p * 3.0));
       let edge = 1.0 - smoothstep(0.05, 0.05 + px, abs(abs(ay - ${f1(BIKE_Y)}) - 0.76));
       c = mix(c, lin(vec3f(0.85, 0.83, 0.78)), edge);
       gl = 0.08;
+    } else if (ay > ${f1(BIKE_Y + 0.85)} && ay < 7.0) {
+      // a gully grating at the edge of the cycle lane every 15 m
+      let gq = vec2f(fract((p.x + 3.0) / 15.0) * 15.0 - 7.5, ay - 6.55);
+      if (abs(gq.x) < 0.32 && abs(gq.y) < 0.22) {
+        let slots = step(0.45, fract(gq.x * 22.0)) * step(abs(gq.y), 0.17) * step(abs(gq.x), 0.27);
+        c = mix(lin(vec3f(0.24, 0.24, 0.25)), lin(vec3f(0.02, 0.02, 0.02)), slots * (1.0 - smoothstep(0.015, 0.04, px)));
+        gl = 0.3;
+      }
     } else if (ay < 3.4) {
       // tram bed: dark basalt setts
       let st = setts(p, vec2f(0.2, 0.15), px);
@@ -465,35 +524,155 @@ fn clockFace(sIn: Surface, fw: vec2f) -> Surface {
   return s;
 }
 
-// tram body: uv.y < 4 on the sides (uv = along / 1.4, height), 4..8 on the ends
+// tram body: on the sides uv = (along / 1.4 + 0.5, height), on the ends
+// (x + 1.2, height + 4).  tag: 0 the right side, 4 the left side, 1 the
+// driving end (on these two the lettering is mirrored), 2 the back end, 3 an end facing the next
+// section, 5 the roof.  aux: which tram and section (3 * tram + section + 1).
+// The destination board's dot-matrix letters, 5 x 7 dots each: A L T S D 4
+const GLYPHS = array<u32, 12>(1033774u, 17969u, 541200u, 32272u, 135327u, 4228u, 475663u, 30753u, 575038u, 31281u, 600258u, 2143u);
+fn glyphDot(g: u32, col: u32, row: u32) -> f32 {
+  let bits = select(GLYPHS[g * 2u + 1u] >> (5u * (row - 4u)), GLYPHS[g * 2u] >> (5u * row), row < 4u);
+  return f32((bits >> (4u - col)) & 1u);
+}
+// "4 ALTSTADT" across a board, q in 0..1 both ways
+fn destBoard(q: vec2f, px: f32) -> f32 {
+  var text = array<u32, 10>(5u, 9u, 0u, 1u, 2u, 3u, 2u, 0u, 4u, 2u);
+  let cell = vec2f(q.x * 60.0, (1.0 - q.y) * 9.0 - 1.0);
+  let ch = u32(clamp(floor(cell.x / 6.0), 0.0, 9.0));
+  let col = u32(floor(cell.x - f32(ch) * 6.0));
+  let row = floor(cell.y);
+  if (text[ch] > 5u || col > 4u || row < 0.0 || row > 6.0) { return 0.0; }
+  let on = glyphDot(text[ch], col, u32(row));
+  // round dots from near by, an even glow from afar
+  let dot = 1.0 - smoothstep(0.3, 0.42, length(fract(cell) - 0.5));
+  return on * mix(dot, 0.6, smoothstep(0.3, 0.8, px * 60.0));
+}
+// a seated figure seen through a window: head and shoulders, q in metres from the seat
+fn passenger(q: vec2f, w: f32) -> f32 {
+  let head = ellipse(q - vec2f(0.0, 0.5), vec2f(0.1, 0.12), w);
+  let body = ellipse(q - vec2f(0.0, 0.18), vec2f(0.24, 0.2), w);
+  return max(head, body);
+}
 fn tramBody(sIn: Surface, fw: vec2f) -> Surface {
   var s = sIn;
-  let w = max(fw, vec2f(0.004));
+  let w = max(fw, vec2f(0.003));
   let night = nightOf(s.t);
+  let id = round(s.aux * 127.0);
   var glass = 0.0;
   var red = 0.0;
-  var sign_ = 0.0;
-  let zz = select(s.uv.y, s.uv.y - 4.0, s.uv.y >= 4.0);
-  if (s.uv.y < 4.0) {
+  var dark = 0.0;     // rubber, seals, bellows
+  var metal = 0.0;    // handrails, rims
+  var lampW = 0.0;    // head lamps
+  var lampR = 0.0;    // tail lamps
+  var sign_ = 0.0;    // destination board, lit
+  var board = 0.0;    // destination board, its black face
+  var fig = 0.0;      // people inside
+  var zz = s.uv.y;
+  let lamp = vec3f(1.0, 0.82, 0.58);
+  if (s.tag == 0u || s.tag == 4u) {
     let z = s.uv.y;
+    let bay = floor(s.uv.x);
     let f = fract(s.uv.x);
-    glass = rectAA(vec2f(f, z), vec2f(0.07, 1.4), vec2f(0.93, 2.45), vec2f(w.x, w.y));
-    red = rectAA(vec2f(0.5, z), vec2f(0.0, 0.45), vec2f(1.0, 1.05), w) + rectAA(vec2f(0.5, z), vec2f(0.0, 2.62), vec2f(1.0, 2.72), w);
+    // a pair of doors in the middle bay, glazed, with handrails either side
+    let door = bay == 2.0;
+    if (door) {
+      let leaf = rectAA(vec2f(f, z), vec2f(0.04, 0.42), vec2f(0.96, 2.48), w);
+      let seam = 1.0 - smoothstep(0.004, 0.004 + w.x, abs(f - 0.5));
+      let edge = leaf * (1.0 - rectAA(vec2f(f, z), vec2f(0.07, 0.47), vec2f(0.93, 2.43), w));
+      glass = rectAA(vec2f(abs(f - 0.5), z), vec2f(0.06, 0.95), vec2f(0.4, 2.3), w);
+      dark = max(max(seam, edge), (1.0 - rectAA(vec2f(abs(f - 0.5), z), vec2f(0.075, 0.93), vec2f(0.39, 2.32), w)) * rectAA(vec2f(abs(f - 0.5), z), vec2f(0.055, 0.9), vec2f(0.415, 2.35), w));
+      metal = (1.0 - smoothstep(0.012, 0.012 + w.x, abs(abs(f - 0.5) - 0.465))) * step(1.0, z) * step(z, 2.2);
+      // the button to open it
+      let btn = ellipse(vec2f((f - 0.62) * 1.4, z - 1.25), vec2f(0.025, 0.025), w.y);
+      s.color = mix(s.color, lin(vec3f(0.1, 0.6, 0.2)), btn);
+    } else {
+      // a window: pane, rubber seal, a top light that opens
+      glass = rectAA(vec2f(f, z), vec2f(0.08, 1.42), vec2f(0.92, 2.43), w);
+      let seal = rectAA(vec2f(f, z), vec2f(0.06, 1.39), vec2f(0.94, 2.46), w) - glass;
+      let transom = (1.0 - smoothstep(0.012, 0.012 + w.y, abs(z - 2.15))) * glass;
+      dark = max(seal, transom);
+      glass -= transom;
+      // someone sitting by some of the windows
+      let h = hash21(vec2f(bay * 1.7 + id * 3.1, f32(s.tag) + 0.5));
+      if (h < 0.55) {
+        fig = passenger(vec2f((f - 0.3 - 0.4 * fract(h * 7.0)) * 1.4, z - 1.45 + 0.08 * fract(h * 13.0)), w.y) * glass;
+      }
+    }
+    red = rectAA(vec2f(0.5, z), vec2f(0.0, 0.45), vec2f(1.0, 1.05), w) * (1.0 - select(0.0, rectAA(vec2f(f, z), vec2f(0.04, 0.42), vec2f(0.96, 2.48), w), door))
+        + rectAA(vec2f(0.5, z), vec2f(0.0, 2.62), vec2f(1.0, 2.72), w);
+    // the fleet number, low down at one end of each section
+    if (bay == 4.0) {
+      var q = vec2f(f, z);
+      if (s.tag == 4u) { q.x = 1.0 - q.x; }
+      let num = number7((q - vec2f(0.3, 0.6)) / vec2f(0.4, 0.3), 200.0 + id, 3);
+      s.color = mix(s.color, lin(vec3f(0.95, 0.92, 0.84)), num * red);
+    }
+    dark = max(dark, 1.0 - smoothstep(0.5, 0.5 + w.y, z));
+  } else if (s.tag == 5u) {
+    s.color *= 0.9;
+  } else if (s.tag == 6u) {
+    // under the floor: a bogie, its side frame with springs and axle boxes, two wheels a side
+    let y = s.uv.x - 3.2;
+    let z = s.uv.y;
+    let q = vec2f(abs(y) - 0.85, z - 0.3);
+    let r = length(q);
+    let wheel = 1.0 - smoothstep(0.3, 0.3 + w.x, r);
+    let rim = smoothstep(0.24, 0.24 + w.x, r) * wheel;
+    let hub = 1.0 - smoothstep(0.075, 0.075 + w.x, r);
+    let frame = rectAA(vec2f(y, z), vec2f(-1.3, 0.26), vec2f(1.3, 0.4), w) + rectAA(q, vec2f(-0.09, -0.09), vec2f(0.09, 0.12), w);
+    let spring = rectAA(vec2f(y, z), vec2f(-0.25, 0.08), vec2f(0.25, 0.26), w) * (0.6 + 0.4 * step(0.5, fract(z * 30.0)));
+    var c = lin(vec3f(0.06, 0.065, 0.07));
+    c = mix(c, lin(vec3f(0.16, 0.16, 0.17)), wheel);
+    c = mix(c, lin(vec3f(0.42, 0.42, 0.44)), max(rim, hub * 0.6));
+    c = mix(c, lin(vec3f(0.12, 0.12, 0.13)), saturate(frame));
+    c = mix(c, lin(vec3f(0.3, 0.12, 0.1)), spring);
+    s.color = c;
+    s.gloss = 0.3 + 0.4 * rim;
+    return s;
   } else {
     let z = s.uv.y - 4.0;
-    let x = s.uv.x - 1.2;
-    glass = rectAA(vec2f(x, z), vec2f(-1.0, 1.35), vec2f(1.0, 2.45), w);
-    sign_ = rectAA(vec2f(x, z), vec2f(-0.75, 2.55), vec2f(0.75, 2.82), w);
-    red = rectAA(vec2f(x, z), vec2f(-2.0, 0.45), vec2f(2.0, 1.05), w);
+    zz = z;
+    var x = s.uv.x - 1.2;
+    if (s.tag == 1u) { x = -x; }   // (so that the lettering reads from in front)
+    if (s.tag == 3u) {
+      // towards the next section: the bellows of the gangway
+      let gw = rectAA(vec2f(x, z), vec2f(-0.75, 0.45), vec2f(0.75, 2.6), w);
+      dark = gw * (0.75 + 0.25 * step(0.5, fract(z * 9.0)));
+      red = rectAA(vec2f(x, z), vec2f(-2.0, 0.45), vec2f(2.0, 1.05), w) * (1.0 - gw);
+    } else {
+      // a driving end (or the back end): windscreen with its wiper and the
+      // driver, the destination board, lamps, bumper
+      glass = rectAA(vec2f(x, z), vec2f(-1.02, 1.35), vec2f(1.02, 2.45), w);
+      let seal = rectAA(vec2f(x, z), vec2f(-1.06, 1.31), vec2f(1.06, 2.49), w) - glass;
+      let wiper = (1.0 - smoothstep(0.008, 0.008 + w.x, abs(sdSegment(vec2f(x, z), vec2f(0.25, 1.4), vec2f(-0.35, 2.15))))) * glass;
+      dark = max(seal, wiper);
+      if (s.tag == 1u) { fig = passenger(vec2f(x + 0.32, z - 1.25), w.y) * glass; }
+      board = rectAA(vec2f(x, z), vec2f(-0.78, 2.53), vec2f(0.78, 2.84), w);
+      sign_ = destBoard((vec2f(x, z) - vec2f(-0.72, 2.57)) / vec2f(1.44, 0.24), max(w.x / 1.44, 0.0)) * board;
+      red = rectAA(vec2f(x, z), vec2f(-2.0, 0.45), vec2f(2.0, 1.05), w);
+      let lr = ellipse(vec2f(abs(x) - 0.82, z - 0.8), vec2f(0.095, 0.095), w.x);
+      let ring = ellipse(vec2f(abs(x) - 0.82, z - 0.8), vec2f(0.12, 0.12), w.x) - lr;
+      metal = ring;
+      if (s.tag == 1u) { lampW = lr; } else { lampR = lr; }
+      // indicators, and the bumper
+      let ind = rectAA(vec2f(abs(x), z), vec2f(0.96, 0.74), vec2f(1.1, 0.86), w);
+      s.color = mix(s.color, lin(vec3f(0.95, 0.55, 0.1)), ind);
+      dark = max(dark, rectAA(vec2f(x, z), vec2f(-1.3, 0.4), vec2f(1.3, 0.56), w));
+    }
   }
-  s.color = mix(s.color, lin(vec3f(0.62, 0.12, 0.1)), red);
-  let lamp = vec3f(1.0, 0.82, 0.58) * (0.35 + 0.3 * smoothstep(1.4, 2.45, zz));
-  let inside = mix(lin(vec3f(0.06, 0.07, 0.08)), lamp, night);
-  s.color = mix(s.color, inside, glass);
-  s.emissive = glass * night * 1.1;
-  s.gloss = mix(0.45, 0.8, glass);
+  s.color = mix(s.color, lin(vec3f(0.62, 0.12, 0.1)), saturate(red));
+  let inside = mix(lin(vec3f(0.06, 0.07, 0.08)), lamp * (0.35 + 0.3 * smoothstep(1.4, 2.45, zz)), night);
+  let figC = mix(lin(vec3f(0.24, 0.2, 0.18)), lin(vec3f(0.1, 0.07, 0.05)) * lamp, night);
+  s.color = mix(s.color, mix(inside, figC, fig), glass);
+  s.color = mix(s.color, lin(vec3f(0.05, 0.05, 0.055)), saturate(dark));
+  s.color = mix(s.color, lin(vec3f(0.8, 0.82, 0.85)), saturate(metal));
+  s.emissive = glass * (1.0 - fig * 0.6) * night * 1.1;
+  s.gloss = mix(mix(0.45, 0.8, glass), 0.85, saturate(metal));
+  s.color = mix(s.color, vec3f(0.02), board);
   s.color = mix(s.color, vec3f(1.0, 0.55, 0.1), sign_);
-  s.emissive = max(s.emissive, sign_ * 4.0);
+  s.color = mix(s.color, vec3f(1.0, 0.95, 0.82), lampW);
+  s.color = mix(s.color, vec3f(1.0, 0.1, 0.05), lampR);
+  s.emissive = max(max(s.emissive, sign_ * 4.0), max(lampW * 6.0, lampR * 4.0));
   return s;
 }
 
@@ -504,7 +683,22 @@ fn tramBody(sIn: Surface, fw: vec2f) -> Surface {
 // Where a tongue is only a few pixels wide they give way to a plain edge.
 fn cutout(s: Surface) -> f32 {
   let fw = fwidth(s.uv.x);
-  if (s.tag == 0u || s.tag > 2u) { return 1.0; }
+  let fw2 = fwidth(s.uv.y);
+  if (s.mat == ${MAT.WHEEL}u) {
+    // a bicycle wheel (uv: metres from the hub, plus 1): tyre and rim, a
+    // hub, and sixteen spokes, turning as the wheel rolls along at 4.6 m/s
+    let q = s.uv - vec2f(1.0);
+    let r = length(q);
+    let px = max(max(fw, fw2), 1e-4);
+    let outer = saturate((WHEEL_R - r) / px + 0.5);
+    let rim = saturate((r - 0.283) / px + 0.5);
+    let hub = saturate((0.032 - r) / px + 0.5);
+    let ang = atan2(q.y, q.x) + select(s.t * ${(4.6 / WHEEL_R).toFixed(3)}, 0.0, s.tag == 1u) + s.aux * 3.0;
+    let d = abs(fract(ang * 16.0 / TAU + 0.5) - 0.5) * TAU / 16.0 * r;
+    let spoke = saturate((0.0017 - d) / px + 0.5);
+    return outer * max(max(rim, hub), spoke);
+  }
+  if (s.tag == 0u || s.tag > 2u || s.mat == ${MAT.PERSON}u) { return 1.0; }
   var q = vec2f(s.uv.x / 0.275, s.uv.y);   // tongues across, top to bottom
   var fq = fw / 0.275;
   if (s.tag == 2u) {
@@ -516,6 +710,147 @@ fn cutout(s: Surface) -> f32 {
   let d = select(0.0, length(vec2f(u, v)), v > 0.0);
   let tongue = saturate((1.0 - d) * 6.0 + 0.5);
   return mix(tongue, saturate((0.9 - q.y) * 12.0 + 0.5), smoothstep(0.11, 0.25, fq));
+}
+
+// Figures (material PERSON), drawn on: aux holds a style number (see
+// person() for its bits); tag & 7 says which part: 1 the body (uv.x round it
+// from +x, the front at 0.25; uv.y the height in metres), 2 the head (its
+// sphere's uv), 3 a hat, 4 hair, 5 the end of a scarf; tag >> 3 is the colour
+// of the hair.
+fn styleHash(id: u32, k: f32) -> f32 { return hash21(vec2f(f32(id) * 0.618 + k * 3.1, k * 1.37 + 0.5)); }
+fn hairCol(k: u32) -> vec3f {
+  var pal = array<vec3f, 6>(vec3f(0.165, 0.118, 0.078), vec3f(0.353, 0.227, 0.125), vec3f(0.69, 0.533, 0.314), vec3f(0.102, 0.102, 0.102),
+                            vec3f(0.541, 0.541, 0.541), vec3f(0.478, 0.227, 0.125));
+  return lin(pal[min(k, 5u)]);
+}
+fn scarfCol(id: u32) -> vec3f {
+  var pal = array<vec3f, 6>(vec3f(0.8, 0.16, 0.12), vec3f(0.95, 0.74, 0.2), vec3f(0.2, 0.45, 0.75), vec3f(0.92, 0.9, 0.85),
+                            vec3f(0.25, 0.55, 0.3), vec3f(0.62, 0.25, 0.55));
+  return lin(pal[min(u32(styleHash(id, 2.0) * 6.0), 5u)]);
+}
+fn ellipse(p: vec2f, r: vec2f, w: f32) -> f32 {
+  let d = (length(p / r) - 1.0) * min(r.x, r.y);
+  return 1.0 - smoothstep(-w, w, d);
+}
+fn personSurf(sIn: Surface, fw: vec2f) -> Surface {
+  var s = sIn;
+  let id = u32(clamp(round(s.aux * 127.0 + 64.0), 0.0, 127.0));
+  let part = s.tag & 7u;
+  let hc = hairCol(s.tag >> 3u);
+  var c = s.color;
+  if (part == 1u) {
+    let z = s.uv.y;
+    let f = fract(s.uv.x - 0.25 + 0.5) - 0.5;      // 0 at the front, -0.5 or 0.5 at the back
+    let x = f * 1.2;                               // roughly metres across the front
+    let xb = (0.5 - abs(f)) * 1.2;                 // and from the middle of the back
+    let w = max(max(fw.x * 1.2, fw.y), 0.0015);
+    let coatBot = select(0.82, 0.56, (id & 64u) != 0u);
+    if (z < coatBot) {
+      var tp = array<vec3f, 4>(vec3f(0.16, 0.16, 0.19), vec3f(0.23, 0.25, 0.29), vec3f(0.29, 0.23, 0.19), vec3f(0.13, 0.15, 0.18));
+      c = lin(tp[(id >> 4u) & 3u]);
+      // the gap between the legs, front and back, and the shoes
+      let gap = 1.0 - smoothstep(0.005, 0.005 + w, min(abs(x), xb));
+      c *= 1.0 - 0.8 * gap * smoothstep(0.86, 0.78, z);
+      let sh = 1.0 - smoothstep(0.075, 0.075 + w, z);
+      c = mix(c, lin(vec3f(0.09, 0.075, 0.065)), sh);
+      s.gloss = mix(0.12, 0.45, sh);
+    } else {
+      // the coat: its opening down the front, buttons or a zip, pocket flaps,
+      // a seam down the back, a darker hem
+      let front = 1.0 - smoothstep(0.004, 0.004 + w, abs(x));
+      let upTo = step(z, 1.31);
+      c *= 1.0 - 0.4 * front * upTo;
+      if ((id & 2u) != 0u) {
+        let q = vec2f(abs(x) - 0.024, (fract((z - coatBot - 0.06) / 0.1 + 0.5) - 0.5) * 0.1);
+        let btn = ellipse(q, vec2f(0.0085, 0.0085), w) * step(coatBot + 0.02, z) * step(z, 1.3);
+        let brass = styleHash(id, 5.0) < 0.4;
+        c = mix(c, select(lin(vec3f(0.1, 0.09, 0.08)), lin(vec3f(0.8, 0.62, 0.25)), brass), btn);
+        s.gloss = mix(0.12, 0.6, btn);
+      } else {
+        c = mix(c, lin(vec3f(0.72, 0.72, 0.7)), front * upTo * 0.6);
+      }
+      let pz = coatBot + 0.15;
+      let pk = (1.0 - smoothstep(0.005, 0.005 + w, abs(z - pz))) * (1.0 - smoothstep(0.032, 0.032 + w, abs(abs(x) - 0.085)));
+      c *= 1.0 - 0.4 * pk;
+      c *= 1.0 - 0.3 * (1.0 - smoothstep(0.003, 0.003 + w, xb)) * step(z, 1.26);
+      c *= 0.75 + 0.25 * smoothstep(0.0, 0.035 + w, z - coatBot);
+      // the sleeves, down the sides, with a cuff above the hand
+      let side = abs(abs(f) - 0.25) * 1.2;
+      let arm = step(0.885, z) * step(z, 1.36);
+      c *= 1.0 - 0.4 * (1.0 - smoothstep(0.005, 0.005 + w, abs(side - 0.07))) * arm;
+      c *= 1.0 - 0.35 * (1.0 - smoothstep(0.011, 0.011 + w, abs(z - 0.9))) * (1.0 - smoothstep(0.07, 0.07 + w, side));
+      if ((id & 1u) != 0u) {
+        // a scarf, striped
+        let band = smoothstep(1.355 - w, 1.355 + w, z);
+        let stripe = step(0.5, fract(z * 28.0 + f * 2.0));
+        c = mix(c, scarfCol(id) * (0.8 + 0.2 * stripe), band);
+      } else {
+        // a shirt collar in the opening of the coat
+        let vv = step(1.24, z) * (1.0 - smoothstep(0.0, w, abs(x) - (z - 1.24) * 0.33));
+        c = mix(c, lin(vec3f(0.88, 0.87, 0.84)), vv);
+      }
+    }
+  } else if (part == 2u || part == 6u) {
+    let f = fract(s.uv.x - 0.25 + 0.5) - 0.5;
+    let a = abs(f);
+    let x = f * 0.672;                          // roughly metres across the face
+    let y = (0.5 - s.uv.y) * 0.38;              // and up from the middle of the head
+    let w = max(max(fw.x * 0.672, fw.y * 0.38), 0.0012);
+    // the hair line: low over the forehead, above the ears, down to the neck at the back
+    let longHair = styleHash(id, 4.0) < 0.4;
+    var hl = mix(0.052 + 0.006 * sin(x * 150.0), select(-0.075, -0.16, longHair), smoothstep(0.12, 0.36, a));
+    if (!longHair) { hl += 0.055 * (1.0 - smoothstep(0.0, 0.07, abs(a - 0.25))); }
+    var hair = smoothstep(hl - w, hl + w, y);
+    if ((id & 8u) != 0u && styleHash(id, 3.0) < 0.5) {
+      // bald on top
+      hair *= 1.0 - smoothstep(0.05, 0.05 + w, y);
+    }
+    let ex = abs(x) - 0.03;
+    let eye = ellipse(vec2f(ex, y - 0.016), vec2f(0.0115, 0.0062), w);
+    let iris = ellipse(vec2f(ex, y - 0.016), vec2f(0.0056, 0.0056), w);
+    var irisC = array<vec3f, 4>(vec3f(0.25, 0.15, 0.08), vec3f(0.2, 0.35, 0.55), vec3f(0.25, 0.38, 0.22), vec3f(0.08, 0.06, 0.05));
+    c = mix(c, lin(vec3f(0.93, 0.91, 0.88)), eye);
+    c = mix(c, lin(irisC[min(u32(styleHash(id, 6.0) * 4.0), 3u)]) * (1.0 - 0.6 * ellipse(vec2f(ex, y - 0.016), vec2f(0.0025, 0.0025), w)), iris * eye);
+    let brow = (1.0 - smoothstep(0.0028, 0.0028 + w, abs(y - 0.033 + 0.12 * ex))) * (1.0 - smoothstep(0.014, 0.014 + w, abs(ex)));
+    c = mix(c, hc * 0.7, brow);
+    let my = y + 0.046 - 7.0 * x * x;
+    let mouth = (1.0 - smoothstep(0.0032, 0.0032 + w, abs(my))) * (1.0 - smoothstep(0.017, 0.017 + w, abs(x)));
+    c = mix(c, c * vec3f(0.62, 0.3, 0.28), mouth);
+    c *= mix(vec3f(1.0), vec3f(1.04, 0.9, 0.88), ellipse(vec2f(ex - 0.006, y + 0.022), vec2f(0.017, 0.012), 0.008));
+    if ((id & 4u) != 0u) {
+      let rim = abs(length(vec2f(ex, (y - 0.016) * 1.35)) - 0.0165);
+      let gl = (1.0 - smoothstep(0.0016, 0.0016 + w, rim)) + (1.0 - smoothstep(0.0014, 0.0014 + w, abs(y - 0.019))) * (1.0 - smoothstep(0.014, 0.014 + w, abs(x)));
+      c = mix(c, vec3f(0.015), saturate(gl));
+    }
+    if ((id & 8u) != 0u) {
+      let bd = smoothstep(-0.008 - w, -0.008 + w, -y) * (1.0 - smoothstep(0.052, 0.062, abs(x))) * (1.0 - mouth);
+      c = mix(c, hc, bd * 0.92);
+    }
+    c *= 1.0 - 0.2 * ellipse(vec2f((a - 0.25) * 0.672, y + 0.004), vec2f(0.011, 0.021), w) * (1.0 - hair);
+    if (part == 6u) {
+      // a cycling helmet over it all, with vents, and its strap
+      var hp = array<vec3f, 4>(vec3f(0.88, 0.23, 0.16), vec3f(0.94, 0.94, 0.94), vec3f(0.16, 0.42, 0.82), vec3f(0.94, 0.75, 0.13));
+      let hel = lin(hp[min(s.tag >> 3u, 3u)]);
+      let shell = smoothstep(-w, w, y - mix(0.046, -0.03, smoothstep(0.1, 0.4, a)));
+      let vent = step(0.72, fract(s.uv.x * 14.0)) * smoothstep(0.05, 0.07, y);
+      let strap = (1.0 - smoothstep(0.003, 0.003 + w, abs(a - 0.22))) * step(y, 0.0) * step(-0.09, y);
+      c = mix(c, hc * 0.8, hair * (1.0 - shell));
+      c = mix(c, hel * (1.0 - 0.75 * vent), shell);
+      c = mix(c, vec3f(0.02), strap);
+      s.gloss = mix(0.2, 0.55, shell);
+    } else {
+      c = mix(c, hc * (0.9 + 0.2 * noise2(vec2f(s.uv.x * 40.0, s.uv.y * 6.0))), hair);
+      s.gloss = mix(0.2, 0.3, hair);
+    }
+  } else if (part == 3u) {
+    c *= 1.0 - 0.45 * (1.0 - smoothstep(0.028, 0.03, s.uv.y));
+  } else if (part == 4u) {
+    c = hc;
+  } else if (part == 5u) {
+    c = scarfCol(id) * (0.8 + 0.2 * step(0.5, fract(s.uv.x * 3.0))) * (1.0 - 0.3 * step(0.9, s.uv.y));
+  }
+  s.color = c;
+  return s;
 }
 
 fn surface(sIn: Surface) -> Surface {
@@ -601,6 +936,15 @@ fn surface(sIn: Surface) -> Surface {
     let arch = select(1.0 - smoothstep(1.1, 1.1 + ww.x, abs(s.uv.x)), 1.0 - smoothstep(1.1, 1.1 + ww.x, length(q)), s.uv.y > 2.6);
     let planks = 0.85 + 0.15 * smoothstep(0.0, 0.03, abs(fract(s.uv.x * 3.0) - 0.5));
     s.color = mix(s.color, lin(vec3f(0.3, 0.18, 0.1)) * planks, arch);
+    // iron: three strap hinges, rows of studs, a ring handle, and the split between the two leaves
+    let iron = lin(vec3f(0.08, 0.08, 0.09));
+    let hz = min(min(abs(s.uv.y - 0.5), abs(s.uv.y - 1.8)), abs(s.uv.y - 3.1));
+    let strap = (1.0 - smoothstep(0.045, 0.045 + ww.y, hz)) * step(0.25, abs(s.uv.x)) * arch;
+    let stud = (1.0 - smoothstep(0.018, 0.018 + ww.x, length(vec2f(fract(s.uv.x * 3.0) - 0.5, fract(s.uv.y * 3.0) - 0.5) / 3.0))) * arch;
+    let ring = (1.0 - smoothstep(0.012, 0.012 + ww.x, abs(length(vec2f(abs(s.uv.x) - 0.2, s.uv.y - 1.15)) - 0.09))) * arch;
+    let split = (1.0 - smoothstep(0.008, 0.008 + ww.x, abs(s.uv.x))) * arch;
+    s.color = mix(s.color, iron, max(max(strap, stud * 0.9), max(ring, split)));
+    s.gloss = max(s.gloss, 0.4 * max(strap, max(stud, ring)));
     s.light += LAMP_COL * (1.1 * night * exp(-s.pos.z / 28.0));
   } else if (s.mat == ${MAT.WATER}u) {
     // ripples running out from the jets
@@ -632,6 +976,91 @@ fn surface(sIn: Surface) -> Surface {
     let st = step(0.5, fract(u * 16.0));
     s.color = mix(lin(vec3f(0.75, 0.12, 0.12)), lin(vec3f(0.95, 0.88, 0.7)), st);
     s.gloss = 0.3;
+  } else if (s.mat == ${MAT.PERSON}u) {
+    s = personSurf(s, fwu);
+  } else if (s.mat == ${MAT.SIGN}u && s.tag == 2u) {
+    // a tram stop's sign: a yellow H on green, in a white ring
+    let q = s.uv - vec2f(0.5);
+    let ww = max(max(fwu.x, fwu.y), 0.004);
+    let r = length(q);
+    let h = max(rectAA(abs(q), vec2f(0.13, 0.0), vec2f(0.19, 0.27), vec2f(ww)), rectAA(abs(q), vec2f(0.0, 0.0), vec2f(0.19, 0.035), vec2f(ww)));
+    s.color = mix(s.color, lin(vec3f(0.95, 0.82, 0.1)), h);
+    s.color = mix(s.color, lin(vec3f(0.95)), smoothstep(0.43 - ww, 0.43 + ww, r));
+    s.gloss = 0.4;
+  } else if (s.mat == ${MAT.SIGN}u && s.tag == 3u) {
+    // a timetable: columns of departure times under a heading
+    let ww = max(fwu, vec2f(0.004));
+    let head = rectAA(s.uv, vec2f(0.06, 0.86), vec2f(0.94, 0.95), ww);
+    let row = fract(s.uv.y * 30.0);
+    let colx = fract(s.uv.x * 4.0);
+    let txt = step(0.3, row) * step(row, 0.7) * step(0.12, colx) * step(colx, 0.8) * step(0.06, s.uv.y) * step(s.uv.y, 0.82) * step(0.06, s.uv.x) * step(s.uv.x, 0.94)
+            * step(0.3, noise2(s.uv * vec2f(120.0, 30.0)));
+    s.color = mix(s.color, lin(vec3f(0.1, 0.25, 0.15)), head);
+    s.color = mix(s.color, lin(vec3f(0.15)), txt * 0.8 * (1.0 - smoothstep(0.004, 0.02, ww.x)));
+  } else if (s.mat == ${MAT.SIGN}u && s.tag == 1u) {
+    // a price card: a price in black, the cents smaller
+    let pr = 1.0 + floor(hash21(floor(s.pos.xy * 3.0)) * 6.0);
+    let d = number7((s.uv - vec2f(0.12, 0.2)) / vec2f(0.3, 0.6), pr, 1) + number7((s.uv - vec2f(0.5, 0.4)) / vec2f(0.4, 0.4), floor(hash21(floor(s.pos.yx * 3.0)) * 10.0) * 10.0 + 9.0, 2);
+    s.color = mix(s.color, lin(vec3f(0.08)), saturate(d));
+  } else if (s.mat == ${MAT.SIGN}u) {
+    // a chalk board in a wooden frame: a heading and lines of writing
+    let ww = max(fwu, vec2f(0.004));
+    let fr = 1.0 - rectAA(s.uv, vec2f(0.07, 0.06), vec2f(0.93, 0.95), ww);
+    let row = fract(s.uv.y * 9.0);
+    let line = step(0.35, row) * step(row, 0.62) * step(0.15, s.uv.x) * step(s.uv.x, 0.85 - 0.3 * hash21(vec2f(floor(s.uv.y * 9.0), floor(s.pos.x + s.pos.y))))
+             * step(0.15, s.uv.y) * step(s.uv.y, 0.78) * step(0.35, noise2(s.uv * vec2f(60.0, 9.0)));
+    s.color = mix(s.color, lin(vec3f(0.85, 0.85, 0.8)), line * 0.8);
+    s.color = mix(s.color, lin(vec3f(0.45, 0.3, 0.18)), fr);
+  } else if (s.mat == ${MAT.HORSE}u) {
+    // a painted carousel horse
+    let y = s.uv.x - 2.0;
+    let z = s.uv.y - 2.0;
+    let w = max(max(fwu.x, fwu.y), 0.003);
+    let flank = s.aux > 0.5;
+    let gold = lin(vec3f(0.85, 0.65, 0.22));
+    let dark = lin(vec3f(0.08, 0.06, 0.05));
+    var c = s.color;
+    var shine = 0.35;
+    if (s.tag == 3u) {
+      let bridle = (1.0 - smoothstep(0.012, 0.012 + w, abs(y - 0.8))) + (1.0 - smoothstep(0.012, 0.012 + w, abs(y - 0.99)));
+      c = mix(c, lin(vec3f(0.45, 0.08, 0.06)), saturate(bridle));
+      c = mix(c, gold, ellipse(vec2f(y - 0.8, z - 0.5), vec2f(0.018, 0.018), w));
+      if (flank) {
+        let eye = ellipse(vec2f(y - 0.9, z - 0.6), vec2f(0.03, 0.022), w);
+        c = mix(c, dark, eye);
+        c = mix(c, vec3f(0.9), ellipse(vec2f(y - 0.91, z - 0.607), vec2f(0.007, 0.007), w) * eye);
+        c = mix(c, dark, ellipse(vec2f(y - 1.03, z - 0.47), vec2f(0.012, 0.016), w));
+      }
+    } else if (s.tag == 2u) {
+      // the mane, along the upper edge of the neck
+      let d = dot(vec2f(y - 0.45, z - 0.05), vec2f(-0.86, 0.51));
+      let mane = smoothstep(0.07, 0.08 + w, d + 0.012 * sin(z * 60.0));
+      c = mix(c, mix(dark, gold, step(0.5, fract(z * 7.0)) * 0.6), mane);
+    } else if (s.tag == 1u) {
+      // the saddle cloth, trimmed in gold, a stirrup hanging from it
+      let cloth = step(abs(y), 0.32) * step(0.0, z);
+      let trim = (1.0 - smoothstep(0.015, 0.015 + w, abs(abs(y) - 0.31))) * step(0.0, z) + (1.0 - smoothstep(0.015, 0.015 + w, abs(z))) * step(abs(y), 0.32);
+      if (flank) {
+        c = mix(c, lin(vec3f(0.62, 0.1, 0.1)), cloth);
+        let stirrup = (1.0 - smoothstep(0.01, 0.01 + w, abs(length(vec2f(y, (z + 0.15) * 1.4)) - 0.045))) * step(z, -0.08);
+        c = mix(c, gold, max(saturate(trim), stirrup));
+        shine = mix(shine, 0.8, max(saturate(trim), stirrup));
+      } else {
+        c = mix(c, gold, saturate((1.0 - smoothstep(0.015, 0.015 + w, abs(abs(y) - 0.29))) * step(abs(y), 0.3)));
+      }
+    } else if (s.tag == 4u) {
+      let hoof = smoothstep(-0.6, -0.62 - w, z);
+      c = mix(c, gold, hoof);
+      shine = mix(shine, 0.8, hoof);
+    }
+    s.color = c;
+    s.gloss = shine;
+  } else if (s.mat == ${MAT.WHEEL}u) {
+    let r = length(s.uv - vec2f(1.0));
+    let tyre = smoothstep(0.301, 0.306, r);
+    s.color = mix(lin(vec3f(0.66, 0.67, 0.7)), lin(vec3f(0.04, 0.04, 0.045)), tyre);
+    s.color = mix(s.color, lin(vec3f(0.3, 0.31, 0.33)), 1.0 - smoothstep(0.026, 0.031, r));
+    s.gloss = mix(0.75, 0.12, tyre);
   } else if (s.mat == ${MAT.TRAM}u) {
     s = tramBody(s, fwu);
   } else if (s.mat == ${MAT.GLASS}u) {
@@ -785,6 +1214,74 @@ function mixHex(a, b, t) {
   const m = (s) => Math.round(ch(pa, s) + (ch(pb, s) - ch(pa, s)) * t);
   return '#' + ((m(16) << 16) | (m(8) << 8) | m(0)).toString(16).padStart(6, '0');
 }
+
+// A smooth tube with shared vertices (few of them, for things that move):
+// n sides through points with radii (a number or one per point), no end caps,
+// or closed by a point `tip`.  sx, sy squash the cross-section (sx across, in
+// the horizontal; sy the other way).
+function limb(pts, radii, n = 4, { sx = 1, sy = 1, tip = null, phase = Math.PI / 4 } = {}) {
+  const g = new Geo();
+  const rs = Array.isArray(radii) ? radii : pts.map(() => radii);
+  const rings = [];
+  for (let k = 0; k < pts.length; k++) {
+    const d = pts.length > 1 ? v3.norm(v3.sub(pts[Math.min(k + 1, pts.length - 1)], pts[Math.max(k - 1, 0)])) : v3.norm(v3.sub(tip || [0, 0, 1], pts[0]));
+    let e1 = v3.cross(d, [0, 0, 1]);
+    e1 = v3.len(e1) < 1e-3 ? [1, 0, 0] : v3.norm(e1);
+    const e2 = v3.cross(e1, d);
+    rings.push(g.vertexCount);
+    for (let i = 0; i < n; i++) {
+      const a = phase + 2 * Math.PI * i / n, c = Math.cos(a), s = Math.sin(a);
+      const nn = v3.norm(v3.add(v3.scale(e1, c / sx), v3.scale(e2, s / sy)));
+      const p = v3.add(pts[k], v3.add(v3.scale(e1, c * sx * rs[k]), v3.scale(e2, s * sy * rs[k])));
+      g.vert(p[0], p[1], p[2], nn[0], nn[1], nn[2], i / n, k);
+    }
+  }
+  for (let k = 0; k + 1 < rings.length; k++) {
+    for (let i = 0; i < n; i++) { const j = (i + 1) % n; g.quadIdx(rings[k] + i, rings[k] + j, rings[k + 1] + j, rings[k + 1] + i); }
+  }
+  if (tip) {
+    const d = v3.norm(v3.sub(tip, pts[pts.length - 1])), last = rings[rings.length - 1];
+    const t = g.vert(tip[0], tip[1], tip[2], d[0], d[1], d[2], 0.5, pts.length);
+    for (let i = 0; i < n; i++) g.tri(last + i, last + (i + 1) % n, t);
+  }
+  return g.orientByNormals();
+}
+
+// A box with 8 shared corners (smooth, rounded-looking): for small parts of moving things.
+function sbox(sx, sy, sz, x = 0, y = 0, z = 0) {
+  const g = new Geo();
+  for (let k = 0; k < 8; k++) {
+    const a = k & 1 ? 1 : -1, b = k & 2 ? 1 : -1, c = k & 4 ? 1 : -1;
+    const n = v3.norm([a, b, c]);
+    g.vert(x + a * sx / 2, y + b * sy / 2, z + c * sz / 2, n[0], n[1], n[2], (a + 1) / 2, (c + 1) / 2);
+  }
+  for (const [a, b, c, d] of [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]]) g.quadIdx(a, b, c, d);
+  return g.orientByNormals();
+}
+
+// A sphere with single vertices at its poles (the seam is kept, for uv).
+function lowSphere(r, seg, rings) {
+  const g = new Geo();
+  const top = g.vert(0, 0, r, 0, 0, 1, 0.5, 0);
+  const row = [];
+  for (let j = 1; j < rings; j++) {
+    const th = Math.PI * j / rings;
+    row.push(g.vertexCount);
+    for (let i = 0; i <= seg; i++) {
+      const ph = 2 * Math.PI * i / seg;
+      const n = [Math.sin(th) * Math.cos(ph), Math.sin(th) * Math.sin(ph), Math.cos(th)];
+      g.vert(n[0] * r, n[1] * r, n[2] * r, n[0], n[1], n[2], i / seg, j / rings);
+    }
+  }
+  const bot = g.vert(0, 0, -r, 0, 0, -1, 0.5, 1);
+  for (let i = 0; i < seg; i++) {
+    g.tri(top, row[0] + i, row[0] + i + 1);
+    g.tri(bot, row[row.length - 1] + i + 1, row[row.length - 1] + i);
+    for (let j = 0; j + 1 < row.length; j++) g.quadIdx(row[j] + i, row[j + 1] + i, row[j + 1] + i + 1, row[j] + i + 1);
+  }
+  return g.orientByNormals();
+}
+
 
 // ---------------------------------------------------------------------------
 // houses
@@ -954,9 +1451,10 @@ function row(b, rand, o) {
       while (col === prevCol) col = rand.pick(WALL_COLORS);
       prevCol = col;
       const hid = HOUSE_ID++;
+      const bays = Math.max(2, Math.round(w / rand.range(2.4, 2.9)));
       const { g: house, H, boxes } = makeHouse({
         w, d: o.depth ?? DEPTH, floors, g0, sh, roof, hid,
-        bays: Math.max(2, Math.round(w / rand.range(2.4, 2.9))),
+        bays,
         pitch: roof === 'side' ? rand.range(0.62, 0.8) : rand.range(0.85, 1.0),
         wall: col, roofCol: rand.pick(ROOF_COLORS),
         left: exL && i === 0, right: exR && i === widths.length - 1,
@@ -968,7 +1466,7 @@ function row(b, rand, o) {
       const m = placeM(org, e, inward);
       b.static(house.transform(m));
       addBoxes(boxes, m);
-      if (o.onHouse) o.onHouse({ m, w, H, g0, hid, rand });
+      if (o.onHouse) o.onHouse({ m, w, H, g0, hid, rand, sh, floors, bays, roof });
       x += w;
     });
   }
@@ -986,6 +1484,23 @@ function lampPost() {
   g.add(Geo.cylinder(0.12, 0.62, 6, { r2: 0.22 }).translate(0, 0, 4.25).mat(MAT.LAMP).color('#ffe2b0'));
   g.add(Geo.cone(0.36, 0.34, 6).translate(0, 0, 4.86).color(iron));
   g.add(Geo.sphere(0.06, 6, 4).translate(0, 0, 5.24).color(iron));
+  return g.gloss(0.3);
+}
+
+// The lamp's small parts, from near by: the glazing bars of the lantern, a
+// ladder bar under it, a collar and a ring on the column.
+function lampDetail() {
+  const g = new Geo();
+  const iron = '#1e2622';
+  for (let i = 0; i < 6; i++) {
+    const a = i * Math.PI / 3, c = Math.cos(a), s = Math.sin(a);
+    g.add(limb([[0.125 * c, 0.125 * s, 4.25], [0.225 * c, 0.225 * s, 4.87]], 0.012, 3).color(iron));
+  }
+  g.add(limb([[-0.38, 0, 3.72], [0.38, 0, 3.72]], 0.022, 3).color(iron));
+  for (const x of [-0.38, 0.38]) g.add(Geo.sphere(0.04, 4, 2).translate(x, 0, 3.72).color(iron));
+  g.add(Geo.cylinder(0.12, 0.1, 8, { caps: false }).translate(0, 0, 1.05).color(iron));
+  g.add(Geo.cylinder(0.11, 0.06, 8, { caps: false, r2: 0.08 }).translate(0, 0, 1.15).color(iron));
+  g.add(Geo.cylinder(0.24, 0.06, 8, { caps: false }).translate(0, 0, 0.0).color(iron));
   return g.gloss(0.3);
 }
 
@@ -1026,60 +1541,237 @@ function bench() {
 
 const COATS = ['#3b4a6b', '#8a2f2f', '#2f5a45', '#c28a3a', '#5a3b5e', '#6b6b6b', '#2a2d33', '#b35a3c', '#3c7a8a', '#d8c9a8', '#7a8a3c', '#a33f62'];
 const SKIN = ['#e8c4a8', '#d9a98a', '#b97f5f', '#8a5a40', '#f0d0b8'];
+const LEGS = ['#2a2a30', '#3a3f4a', '#4a3b30', '#22262e'];
+const HAIR = ['#2a1e14', '#5a3a20', '#b08850', '#1a1a1a', '#8a8a8a', '#7a3a20'];
+// a second stream of random numbers, for the looks of the figures
+let STYLE = rng(29);
 
-// A walking figure, feet at the origin, facing +y (about 60 triangles).
-function person(rand, { sit = false, scale = 1 } = {}) {
-  const coat = rand.pick(COATS), legs = rand.pick(['#2a2a30', '#3a3f4a', '#4a3b30', '#22262e']);
+// A figure, feet at the origin, facing +y: a coat and legs turned on a lathe,
+// a head and perhaps a hat (about 70 to 95 triangles, with few vertices, since
+// most of them walk).  The `surface` hook (material PERSON) draws on it the
+// face, the hair, buttons, a scarf, trousers and shoes; how is told by a style
+// number in .aux, the same for the whole figure (bits: 1 scarf, 2 buttons,
+// 4 glasses, 8 beard, 16 and 32 the trousers, 64 a long coat).  The small
+// parts that only show from near by (arms and hands, shoes, nose, a bag, the
+// end of the scarf, a ponytail) are in `.detail`, in the same frame, for the
+// caller to add with `within`.
+//   sit     seated, on something about 0.45 m high
+//   scale   overall size; build: [width, depth] factors
+function person(rand, { sit = false, scale = 1, build = null } = {}) {
+  // (the scene's random numbers are drawn as they always were, so that
+  // everything else in the town stays as it was; the rest come from STYLE)
+  const R = STYLE;
+  const coat = rand.pick(COATS), legs = rand.pick(LEGS);
+  const skin = rand.pick(SKIN), hairI = HAIR.indexOf(rand.pick(HAIR));
+  const hat = rand() < 0.25, hatCol = hat ? rand.pick(['#2a2a2a', '#7a5a3a', '#a33', '#e8e0d0']) : null;
+  const st = { scarf: R() < 0.4, buttons: R() < 0.6, glasses: R() < 0.18, beard: R() < 0.14, trousers: LEGS.indexOf(legs), long: R() < 0.35 };
+  // a child now and then: smaller, with a larger head for its size
+  const child = !sit && R() < 0.09;
+  if (child) { st.beard = false; st.long = false; scale *= 0.64; }
+  const hs = child ? 1.2 : 1;
+  const id = (st.scarf ? 1 : 0) | (st.buttons ? 2 : 0) | (st.glasses ? 4 : 0) | (st.beard ? 8 : 0) | (st.trousers << 4) | (st.long ? 64 : 0);
+  const aux = (id - 64) / 127;
+  const [bw, bd] = build || [R.range(0.86, 1.18), R.range(0.88, 1.12)];
   const prof = sit
     ? [[0.15, 0.45], [0.21, 0.6], [0.22, 0.95], [0.08, 1.13]]
-    : [[0.08, 0.0], [0.13, 0.8], [0.2, 0.92], [0.21, 1.3], [0.07, 1.48]];
-  const body = Geo.lathe(prof, 6).scale(1, 0.8, 1).colorBy((p) => (p[2] < (sit ? 0.5 : 0.82) ? legs : coat));
+    : [[0.085, 0.0], [0.13, 0.8], [0.2, 0.92], [0.21, 1.3], [0.07, 1.48]];
+  // (u round the body from +x, so the front is at u = 0.25; v the height in metres)
+  const body = uvFrom(Geo.lathe(prof, 6), (p) => [0, p[2]]);
+  for (let i = 0; i < body.vertexCount; i++) {
+    const k = i % 7;
+    body.uv[i * 2] = k / 6;
+  }
+  body.scale(0.9 * bw, 0.75 * bd, 1).color(coat).tag(1);
   const g = new Geo();
   g.add(body);
   const hz = sit ? 1.25 : 1.61;
-  const skin = rand.pick(SKIN), hair = rand.pick(['#2a1e14', '#5a3a20', '#b08850', '#1a1a1a', '#8a8a8a', '#7a3a20']);
-  g.add(Geo.sphere(0.112, 6, 4).scale(1, 1, 1.12).translate(0, 0, hz).colorBy((p, n) => (n[2] > 0.3 || n[1] < -0.45 ? hair : skin)));
-  if (rand() < 0.25) g.add(Geo.cylinder(0.14, 0.09, 6, { r2: 0.11 }).translate(0, 0, hz + 0.07).color(rand.pick(['#2a2a2a', '#7a5a3a', '#a33', '#e8e0d0'])));
-  if (sit) g.add(Geo.box(0.32, 0.45, 0.14).translate(0, 0.2, 0.5).color(legs));
-  return g.scale(scale);
-}
+  g.add(lowSphere(0.112 * hs, 6, 4).scale(1, 1, 1.12).translate(0, 0, hz + 0.13 * (hs - 1)).color(skin).tag(2 + 8 * hairI));
+  if (hat && !child) g.add(uvFrom(Geo.cylinder(0.14, 0.09, 6, { r2: 0.11, caps: false }), (p) => [0, p[2]]).add(uvFrom(Geo.disc(0.11, 6), () => [0, 0.09]).translate(0, 0, 0.09)).translate(0, 0, hz + 0.07).color(hatCol).tag(3));
+  if (sit) g.add(Geo.box(0.3 * bw, 0.45, 0.14).translate(0, 0.2, 0.5).color(legs));
+  g.mat(MAT.PERSON).aux(aux);
 
-// A cyclist, wheels on the ground, riding along +y.
-function cyclist(rand) {
-  const g = new Geo();
-  const frame = rand.pick(['#b8342c', '#2b4f7c', '#2f6a4a', '#e0b030', '#222222', '#d8d8d8', '#6b2f5a']);
-  for (const y of [-0.52, 0.52]) g.add(annulus(0.26, 0.34, 9).rotateY(Math.PI / 2).translate(0, y, 0.34).color('#1c1c1c'));
-  g.add(beam([0, -0.52, 0.34], [0, 0.05, 0.95], 0.05).color(frame));
-  g.add(beam([0, 0.05, 0.95], [0, 0.52, 0.34], 0.05).color(frame));
-  const shirt = rand.pick(COATS);
-  g.add(beam([0, -0.08, 1.0], [0, 0.18, 1.55], 0.34, 0.22).color(shirt));
-  g.add(beam([0, -0.02, 0.98], [0, 0.18, 0.5], 0.26, 0.14).color(rand.pick(['#2a2a30', '#3a3f4a', '#22262e'])));
-  g.add(beam([0, 0.18, 1.5], [0, 0.46, 1.02], 0.5, 0.08).color(shirt));
-  const helmet = rand() < 0.5 ? rand.pick(['#e03a2a', '#f0f0f0', '#2a6ad0', '#f0c020']) : rand.pick(['#2a1e14', '#5a3a20', '#b08850']);
-  const skin = rand.pick(SKIN);
-  g.add(Geo.sphere(0.12, 5, 3).scale(1, 1, 1.1).translate(0, 0.22, 1.72).colorBy((p, n) => (n[2] > 0.2 ? helmet : skin)));
+  // ---- the detail: arms and hands, shoes, the nose, a bag, the end of a scarf, a ponytail
+  const d = new Geo();
+  const sx = 0.9 * bw;
+  const shoe = R.pick(['#2a2420', '#1a1a1a', '#4a3020', '#e8e4dc', '#6a2a20']);
+  const bagKind = sit ? 0 : R.pick([0, 0, 1, 1, 2]);
+  const bagSide = R() < 0.5 ? -1 : 1;
+  const tet = (pts, col) => {
+    // a small closed tetrahedron (a hand, a nose)
+    const t = new Geo();
+    const c = v3.scale(v3.add(v3.add(pts[0], pts[1]), v3.add(pts[2], pts[3])), 0.25);
+    const ids = pts.map((q) => { const n = v3.norm(v3.sub(q, c)); return t.vert(q[0], q[1], q[2], n[0], n[1], n[2]); });
+    t.tri(ids[0], ids[1], ids[2]); t.tri(ids[0], ids[1], ids[3]); t.tri(ids[0], ids[2], ids[3]); t.tri(ids[1], ids[2], ids[3]);
+    return t.orientByNormals().color(col);
+  };
+  for (const s of [-1, 1]) {
+    // an arm (its sleeve is also painted on the coat, for far off) and its hand
+    const hx = s * (sit ? 0.17 : 0.23) * bw, hy = sit ? 0.28 : 0.012 * s, hz0 = sit ? 0.64 : 0.9;
+    const arm = sit ? [[s * 0.2 * bw, 0, 1.0], [s * 0.23 * bw, 0.04, 0.78], [hx, 0.24, 0.68]] : [[s * 0.205 * bw, 0, 1.37], [hx, hy, hz0]];
+    d.add(limb(arm, sit ? [0.055, 0.05, 0.044] : [0.055, 0.044], 4).color(mixHex(coat, '#000000', 0.1)));
+    const hand = sit
+      ? [[hx - s * 0.03, hy - 0.06, hz0 + 0.03], [hx + s * 0.02, hy - 0.06, hz0 + 0.03], [hx, hy + 0.06, hz0], [hx, hy - 0.04, hz0 - 0.02]]
+      : [[hx - s * 0.03, hy - 0.03, hz0 + 0.01], [hx + s * 0.03, hy - 0.025, hz0 + 0.01], [hx, hy + 0.035, hz0 + 0.01], [hx + s * 0.005, hy, hz0 - 0.12]];
+    d.add(tet(hand, skin));
+    // a shoe, its toe peeping out from under the front
+    const fx = s * 0.06 * bw;
+    if (sit) d.add(limb([[fx, 0.42, 0.47], [fx, 0.46, 0.06]], 0.05, 3).color(legs));
+    const fy = sit ? 0.46 : 0;
+    const sh2 = new Geo();
+    const v = (x, y, z) => { const n = v3.norm([x * 5, y * 3, z * 6 + 0.3]); return sh2.vert(fx + x, fy + y, z, n[0], n[1], n[2]); };
+    const a = v(-0.048, -0.04, 0.085), b = v(0.048, -0.04, 0.085), c = v(-0.05, 0.15, 0.005), e = v(0.05, 0.15, 0.005), f = v(0, 0.165, 0.045);
+    sh2.tri(a, c, f); sh2.tri(a, f, b); sh2.tri(b, f, e); sh2.tri(c, e, f);
+    d.add(sh2.orientByNormals().color(shoe).gloss(0.45));
+  }
+  // the nose
+  const fz = hz + 0.13 * (hs - 1) - 0.006 * hs, ny = 0.096 * hs;
+  d.add(tet([[-0.013, ny - 0.004, fz - 0.012], [0.013, ny - 0.004, fz - 0.012], [0, ny - 0.006, fz + 0.024], [0, ny + 0.026, fz - 0.014]], skin));
+  // a bag: in one hand, or on the back
+  const bagCol = R.pick(['#5a3a24', '#2a2a2a', '#8a2f2f', '#c8b090', '#2f4a6a', '#6a6a3a']);
+  if (bagKind === 1) {
+    d.add(sbox(0.08, 0.3, 0.24, bagSide * 0.25 * sx / 0.9, 0.0, 0.7).color(bagCol).gloss(0.3));
+    d.add(Geo.quad([bagSide * 0.2 * sx / 0.9, -0.06, 0.82], [bagSide * 0.2 * sx / 0.9, 0.06, 0.82], [bagSide * 0.235 * sx / 0.9, 0.08, 0.92], [bagSide * 0.235 * sx / 0.9, -0.08, 0.92]).color(mixHex(bagCol, '#000000', 0.4)).doubleSided());
+  } else if (bagKind === 2) {
+    d.add(sbox(0.3 * bw, 0.15, 0.4, 0, -0.165 * bd - 0.03, 1.12).color(bagCol));
+  }
+  // the end of the scarf, hanging down the front
+  if (st.scarf && !sit) d.add(Geo.quad([0.03, 0.155 * bd, 1.4], [0.1, 0.15 * bd, 1.4], [0.11, 0.163 * bd, 1.12], [0.05, 0.168 * bd, 1.12]).color(coat).mat(MAT.PERSON).tag(5).aux(aux).doubleSided());
+  // a ponytail for some
+  const hc = hz + 0.13 * (hs - 1);
+  if ((!hat || child) && R() < 0.3) d.add(limb([[0, -0.1 * hs, hc + 0.02 * hs]], 0.035 * hs, 3, { tip: [0, -0.13 * hs, hc - 0.12 * hs] }).mat(MAT.PERSON).tag(4 + 8 * hairI).aux(aux));
+  g.scale(scale);
+  g.detail = d.scale(scale);
   return g;
 }
 
-// One section of a tram, centred on the origin, running along +y.
-function tramSection(kind) {
+// Moves a figure made by person() and its detail together.
+function placePerson(p, m) {
+  p.transform(m);
+  p.detail.transform(m);
+  return p;
+}
+
+// A cyclist, wheels on the ground, riding along +y.  The wheels are flat
+// octagons that the `cutout` hook turns into tyre, rim, spokes and hub
+// (material WHEEL: uv is the position in metres from the hub, plus 1; aux
+// sets where the spokes start), turning as they roll.  Built from tubes with
+// shared vertices to stay light, since there are thirty of them about.
+function cyclist(rand) {
+  const R = STYLE;
+  // (the scene's random numbers drawn as they always were)
+  const frame = rand.pick(['#b8342c', '#2b4f7c', '#2f6a4a', '#e0b030', '#222222', '#d8d8d8', '#6b2f5a']);
+  const shirt = rand.pick(COATS), trousers = rand.pick(['#2a2a30', '#3a3f4a', '#22262e']);
+  const helmeted = rand() < 0.5;
+  const helmetI = helmeted ? ['#e03a2a', '#f0f0f0', '#2a6ad0', '#f0c020'].indexOf(rand.pick(['#e03a2a', '#f0f0f0', '#2a6ad0', '#f0c020'])) : HAIR.indexOf(rand.pick(['#2a1e14', '#5a3a20', '#b08850']));
+  const skin = rand.pick(SKIN);
+  const g = bicycle(frame);
+  const id = (R() < 0.3 ? 4 : 0) | (R() < 0.12 ? 8 : 0) | 2;
+  addRider(g, { shirt, trousers, skin, helmeted, helmetI, id });
+  // from near by: mudguards, chainring, pedals, a bell, the rider's nose, a basket for some
+  const d = new Geo();
+  const guard = mixHex(frame, '#000000', 0.25);
+  for (const y of [-0.52, 0.52]) {
+    const arc = [];
+    for (let i = 0; i <= 3; i++) { const a = (y > 0 ? 0.35 : 0.5) + i * 0.75; arc.push([0, y + 0.375 * Math.cos(a) * (y > 0 ? 1 : -1), WHEEL_R + 0.375 * Math.sin(a)]); }
+    d.add(limb(arc, 0.02, 3, { sx: 1.8, sy: 0.4 }).color(guard).gloss(0.5));
+  }
+  const ring = new Geo();
+  for (let i = 0; i < 8; i++) { const a = (i + 0.5) * Math.PI / 4; ring.vert(0.06, -0.05 + 0.1 * Math.cos(a), 0.3 + 0.1 * Math.sin(a), 1, 0, 0); }
+  for (let i = 1; i < 7; i++) ring.tri(0, i, i + 1);
+  d.add(ring.orientByNormals().color('#55585c').gloss(0.6).doubleSided());
+  d.add(sbox(0.1, 0.07, 0.022, 0.19, -0.2, 0.39).color('#222222'));
+  d.add(sbox(0.1, 0.07, 0.022, -0.19, 0.08, 0.21).color('#222222'));
+  d.add(limb([[-0.17, 0.31, 1.02]], 0.022, 4, { tip: [-0.17, 0.31, 1.06] }).color('#c8ccd0').gloss(0.8));
+  d.add(limb([[0, 0.262, 1.655]], 0.012, 3, { tip: [0, 0.29, 1.645] }).color(skin));
+  if (R() < 0.3) d.add(sbox(0.32, 0.26, 0.2, 0, 0.52, 0.93).color('#8a6a3a'));
+  g.detail = d;
+  return g;
+}
+
+// A bicycle, wheels on the ground, pointing along +y; `parked`: its lamps off
+// and its wheels still.
+function bicycle(frame, parked = false) {
+  const R = STYLE;
+  const g = new Geo();
+  const black = '#1c1c1c';
+  // wheels
+  const rr = WHEEL_R / Math.cos(Math.PI / 8) + 0.004;
+  for (const y of [-0.52, 0.52]) {
+    const w = new Geo();
+    for (let i = 0; i < 8; i++) {
+      const a = (i + 0.5) * Math.PI / 4;
+      w.vert(0, y + rr * Math.cos(a), WHEEL_R + rr * Math.sin(a), 1, 0, 0, 1 + rr * Math.cos(a), 1 + rr * Math.sin(a));
+    }
+    for (let i = 1; i < 7; i++) w.tri(0, i, i + 1);
+    g.add(w.orientByNormals().color('#1c1c1c').mat(MAT.WHEEL).aux(R.range(-1, 1)).tag(parked ? 1 : 0).cutout().doubleSided());
+  }
+  // frame
+  const RH = [0, -0.52, WHEEL_R], FH = [0, 0.52, WHEEL_R], BB = [0, -0.05, 0.3], ST = [0, -0.17, 0.8], SAD = [0, -0.2, 0.9];
+  const HB = [0, 0.39, 0.68], HT = [0, 0.36, 0.84], STEM = [0, 0.33, 1.0];
+  g.add(limb([RH, BB, HB, HT, STEM], 0.02, 3).color(frame));
+  g.add(limb([RH, ST, HT], 0.016, 3).color(frame));
+  g.add(limb([BB, SAD], 0.017, 3).color(frame));
+  g.add(limb([HB, FH], 0.016, 3).color(frame));
+  g.add(limb([[-0.25, 0.31, 1.0], [0.25, 0.31, 1.0]], 0.014, 3).color(black));
+  // the cranks, one pedal up at the back and one down at the front, through the bottom bracket
+  g.add(limb([[0.15, -0.2, 0.4], [0.05, -0.05, 0.3], [-0.15, 0.08, 0.22]], 0.014, 3).color('#3a3a3a'));
+  // the saddle: a wedge, broad at the back
+  const sd = new Geo();
+  const sv = [[-0.08, -0.31, 0.93], [0.08, -0.31, 0.93], [0, -0.06, 0.935], [0, -0.25, 0.97]].map((q) => { const n = v3.norm(v3.sub(q, [0, -0.22, 0.9])); return sd.vert(q[0], q[1], q[2], n[0], n[1], n[2]); });
+  sd.tri(sv[0], sv[1], sv[2]); sd.tri(sv[0], sv[1], sv[3]); sd.tri(sv[1], sv[2], sv[3]); sd.tri(sv[2], sv[0], sv[3]);
+  g.add(sd.orientByNormals().color('#2a2420').gloss(0.4));
+  // lamps: white at the front, red at the back (each a small pyramid, lit on its face)
+  const lamp = (c, dir, col, e) => {
+    const L = new Geo();
+    const q = [[-0.03, 0, -0.02], [0.03, 0, -0.02], [0, 0, 0.025]].map((o) => L.vert(c[0] + o[0], c[1], c[2] + o[2], 0, dir, 0));
+    const t = L.vert(c[0], c[1] - dir * 0.05, c[2], 0, -dir, 0);
+    L.tri(q[0], q[1], q[2]); L.tri(q[0], q[1], t); L.tri(q[1], q[2], t); L.tri(q[2], q[0], t);
+    L.orientByNormals().color(col);
+    for (const k of q) L.a[k * 4] = e;
+    return L;
+  };
+  g.add(lamp([0, 0.41, 0.93], 1, parked ? '#d8d4c8' : '#fff4d8', parked ? 0 : 3.5));
+  g.add(lamp([0, -0.34, 0.84], -1, parked ? '#a02018' : '#ff2a18', parked ? 0 : 3.5));
+  return g;
+}
+
+function addRider(g, { shirt, trousers, skin, helmeted, helmetI, id }) {
+  // the rider
+  const hip = [0, -0.17, 1.0], sh = [0, 0.08, 1.46], neck = [0, 0.13, 1.53];
+  g.add(limb([hip, sh], [0.14, 0.16], 4, { sx: 1.25, sy: 0.75, tip: neck }).color(shirt));
+  for (const s of [-1, 1]) {
+    g.add(limb([[s * 0.17, 0.08, 1.42], [s * 0.23, 0.27, 1.04]], [0.05, 0.04], 3).color(shirt));
+    g.add(limb([[s * 0.23, 0.27, 1.04]], 0.032, 3, { tip: [s * 0.245, 0.32, 1.0] }).color(skin));
+    const up = s > 0;
+    const knee = up ? [s * 0.11, 0.13, 0.8] : [s * 0.11, 0.17, 0.62], foot = up ? [s * 0.1, -0.2, 0.42] : [s * 0.1, 0.07, 0.23];
+    g.add(limb([[s * 0.09, -0.15, 0.98], knee, foot], [0.075, 0.056, 0.045], 3, { tip: [foot[0], foot[1] + 0.13, foot[2] - 0.04] }).color(trousers));
+  }
+  g.add(lowSphere(0.11, 6, 4).scale(1, 1, 1.1).translate(0, 0.17, 1.66).color(skin).mat(MAT.PERSON).tag((helmeted ? 6 : 2) + 8 * helmetI).aux((id - 64) / 127));
+  return g;
+}
+
+// One section of a tram, centred on the origin, running along +y.  Windows,
+// doors, lamps and lettering are the shader's (see tramBody); j is which tram.
+function tramSection(kind, j = 0) {
   const L = TRAM_SEG, g = new Geo();
+  const k = ['rear', 'mid', 'front'].indexOf(kind);
   const body = Geo.box(2.4, L, 2.5).translate(0, 0, 0.42 + 1.25);
   uvFrom(body, (p, n) => (Math.abs(n[1]) > 0.5 ? [p[0] + 1.2, p[2] + 4] : Math.abs(n[2]) > 0.5 ? [0, 3.5] : [(p[1] + L / 2) / 1.4 + 0.5, p[2]]));
-  g.add(body.color('#ece2c6').mat(MAT.TRAM));
-  g.add(Geo.box(2.1, L - 0.5, 0.22).translate(0, 0, 3.03).color('#8f9499').gloss(0.5));
-  g.add(Geo.box(2.0, L - 1.2, 0.42).translate(0, 0, 0.21).color('#26292d'));
-  if (kind !== 'mid') {
-    const s = kind === 'front' ? 1 : -1;
-    for (const x of [-0.8, 0.8]) {
-      g.add(Geo.box(0.32, 0.06, 0.16).translate(x, s * (L / 2 + 0.02), 0.82).color(kind === 'front' ? '#fff6d8' : '#ff3020').emissive(kind === 'front' ? 6 : 4));
-    }
+  body.color('#ece2c6').mat(MAT.TRAM).aux((3 * j + k + 1) / 127);
+  for (let i = 0; i < body.vertexCount; i++) {
+    const nx = body.n[i * 3], ny = body.n[i * 3 + 1], nz = body.n[i * 3 + 2];
+    body.x[i * 2 + 1] = ny > 0.5 ? (kind === 'front' ? 1 : 3) : ny < -0.5 ? (kind === 'rear' ? 2 : 3) : nz > 0.5 ? 5 : nx < -0.5 ? 4 : 0;
   }
+  g.add(body);
+  g.add(Geo.box(2.1, L - 0.5, 0.22).translate(0, 0, 3.03).color('#8f9499').gloss(0.5));
+  const under = Geo.box(2.0, L - 1.2, 0.42).translate(0, 0, 0.21);
+  g.add(uvFrom(under, (p) => [p[1] + 3.2, p[2]]).color('#26292d').mat(MAT.TRAM).tag(6));
   if (kind === 'mid') {
-    // a pantograph folded down on the roof
-    g.add(beam([0, -0.8, 3.15], [0, 0.4, 3.75], 0.06).color('#333'));
-    g.add(beam([0, 0.4, 3.75], [0, -0.3, 4.15], 0.06).color('#333'));
-    g.add(Geo.box(1.4, 0.08, 0.06).translate(0, -0.3, 4.18).color('#333'));
+    // a pantograph on its frame on the roof
+    const D = '#333333';
+    g.add(sbox(0.9, 0.7, 0.12, 0, -0.5, 3.2).color('#55585c'));
+    g.add(limb([[0, -0.8, 3.2], [0, 0.4, 3.75], [0, -0.3, 4.15]], 0.03, 3).color(D));
+    g.add(limb([[-0.75, -0.3, 4.1], [-0.6, -0.3, 4.18], [0.6, -0.3, 4.18], [0.75, -0.3, 4.1]], 0.025, 3).color('#444444'));
   }
   return g;
 }
@@ -1106,14 +1798,18 @@ function pigeon(color, flap) {
   return g.scale(1.9);
 }
 
-// A carousel horse on its pole, saddle at the origin, facing +y.
+// A carousel horse on its pole, saddle at the origin, facing +y.  The
+// shader paints on it (material HORSE: uv = its own y and z, plus 2; tag
+// the part, 1 body, 2 neck, 3 head, 4 legs; aux 1 on the flanks) the eyes,
+// bridle, mane, saddle cloth, stirrups and hooves.
 function horse(color) {
   const g = new Geo();
-  g.add(Geo.box(0.36, 1.15, 0.42).translate(0, 0, -0.05).colorBy((p, n) => (n[2] > 0.5 && Math.abs(p[1]) < 0.3 ? '#b8342c' : color)));
-  g.add(beam([0, 0.45, 0.05], [0, 0.78, 0.6], 0.24, 0.3).color(color));
-  g.add(beam([0, 0.7, 0.62], [0, 1.05, 0.45], 0.2, 0.24).color(color));
-  g.add(beam([0, 0.45, -0.2], [0, 0.85, -0.7], 0.3, 0.1).color(color));
-  g.add(beam([0, -0.45, -0.2], [0, -0.75, -0.75], 0.3, 0.1).color(color));
+  g.add(Geo.box(0.36, 1.15, 0.42).translate(0, 0, -0.05).colorBy((p, n) => (n[2] > 0.5 && Math.abs(p[1]) < 0.3 ? '#b8342c' : color)).tag(1));
+  g.add(beam([0, 0.45, 0.05], [0, 0.78, 0.6], 0.24, 0.3).color(color).tag(2));
+  g.add(beam([0, 0.7, 0.62], [0, 1.05, 0.45], 0.2, 0.24).color(color).tag(3));
+  g.add(beam([0, 0.45, -0.2], [0, 0.85, -0.7], 0.3, 0.1).color(color).tag(4));
+  g.add(beam([0, -0.45, -0.2], [0, -0.75, -0.75], 0.3, 0.1).color(color).tag(4));
+  uvFrom(g, (p) => [p[1] + 2, p[2] + 2]).aux((p, n) => (Math.abs(n[0]) > 0.7 ? 1 : 0)).mat(MAT.HORSE);
   g.add(Geo.box(0.06, 0.06, 4.8).translate(0, 0.05, 1.1).color('#d9a842').gloss(0.8));
   return g;
 }
@@ -1358,17 +2054,75 @@ function market(b, rand) {
       g.add(roof.color(cols[k % cols.length]).mat(MAT.AWNING));
       g.add(uvFrom(quadN([-W / 2 - 0.2, -Dp / 2 - 0.5, 2.25], [W / 2 + 0.2, -Dp / 2 - 0.5, 2.25], [W / 2 + 0.2, -Dp / 2 - 0.5, 1.95], [-W / 2 - 0.2, -Dp / 2 - 0.5, 1.95], [0, -1, 0]), (p) => [p[0], (2.25 - p[2]) / 0.3]).color(cols[k % cols.length]).mat(MAT.AWNING).tag(1).cutout());
       // the stallholder
-      g.add(person(rand).rotateZ(Math.PI).translate(rand.range(-1, 1), 0.4, 0));
+      const sh = person(rand);
+      placePerson(sh, m4.mul(m4.translation(rand.range(-1, 1), 0.4, 0), m4.rotationZ(Math.PI)));
+      g.add(sh);
       const m = m4.mul(m4.translation(xc, yc, 0), m4.rotationZ(facing > 0 ? Math.PI : 0));
       b.static(g.transform(m));
+      b.static(sh.detail.transform(m), { within: 16, solid: false });
       addBoxes(bx, m);
       // a customer or two
       for (let c = 0; c < 2; c++) {
         if (rand() < 0.35) continue;
-        const p = person(rand).rotateZ(facing > 0 ? Math.PI : 0).translate(xc + rand.range(-1.6, 1.6), yc + facing * (Dp / 2 + 1.0 + rand.range(0, 0.6)), 0);
+        const p = person(rand);
+        placePerson(p, m4.mul(m4.translation(xc + rand.range(-1.6, 1.6), yc + facing * (Dp / 2 + 1.0 + rand.range(0, 0.6)), 0), m4.rotationZ(facing > 0 ? Math.PI : 0)));
         b.static(p);
+        b.static(p.detail, { within: 16, solid: false });
       }
       k++;
+    }
+  }
+}
+
+// What the market stalls sell, piled up on their crates, with a price card
+// on each: fruit, vegetables, bread, cheese, flowers.  Drawn from near by only.
+function marketGoods(b) {
+  const r = rng(5150);
+  const kinds = ['fruit', 'veg', 'bread', 'cheese', 'flowers', 'fruit'];
+  let k = 0;
+  for (const [yc, facing] of [[-13, -1], [-21, 1]]) {
+    for (const xc of [-24, -18, -12]) {
+      const kind = kinds[k++];
+      const g = new Geo();
+      const Dp = 2.4, y0 = -Dp / 2 + 0.45, z0 = 1.07;
+      for (let i = 0; i < 6; i++) {
+        const cx = -1.75 + i * 0.7;
+        const pile = (n, mx, my, make) => {
+          for (let a = 0; a < n; a++) {
+            const u = (a % mx) / Math.max(1, mx - 1) - 0.5, v = (Math.floor(a / mx) % my) / Math.max(1, my - 1) - 0.5, layer = Math.floor(a / (mx * my));
+            g.add(make().translate(cx + u * 0.4 * (1 - layer * 0.4) + r.range(-0.015, 0.015), y0 + v * 0.24 * (1 - layer * 0.4) + r.range(-0.015, 0.015), z0 + layer * 0.05));
+          }
+        };
+        if (kind === 'fruit' || kind === 'veg') {
+          const fruit = kind === 'fruit'
+            ? r.pick([['#c8281e', 0.04], ['#f08a1a', 0.042], ['#f2d23a', 0.036], ['#8ab83a', 0.04], ['#6a2a6a', 0.025], ['#d8b040', 0.038]])
+            : r.pick([['#4a8a3a', 0.08], ['#d8401f', 0.04], ['#e86a1a', 0.03], ['#e8e0c0', 0.05], ['#7a3a6a', 0.06], ['#9ab83a', 0.06]]);
+          const [col, rad] = fruit;
+          const mx = Math.max(2, Math.floor(0.46 / (2 * rad))), my = Math.max(2, Math.floor(0.28 / (2 * rad)));
+          pile(mx * my + (mx - 1) * (my - 1), mx, my, () => Geo.sphere(rad, 5, 3).scale(1, 1, 0.9).translate(0, 0, rad * 0.9).color(mixHex(col, '#000000', r.range(0, 0.18))).gloss(0.45));
+        } else if (kind === 'bread') {
+          const col = r.pick(['#b87a3a', '#8a5226', '#d8a860']);
+          pile(6, 3, 2, () => Geo.sphere(0.06, 6, 3).scale(1.6, 0.9, 0.7).rotateZ(r.range(-0.3, 0.3)).translate(0, 0, 0.04).color(col));
+        } else if (kind === 'cheese') {
+          const col = r.pick(['#f0c850', '#e8d890', '#d89a30']);
+          pile(4, 2, 2, () => Geo.cylinder(0.1, 0.07, 8).color(col));
+        } else {
+          // buckets of flowers
+          g.add(Geo.cylinder(0.14, 0.22, 8, { r2: 0.16 }).translate(cx, y0, 0.99).color('#6a7a8a').gloss(0.5));
+          const col = r.pick(['#e23a3a', '#f06aa0', '#f2c12e', '#f4f1e8', '#b04ad0', '#f08a1a']);
+          for (let a = 0; a < 7; a++) {
+            const ang = a * 2.4, rr = a ? 0.09 : 0;
+            const top = [cx + rr * Math.cos(ang), y0 + rr * Math.sin(ang), 1.42 + r.range(-0.05, 0.05)];
+            g.add(beam([cx + rr * 0.5 * Math.cos(ang), y0 + rr * 0.5 * Math.sin(ang), 1.15], top, 0.012).color('#3a6a2a'));
+            g.add(Geo.cone(0.05, 0.08, 4).rotateX(Math.PI).translate(top[0], top[1], top[2] + 0.06).color(col));
+          }
+        }
+        // a price card on a stick
+        const card = uvFrom(Geo.quad([-0.07, 0, 0], [0.07, 0, 0], [0.07, 0, 0.09], [-0.07, 0, 0.09]), (p) => [(p[0] + 0.07) / 0.14, p[2] / 0.09]);
+        g.add(card.translate(cx + 0.18, y0 - 0.17, 1.12).color('#f4f1e8').mat(MAT.SIGN).tag(1).doubleSided());
+      }
+      const m = m4.mul(m4.translation(xc, yc, 0), m4.rotationZ(facing > 0 ? Math.PI : 0));
+      b.static(g.transform(m), { within: 28, solid: false });
     }
   }
 }
@@ -1386,14 +2140,29 @@ function cafe(b, rand) {
       g.add(Geo.cone(1.6, 0.55, 8).translate(0, 0, 2.45).color(pc));
       g.add(Geo.cylinder(1.6, 0.22, 8, { caps: false }).uvTransform(32 * 0.275, -1, 0, 1).tag(1).cutout().translate(0, 0, 2.25).color(pc));
       const chairs = [];
+      const sitters = new Geo();
       for (const a of [0, Math.PI]) {
         const cm = m4.mul(m4.rotationZ(a), m4.translation(0, 0.75, 0));
         chairs.push([m4.mul(cm, boxM(0.42, 0.42, 0.05, 0, 0, 0.45)), '#3a4a3a'], [m4.mul(cm, boxM(0.42, 0.05, 0.45, 0, 0.2, 0.7)), '#3a4a3a']);
         for (const sx of [-1, 1]) for (const sy of [-1, 1]) chairs.push([m4.mul(cm, boxM(0.04, 0.04, 0.45, sx * 0.18, sy * 0.18, 0.225)), '#3a4a3a']);
-        if (rand() < 0.65) g.add(person(rand, { sit: true }).rotateZ(Math.PI).translate(0, 0.72, 0).rotateZ(a));
+        if (rand() < 0.65) {
+          const p = placePerson(person(rand, { sit: true }), m4.mul(m4.rotationZ(a), m4.translation(0, 0.72, 0), m4.rotationZ(Math.PI)));
+          g.add(p);
+          sitters.add(p.detail);
+        }
       }
       const m = m4.mul(m4.translation(x, y, 0), m4.rotationZ(rand.range(-0.3, 0.3)));
       b.static(g.transform(m));
+      // cups on saucers, a little vase with a flower
+      for (const cy of [-0.24, 0.24]) {
+        sitters.add(Geo.cylinder(0.07, 0.012, 8).translate(0.05, cy, 0.76).color('#f4f1e8'));
+        sitters.add(Geo.cylinder(0.035, 0.065, 8, { r2: 0.042 }).translate(0.05, cy, 0.77).color(STYLE.pick(['#f4f1e8', '#e8d8c0', '#c84a3a'])).gloss(0.6));
+        sitters.add(Geo.disc(0.036, 8).translate(0.05, cy, 0.83).color('#3a2012'));
+      }
+      sitters.add(Geo.cylinder(0.03, 0.12, 6, { r2: 0.018 }).translate(-0.12, 0, 0.76).color('#a8c8d0').gloss(0.8));
+      sitters.add(beam([-0.12, 0, 0.86], [-0.13, 0.01, 1.0], 0.006).color('#3a6a2a'));
+      sitters.add(Geo.cone(0.03, 0.05, 5).rotateX(Math.PI).translate(-0.13, 0.01, 1.04).color(STYLE.pick(['#e23a3a', '#f2c12e', '#f06aa0'])));
+      b.static(sitters.transform(m), { within: 16, solid: false });
       addBoxes(chairs, m);
     }
   }
@@ -1411,6 +2180,13 @@ function tramStop(b) {
     b.static(Geo.box(8, 0.75, 0.06).translate(STOP_X, s * 4.05, 2.85).color('#9ec4d0').mat(MAT.GLASS).blend(0.3), { solid: true });
     b.static(Geo.box(0.04, 0.6, 1.6).translate(STOP_X - 3.5, s * 4.05, 1.42).color('#a8c8d4').mat(MAT.GLASS).blend(0.3), { solid: true });
     addBoxes(bench(), m4.mul(m4.translation(STOP_X + 1.2, (y0 + y1) / 2 + s * 0.15, 0.22), m4.rotationZ(s > 0 ? 0 : Math.PI), m4.scaling(0.9)));
+    // the stop's sign: a green disc with a yellow H on a pole, and a timetable case
+    const px = STOP_X + 5.5, py = s * 4.05;
+    addBoxes([[boxM(0.07, 0.07, 2.5, px, py, 1.25), '#2a3530'], [boxM(0.06, 0.5, 0.66, px, py, 1.55), '#2a3530']]);
+    for (const f of [-1, 1]) {
+      b.static(uvFrom(Geo.disc(0.3, 12).rotateY(f * Math.PI / 2), (p) => [0.5 + f * p[1] / 0.6, 0.5 + p[2] / 0.6]).translate(px + f * 0.04, py, 2.65).color('#1e7a3a').mat(MAT.SIGN).tag(2), { within: 60, solid: false });
+      b.static(uvFrom(Geo.quad([-0.22, 0, -0.3], [0.22, 0, -0.3], [0.22, 0, 0.3], [-0.22, 0, 0.3]), (p) => [(p[0] + 0.22) / 0.44, (p[2] + 0.3) / 0.6]).transform(m4.mul(m4.translation(px + f * 0.032, py, 1.55), m4.rotationZ(f > 0 ? Math.PI / 2 : -Math.PI / 2))).color('#f4f1e8').mat(MAT.SIGN).tag(3), { within: 30, solid: false });
+    }
     // display, readable from both ends of the platform: seconds until the next tram passes on this side
     const ym = (y0 + y1) / 2, dx = STOP_X - 2.0, z0 = 2.06, z1 = 2.42;
     addBoxes([[boxM(0.1, 0.98, 0.44, dx, ym, (z0 + z1) / 2), '#1a1a1a'], [boxM(0.05, 0.05, 0.42, dx, ym, z1 + 0.21), '#222']]);
@@ -1477,6 +2253,47 @@ function countryside(b, rand) {
   }
 }
 
+// Small things on the houses that face the avenue and the square, there only
+// from near by: a drainpipe with its brackets, flower boxes under some of the
+// windows, a board on the pavement in front of some shops.  (Their own random
+// numbers, so that the rest of the town is as it was.)
+function houseDetail(b, h) {
+  const { m, w, H, g0, hid, sh, floors, bays } = h;
+  const r = rng(hid * 7919 + 13);
+  const near = new Geo(), mid = new Geo();
+  // the drainpipe at the left end, from the gutter to a shoe at the foot
+  const pipe = '#3a4044';
+  mid.add(Geo.cylinder(0.05, H - 0.45, 6, { caps: false }).translate(0.14, -0.1, 0.12).color(pipe).gloss(0.4));
+  mid.add(Geo.box(0.18, 0.16, 0.22).translate(0.14, -0.1, H - 0.35).color(pipe));
+  near.add(Geo.box(0.1, 0.22, 0.08).translate(0.14, -0.18, 0.08).color(pipe));
+  for (let z = 1.6; z < H - 0.8; z += 2.4) near.add(Geo.box(0.13, 0.11, 0.035).translate(0.14, -0.06, z).color(pipe));
+  // flower boxes under the windows of the first floor
+  if (floors > 0 && r() < 0.5) {
+    const bw = w / bays, zs = g0 + WIN.b * sh + 0.02;
+    const flower = r.pick(['#e23a3a', '#f06aa0', '#f2c12e', '#f4f1e8', '#b04ad0']);
+    for (let k = 0; k < bays; k++) {
+      const cx = (k + 0.5) * bw, bxw = 2 * WIN.hw * bw + 0.12;
+      mid.add(Geo.box(bxw, 0.24, 0.2).translate(cx, -0.25, zs + 0.1).color(r.pick(['#7a4a2a', '#2f5a3a', '#3a3a3a', '#a8a090'])));
+      mid.add(Geo.box(bxw - 0.06, 0.2, 0.14).translate(cx, -0.25, zs + 0.25).color('#4a7a32').mat(MAT.LEAF));
+      const n = Math.round(bxw / 0.22);
+      for (let i = 0; i < n; i++) {
+        near.add(Geo.cone(0.07, 0.1, 3).rotateX(Math.PI).translate(cx - bxw / 2 + 0.1 + i * (bxw - 0.2) / Math.max(1, n - 1), -0.25 + r.range(-0.06, 0.06), zs + 0.42 + r.range(0, 0.05)).color(r() < 0.8 ? flower : '#f4f1e8'));
+      }
+    }
+  }
+  // a board on the pavement in front of some shops, chalked
+  if (r() < 0.3) {
+    const x = r.range(1.2, w - 1.2), y = -1.6;
+    const board = new Geo();
+    board.add(Geo.quad([x - 0.3, y - 0.25, 0], [x + 0.3, y - 0.25, 0], [x + 0.3, y, 0.9], [x - 0.3, y, 0.9]));
+    board.add(Geo.quad([x + 0.3, y + 0.25, 0], [x - 0.3, y + 0.25, 0], [x - 0.3, y, 0.9], [x + 0.3, y, 0.9]));
+    uvFrom(board, (p) => [(p[0] - x + 0.3) / 0.6, p[2] / 0.9]);
+    near.add(board.color('#2a3a2e').mat(MAT.SIGN).doubleSided());
+  }
+  b.static(mid.transform(m), { within: 50, solid: false });
+  b.static(near.transform(m), { within: 30, solid: false });
+}
+
 // Extras on the houses that face the avenue and the square: blade signs, a
 // cinema marquee, chemist's crosses.
 function shopExtras(b, rand, h, specials) {
@@ -1527,23 +2344,126 @@ function shopExtras(b, rand, h, specials) {
   }
 }
 
+// Litter bins by the lamps, bollards along the kerb of the avenue.
+function streetFurniture(b) {
+  const bin = new Geo();
+  bin.add(Geo.cylinder(0.2, 0.72, 8, { caps: false, r2: 0.22 }).translate(0, 0, 0.08).color('#2f4a3a'));
+  bin.add(Geo.cylinder(0.225, 0.06, 8, { r2: 0.2 }).translate(0, 0, 0.74).color('#1e2e24'));
+  bin.add(Geo.cylinder(0.12, 0.08, 4, { caps: false }).color('#222'));
+  bin.add(Geo.box(0.16, 0.012, 0.1).translate(0, -0.215, 0.6).color('#d8d0b0'));
+  const bins = [];
+  for (let k = 0; k < AV_LAMP.n; k++) for (const s of [-1, 1]) bins.push(m4.mul(m4.translation(AV_LAMP.x0 + AV_LAMP.dx * k + 1.1, s * 8.4, 0), m4.rotationZ(s > 0 ? Math.PI : 0)));
+  for (const [x, y] of SQ_LAMPS) bins.push(m4.mul(m4.translation(x + (x > 0 ? -1 : 1) * 1.1, y, 0), m4.rotationZ(x > 0 ? Math.PI / 2 : -Math.PI / 2)));
+  b.instances(bin.gloss(0.3), bins);
+  // bollards: cast iron, with a white band
+  const bol = Geo.lathe([[0.1, 0], [0.075, 0.2], [0.075, 0.72], [0.09, 0.76], [0, 0.9]], 6);
+  bol.colorBy((p) => (p[2] > 0.62 && p[2] < 0.68 ? '#e8e4da' : '#24282a'));
+  const bols = [];
+  const busy = [];
+  for (let k = 0; k < AV_LAMP.n; k++) busy.push(AV_LAMP.x0 + AV_LAMP.dx * k, AV_LAMP.x0 + AV_LAMP.dx * (k + 0.5), AV_LAMP.x0 + AV_LAMP.dx * (k + 0.5) + 3, AV_LAMP.x0 + AV_LAMP.dx * k + 1.1);
+  for (let x = -44; x > GATE_X + 4; x -= 6) {
+    if (busy.some((q) => Math.abs(q - x) < 1.6) || Math.abs(x - CROSS_X) < 3.2 || Math.abs(x - STOP_X) < 7.5) continue;
+    for (const s of [-1, 1]) bols.push(m4.translation(x, s * 9.3, 0));
+  }
+  b.instances(bol.gloss(0.35), bols);
+  // bicycles leaning against the house fronts
+  const r = rng(808);
+  for (const [x, s] of [[-197.5, 1], [-189, -1], [-176.5, 1], [-158, -1], [-141, 1], [-117.5, -1], [-96, 1], [-83, -1], [-68.5, 1], [-52, -1], [-45, 1]]) {
+    const bike = bicycle(r.pick(['#b8342c', '#2b4f7c', '#2f6a4a', '#e0b030', '#222222', '#d8d8d8', '#6b2f5a', '#8a8a6a']), true);
+    const dir = r() < 0.5 ? 1 : -1;
+    b.static(bike, { transform: m4.mul(m4.translation(x, s * (AW - 0.42), 0), m4.rotationZ(dir * Math.PI / 2), m4.rotationY(-dir * s * 0.13)), solid: false });
+  }
+}
+
+// Pigeons on the ground, in little flocks: each pecks, then looks up, then
+// pecks again, every pigeon in its own time (two poses in turn, as copies
+// with time windows).
+function groundPigeons(b) {
+  const make = (down) => {
+    const g = new Geo();
+    g.add(lowSphere(0.1, 5, 3).scale(0.65, 1.35, 0.7).translate(0, 0, 0.1).color('#8a8f99'));
+    g.add(Geo.triangle([-0.05, -0.12, 0.11], [0.05, -0.12, 0.11], [0, -0.27, 0.09]).color('#5a5f68').doubleSided());
+    const hp = down ? [0, 0.19, 0.04] : [0, 0.13, 0.19];
+    g.add(lowSphere(0.042, 4, 2).translate(hp[0], hp[1], hp[2]).color('#5f6a72'));
+    const tip = down ? [0, 0.235, 0.0] : [0, 0.19, 0.18];
+    g.add(limb([[0, hp[1] + 0.03, hp[2]]], 0.01, 3, { tip }).color('#c8a060'));
+    g.add(limb([[0, 0.02, 0.1], [0, hp[1] - 0.01, hp[2] - 0.01]], 0.035, 3).color('#6a7a7a'));
+    return g;
+  };
+  const r = rng(4242);
+  const flocks = [[-199, -8.2, 6], [-187, 8.3, 5], [-128, 12.8, 5], [-17, 24.0, 7], [-9, 17, 4], [8, -7.6, 6], [-16, -24.5, 5], [-60, -8.0, 4]];
+  const up = [], down = [];
+  for (const [x, y, n] of flocks) {
+    for (let i = 0; i < n; i++) {
+      const tf = m4.mul(m4.translation(x + r.range(-1.4, 1.4), y + r.range(-0.45, 0.45), 0), m4.rotationZ(r.range(0, 2 * Math.PI)), m4.scaling(r.range(0.9, 1.1)));
+      const per = r.range(1.4, 2.4), ph = r.range(0, per), d = per * r.range(0.35, 0.6);
+      down.push({ transform: tf, from: ph, to: ph + d, period: per });
+      up.push({ transform: tf, from: ph + d, to: ph + per, period: per });
+    }
+  }
+  b.instances(make(true), down, { within: 35, solid: false });
+  b.instances(make(false), up, { within: 35, solid: false });
+}
+
 // ---------------------------------------------------------------------------
 // moving things
 
+// The small 3D parts of a tram section, drawn from near by: the bogie's side
+// frames and wheels with their hubs, grab rails beside the doors, the roof
+// equipment, coupler covers and bumper bars at the ends, the mirrors at the
+// driving end, the pantograph's insulators.
+function tramDetail(kind) {
+  const L = TRAM_SEG, g = new Geo(), dark = '#2a2d30', steel = '#3a3c40', chrome = '#c8ccd0';
+  for (const s of [-1, 1]) {
+    g.add(sbox(0.06, 2.4, 0.16, s * 1.03, 0, 0.34).color('#2e3236'));
+    for (const y of [-0.85, 0.85]) {
+      const w = new Geo();
+      const rr = 0.3 / Math.cos(Math.PI / 8);
+      for (let i = 0; i < 8; i++) { const a = (i + 0.5) * Math.PI / 4; w.vert(s * 1.02, y + rr * Math.cos(a), 0.3 + rr * Math.sin(a), s, 0, 0); }
+      for (let i = 1; i < 7; i++) w.tri(0, i, i + 1);
+      g.add(w.orientByNormals().color(steel).gloss(0.5).doubleSided());
+      g.add(limb([[s * 1.0, y, 0.3]], 0.075, 4, { tip: [s * 1.08, y, 0.3] }).color('#5a5c60').gloss(0.6));
+    }
+    // grab rails either side of the doors
+    for (const y of [-1.13, 0.33]) g.add(limb([[s * 1.24, y, 1.0], [s * 1.24, y, 2.2]], 0.018, 3).color(chrome).gloss(0.85));
+  }
+  g.add(sbox(1.3, 1.5, 0.24, 0, kind === 'mid' ? 1.6 : 0.2, 3.26).color('#b8bcc0'));
+  const end = kind === 'front' ? 1 : kind === 'rear' ? -1 : 0;
+  if (end) {
+    g.add(sbox(0.55, 0.16, 0.22, 0, end * (L / 2 + 0.06), 0.52).color(dark));
+    g.add(sbox(1.7, 0.1, 0.12, 0, end * (L / 2 + 0.04), 0.4).color('#3a3e42'));
+  }
+  if (kind === 'front') {
+    for (const s of [-1, 1]) {
+      g.add(limb([[s * 1.18, L / 2 - 0.25, 2.32], [s * 1.42, L / 2 - 0.12, 2.36]], 0.022, 3).color(dark));
+      g.add(limb([[s * 1.45, L / 2 - 0.1, 2.08], [s * 1.45, L / 2 - 0.1, 2.4]], 0.07, 4, { sx: 0.45 }).color(dark));
+    }
+  }
+  if (kind === 'mid') {
+    for (const x of [-0.35, 0.35]) g.add(limb([[x, -0.8, 3.26], [x, -0.8, 3.4]], 0.04, 4).color('#8a3a2a'));
+  }
+  return g;
+}
+
 function trams(b) {
   const kinds = ['rear', 'mid', 'front'];
+  const detail = kinds.map(tramDetail);
   for (let j = 0; j < TRAM_N; j++) {
     for (let k = 0; k < 3; k++) {
       const off = TRAM_OFF + j * TRAM_PATH.length / TRAM_N + k * (TRAM_SEG + TRAM_GAP);
       const tf = follow(TRAM_PATH, { speed: TRAM_V, offset: off, span: TRAM_SEG * 0.75 });
-      b.dynamic(tramSection(kinds[k]), { times: adaptiveTimes(tf, 0, P, { size: 3.2, tolerance: 0.09, maxStep: 8 }), transform: tf, caps: 'none' });
+      const times = adaptiveTimes(tf, 0, P, { size: 3.2, tolerance: 0.09, maxStep: 8 });
+      b.dynamic(tramSection(kinds[k], j), { times, transform: tf, caps: 'none' });
+      b.dynamic(detail[k], { times, transform: tf, caps: 'none', within: 25 });
     }
   }
 }
 
 // Things that come in along an open route, cross the town and leave again:
 // one every `every` seconds, each existing from its start to its end.
-function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 0 }) {
+// Whatever `make` returns may carry small parts in `.detail`: they go with it
+// all the way, drawn from `within` metres.
+function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 0, within = 12 }) {
   const path = new Path(pts.map((p) => [p[0], p[1], 0]));
   const n = Math.max(1, Math.round(P / every));
   for (let i = 0; i < n; i++) {
@@ -1551,7 +2471,10 @@ function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 
     const v = speed * rand.range(0.97, 1.03);
     const d = path.length / v;
     const tf = follow(path, { speed: v, offset: -v * t0, span: size * 1.5, lift });
-    b.dynamic(make(rand), { times: adaptiveTimes(tf, t0, t0 + d, { size, tolerance: 0.1, maxStep: 40 }), transform: tf, caps: 'both' });
+    const geo = make(rand);
+    const times = adaptiveTimes(tf, t0, t0 + d, { size, tolerance: 0.1, maxStep: 40 });
+    b.dynamic(geo, { times, transform: tf, caps: 'both' });
+    if (geo.detail) b.dynamic(geo.detail, { times, transform: tf, caps: 'both', within });
   }
 }
 
@@ -1560,7 +2483,10 @@ function walkersRoundTower(b, rand) {
   const loop = new Path(Array.from({ length: 72 }, (_, i) => [r * Math.cos(i / 72 * 2 * Math.PI), r * Math.sin(i / 72 * 2 * Math.PI), 0]), { closed: true });
   for (let i = 0; i < n; i++) {
     const tf = follow(loop, { speed: 2 * loop.length / P, offset: i * loop.length / n, span: 1 });
-    b.dynamic(person(rand, { scale: rand.range(0.92, 1.06) }), { times: adaptiveTimes(tf, 0, P, { size: 0.5, tolerance: 0.08, maxStep: 4 }), transform: tf, caps: 'none' });
+    const p = person(rand, { scale: rand.range(0.92, 1.06) });
+    const times = adaptiveTimes(tf, 0, P, { size: 0.5, tolerance: 0.08, maxStep: 4 });
+    b.dynamic(p, { times, transform: tf, caps: 'none' });
+    b.dynamic(p.detail, { times, transform: tf, caps: 'none', within: 14 });
   }
 }
 
@@ -1682,6 +2608,7 @@ export default {
 
   build(b) {
     const rand = rng(1871);
+    STYLE = rng(29);
     HOUSE_ID = 1;
     BOXES = [];
     MERLONS = [];
@@ -1691,7 +2618,7 @@ export default {
 
     // ---- houses round the square and along the avenue
     const specials = { cinema: -1, chemists: [] };
-    const extras = (h) => shopExtras(b, rand, h, specials);
+    const extras = (h) => { shopExtras(b, rand, h, specials); houseDetail(b, h); };
     const front = { awnings: 0.35, onHouse: extras };
     // north side, facing south, with a lane at x = 14..19
     row(b, rand, { ...front, start: [-SQ - DEPTH, SQ], nrm: [0, -1], length: 2 * (SQ + DEPTH), gaps: [[SQ + DEPTH + 14, SQ + DEPTH + 19]] });
@@ -1724,6 +2651,7 @@ export default {
     }
     for (const [x, y] of SQ_LAMPS) lamps.push(m4.translation(x, y, 0));
     b.instances(lampPost(), lamps);
+    b.instances(lampDetail(), lamps, { within: 30, solid: false });
 
     // ---- trees: along the avenue between the lamps, and a few in the square
     for (let k = 0; k < AV_LAMP.n - 1; k++) {
@@ -1747,15 +2675,20 @@ export default {
     }
     // people resting on some of them
     for (const [x, y, a] of [[13.5, 0.4, Math.PI / 2], [-0.5, 13.5, Math.PI], [-13.5, -3.4, -Math.PI / 2]]) {
-      b.static(person(rand, { sit: true }).rotateZ(a).translate(x, y, 0));
+      const p = placePerson(person(rand, { sit: true }), m4.mul(m4.translation(x, y, 0), m4.rotationZ(a)));
+      b.static(p);
+      b.static(p.detail, { within: 16, solid: false });
     }
 
     fountain(b);
     carousel(b);
     market(b, rand);
+    marketGoods(b);
     cafe(b, rand);
     tramStop(b);
     signals(b);
+    streetFurniture(b);
+    groundPigeons(b);
     countryside(b, rand);
 
     // ---- tram rails

@@ -48,6 +48,7 @@ const MAT = {
   TERRAIN: 1, BARK: 2, NEEDLES: 3, LOGS: 4, STONE: 5, SNOWSLAB: 6, WOOD: 7, GLASS: 8,
   LANTERN: 9, METAL: 10, PATH: 11, CLOCK: 12, COPPER: 13, PLASTER: 14, SMOKE: 15,
   BOARD: 17, CABIN: 18, CLOTH: 19, SHINGLE: 21, BEACON: 22, SKIN: 23, SHUTTER: 24, WOODPILE: 25, CHAPELWIN: 26, BELFRY: 27, CABINWIN: 28,
+  FACE: 29, COAT: 30, KNIT: 31, GOGGLE: 32, PLATE: 33, ICE: 34,
 };
 
 // ---------------------------------------------------------------------------
@@ -692,6 +693,38 @@ function cbox(sx, sy, sz, r = 0.02) {
   return g;
 }
 
+// Moving geometry is stored again for every key, so it pays to share
+// corners: weld() merges vertices that are the same in every respect (the
+// seams of spheres, lathes and tubes, whose uv differs only where nothing
+// reads it), which leaves the look exactly as it was.
+const UV_READ = () => new Set([MAT.KNIT, MAT.FACE, MAT.COAT, MAT.GOGGLE, MAT.PLATE, MAT.CABINWIN, MAT.NEEDLES]);
+function weld(g) {
+  const uvRead = UV_READ();
+  const out = new Geo(), seen = new Map(), remap = new Int32Array(g.vertexCount);
+  const r = (v) => Math.round(v * 1e5);
+  for (let i = 0; i < g.vertexCount; i++) {
+    const keepUv = uvRead.has(g.a[i * 4 + 2]);
+    const u = keepUv ? g.uv[i * 2] : 0, v = keepUv ? g.uv[i * 2 + 1] : 0;
+    const key = [g.p[i * 3], g.p[i * 3 + 1], g.p[i * 3 + 2], g.n[i * 3], g.n[i * 3 + 1], g.n[i * 3 + 2], g.c[i * 3], g.c[i * 3 + 1], g.c[i * 3 + 2],
+      u, v, g.a[i * 4], g.a[i * 4 + 1], g.a[i * 4 + 2], g.a[i * 4 + 3], g.x[i * 2] || 0, g.x[i * 2 + 1] || 0].map(r).join(',');
+    let j = seen.get(key);
+    if (j === undefined) {
+      j = out.vertexCount;
+      seen.set(key, j);
+      out.p.push(g.p[i * 3], g.p[i * 3 + 1], g.p[i * 3 + 2]); out.n.push(g.n[i * 3], g.n[i * 3 + 1], g.n[i * 3 + 2]);
+      out.c.push(g.c[i * 3], g.c[i * 3 + 1], g.c[i * 3 + 2]); out.uv.push(u, v);
+      out.a.push(g.a[i * 4], g.a[i * 4 + 1], g.a[i * 4 + 2], g.a[i * 4 + 3]); out.x.push(g.x[i * 2] || 0, g.x[i * 2 + 1] || 0);
+    }
+    remap[i] = j;
+  }
+  for (let k = 0; k < g.idx.length; k += 3) {
+    const a = remap[g.idx[k]], b2 = remap[g.idx[k + 1]], c = remap[g.idx[k + 2]];
+    if (a !== b2 && b2 !== c && a !== c) out.idx.push(a, b2, c);
+  }
+  return out;
+}
+const addMoving = (b, geo, o) => b.dynamic(typeof geo === 'function' ? geo : weld(geo), o);
+
 // a rounded box from z = 0 up (handy for things standing on something)
 const rboxUp = (sx, sy, sz, r, nb, nf) => rbox(sx, sy, sz, r, nb, nf).translate(0, 0, sz / 2);
 
@@ -771,6 +804,13 @@ function windowGeo(wdt, hgt) {
   w.add(dataColor(gl, () => [1, 0, 0]).mat(MAT.GLASS));
   w.add(aoColor(cbox(wdt + 0.4, 0.22, 0.07, 0.025).translate(0, 0.1, -hgt / 2 - 0.12), '#cfc6b4', () => 0.8).mat(MAT.WOOD));
   w.add(snowData(cbox(wdt + 0.3, 0.17, 0.10, 0.045).translate(0, 0.11, -hgt / 2 - 0.06)));
+  if (wdt > 0.7) {
+    // a window box with fir sprigs in it, snow on top, on two brackets
+    w.add(aoColor(cbox(wdt + 0.16, 0.22, 0.2, 0.02).translate(0, 0.16, -hgt / 2 - 0.27), '#5a3a26', (p) => 0.6 + 0.4 * sstep(-hgt / 2 - 0.37, -hgt / 2 - 0.17, p[2])).mat(MAT.WOOD));
+    for (const x of [-wdt / 2 + 0.05, wdt / 2 - 0.05]) w.add(aoColor(Geo.box(0.05, 0.2, 0.05).transform(m4.mul(m4.translation(x, 0.12, -hgt / 2 - 0.42), m4.rotationX(0.6))), '#2b2b2b', () => 0.8).mat(MAT.METAL));
+    for (const x of [-0.3, 0, 0.3]) w.add(aoColor(Geo.cone(0.1, 0.22, 5).translate(x * wdt, 0.16, -hgt / 2 - 0.18), '#1e3a1e', () => 0.7).mat(MAT.WOOD));
+    w.add(snowData(cbox(wdt + 0.12, 0.2, 0.06, 0.025).translate(0, 0.16, -hgt / 2 - 0.16)));
+  }
   return w;
 }
 function shutterGeo(wdt, hgt) {
@@ -782,6 +822,17 @@ function shutterGeo(wdt, hgt) {
   return w;
 }
 
+// a pair of shutters' iron hinge straps and the hooks that hold them open
+function shutterDetail(wdt, hgt) {
+  const g = new Geo();
+  for (const sgn of [-1, 1]) {
+    const x0 = sgn * (wdt / 2 + 0.1), x1 = sgn * (wdt / 2 + 0.1 + wdt * 0.42);
+    for (const z of [-hgt / 2 + 0.16, hgt / 2 - 0.16]) g.add(Geo.box(Math.abs(x1 - x0), 0.012, 0.035).translate((x0 + x1) / 2, 0.1, z));
+    g.add(Geo.box(0.012, 0.09, 0.012).translate(sgn * (wdt / 2 + 0.1 + wdt * 0.55 + 0.04), 0.05, -hgt / 2 + 0.1));
+  }
+  return aoColor(g, '#1d1b19', () => 0.9).gloss(0.4).mat(MAT.METAL);
+}
+
 function addRepeats(b) {
   const logEnd = aoColor(Geo.cylinder(0.12, 0.34, 6).rotateY(Math.PI / 2), '#7a5232', () => 0.8);
   const rafter = aoColor(Geo.box(1.85, 0.12, 0.17), '#5a3a26', () => 0.6).mat(MAT.WOOD);
@@ -789,6 +840,7 @@ function addRepeats(b) {
   b.instances(windowGeo(0.85, 1.05), REP.windows[0], { solid: false });
   b.instances(windowGeo(0.6, 0.6), REP.windows[1], { solid: false });
   b.instances(shutterGeo(0.85, 1.05), REP.shutters, { solid: false });
+  b.instances(shutterDetail(0.85, 1.05), REP.shutters.map((sh) => sh.transform), { solid: false, within: 30 });
   b.instances(logEnd, REP.logEnds, { solid: false });
   b.instances(rafter, REP.rafters, { solid: false });
   b.instances(board, REP.boards, { solid: false });
@@ -955,9 +1007,78 @@ function chalet(b, cx, cy, rot, kind, rand) {
 
   b.static(solid, { transform: MZ });
   b.static(deco, { transform: MZ, solid: false });
+  // the small things, from near by (their own random numbers, so that the
+  // chalets themselves stay as they were)
+  b.static(chaletDetail(rng(Math.round(cx * 31 + cy * 7) + 5000), W, D, zTop, zEave, eave, roofLen, tp), { transform: MZ, solid: false, within: 45 });
+  // a trodden track from the door to the path, through a gap in the fences
+  {
+    const a = m4.point(MZ, [-W / 2 - 1.5, D * 0.12, 0]), out = m4.dir(MZ, [-1, 0, 0]);
+    const track = doorTrack([a[0], a[1]], [out[0], out[1]]);
+    if (track) b.static(track, { solid: false, within: 150 });
+  }
   stampAO(cx, cy, Math.max(W, D) * 0.62, 0.45);
 }
 const CHIMNEYS = [];
+let HOUSE_NO = 0;
+
+// A chalet's small parts (its local frame; the door on the -x wall at
+// y = 0.12 D): the door's panels, handle, hinges and number; icicles along
+// both eaves; by the door skis and poles or a sledge leaning on the wall, a
+// broom; a chopping block with an axe by the woodpile.
+function chaletDetail(rand, W, D, zTop, zEave, eave, roofLen, tp) {
+  const g = new Geo();
+  const iron = (geo) => aoColor(geo, '#1d1b19', () => 0.9).gloss(0.4).mat(MAT.METAL);
+  const wood = (geo, c) => aoColor(geo, c, () => 0.85).mat(MAT.WOOD);
+  // the door (built facing +y, then turned onto the wall like the door itself)
+  const dg = new Geo();
+  for (const z of [0.55, 1.5]) for (const x of [-0.22, 0.22]) dg.add(wood(cbox(0.36, 0.03, z < 1 ? 0.8 : 0.9, 0.012).translate(x, 0.11, z), '#6a4630'));
+  for (const z of [0.35, 1.75]) dg.add(iron(Geo.box(0.55, 0.012, 0.045).translate(-0.2, 0.125, z)));
+  dg.add(iron(Geo.box(0.05, 0.012, 0.2).translate(0.36, 0.125, 1.02)));
+  dg.add(aoColor(Geo.box(0.14, 0.035, 0.028).translate(0.32, 0.15, 1.06), '#b08a3a', () => 1).gloss(0.8).mat(MAT.METAL));
+  dg.add(aoColor(Geo.box(0.02, 0.014, 0.035).translate(0.36, 0.132, 0.96), '#050505', () => 1).mat(MAT.METAL));
+  // the house number on the wall beside the door
+  const no = 1 + (HOUSE_NO++ * 7) % 23;
+  const pl = Geo.quad([-0.13, 0, 0], [0.13, 0, 0], [0.13, 0, 0.17], [-0.13, 0, 0.17]);
+  if (pl.n[1] < 0) pl.flip();
+  for (let i = 0; i < pl.vertexCount; i++) pl.uv[i * 2] = 1 - pl.uv[i * 2];
+  dg.add(aoColor(pl.translate(-0.9, 0.02, 1.75), '#e8e2d0', () => 1).mat(MAT.PLATE).tag(no));
+  dg.add(aoColor(Geo.box(0.3, 0.012, 0.21).translate(-0.9, 0.01, 1.835), '#2c3e50', () => 0.9).mat(MAT.METAL));
+  // leaning on the wall: skis and poles, or a sledge; and a broom
+  if (rand() < 0.6) {
+    const c = rand.pick(['#c0392b', '#2471a3', '#d4ac0d', '#1c2833']);
+    for (const [x, rz] of [[1.05, 0.05], [1.17, -0.03]]) dg.add(aoColor(Geo.box(0.075, 0.03, 1.75).transform(m4.mul(m4.translation(x, 0.22, 0.86), m4.rotationX(-0.13), m4.rotationY(rz))), c, () => 1).gloss(0.5).mat(MAT.METAL));
+    for (const x of [1.35, 1.42]) dg.add(aoColor(Geo.box(0.02, 0.02, 1.3).transform(m4.mul(m4.translation(x, 0.17, 0.64), m4.rotationX(-0.1))), '#bdc3c7', () => 1).mat(MAT.METAL));
+  } else {
+    const sl = new Geo();
+    sl.add(wood(cbox(0.44, 0.9, 0.05, 0.015).translate(0, 0, 0.21), '#8e5a32'));
+    for (const sx of [-0.19, 0.19]) sl.add(aoColor(limbGeo([[sx, -0.45, 0.03], [sx, 0.33, 0.03], [sx, 0.5, 0.1], [sx, 0.48, 0.2]], 0.017, 0.017, 4), '#3b3b3b', () => 1).mat(MAT.METAL));
+    for (const sx of [-0.19, 0.19]) for (const y of [-0.3, 0.25]) sl.add(wood(Geo.box(0.04, 0.05, 0.19).translate(sx, y, 0.12), '#7a4a28'));
+    dg.add(sl.transform(m4.mul(m4.translation(1.35, 0.28, 0.0), m4.rotationX(1.25), m4.translation(0, 0.5, 0))));
+  }
+  dg.add(wood(Geo.box(0.028, 0.028, 1.25).transform(m4.mul(m4.translation(-1.25, 0.2, 0.62), m4.rotationX(-0.16))), '#9c7a54'));
+  dg.add(aoColor(Geo.box(0.26, 0.07, 0.14).transform(m4.mul(m4.translation(-1.25, 0.31, 0.07), m4.rotationX(-0.16))), '#5a4630', () => 0.8).mat(MAT.KNIT).tag(4));
+  dg.transform(m4.fromBasis([0, 1, 0], [-1, 0, 0], [0, 0, 1], [-W / 2 - 0.05, D * 0.12, 0]));
+  g.add(dg);
+  // icicles along both eaves
+  for (const s of [-1, 1]) {
+    const x = s * (W / 2 + eave - 0.06);
+    for (let y = -roofLen / 2 + 0.15; y < roofLen / 2 - 0.1; y += 0.12 + 0.3 * rand()) {
+      const len = 0.06 + 0.5 * Math.pow(rand(), 2.2);
+      const ic = Geo.cone(0.018 + 0.03 * len, len, 4).rotateX(Math.PI).translate(x + (rand() - 0.5) * 0.06, y, zEave + 0.06);
+      g.add(aoColor(ic, '#dfeaf2', () => 1).mat(MAT.ICE));
+    }
+  }
+  // a chopping block with an axe in it, by the woodpile
+  {
+    const bx = W / 2 + 1.2, by = -D * 0.28 - 0.7;
+    g.add(aoColor(Geo.cylinder(0.24, 0.42, 9).translate(bx, by, 0), '#6b4a30', (q) => 0.6 + 0.4 * sstep(0, 0.4, q[2])).mat(MAT.WOOD));
+    g.add(dataColor(Geo.disc(0.235, 9).translate(bx, by, 0.421), () => [0.8, 0, 0]).mat(MAT.WOODPILE));
+    g.add(wood(Geo.box(0.035, 0.035, 0.7).transform(m4.mul(m4.translation(bx + 0.05, by + 0.18, 0.62), m4.rotationX(-0.75))), '#a07a50'));
+    g.add(iron(Geo.box(0.02, 0.16, 0.1).transform(m4.mul(m4.translation(bx + 0.05, by - 0.04, 0.42), m4.rotationX(-0.75)))));
+    g.add(snowData(Geo.cylinder(0.22, 0.05, 9).translate(bx, by, 0.42)));
+  }
+  return g;
+}
 
 // ---------------------------------------------------------------------------
 // the chapel: plastered nave and apse, steep roof, and a clock tower with an
@@ -1066,6 +1187,47 @@ function chapel(b) {
     for (const sx of [-1, 1]) dg.add(dataColor(Geo.sphere(0.09, 8, 6).translate(sx * 1.05, 0.25, 2.4), () => [1, 0.12, 0]).mat(MAT.LANTERN));
     dg.add(snowData(rbox(2.4, 1.3, 0.3, 0.15, 2).translate(0, 1.0, -0.12)));
     deco.add(dg.translate(0, ty + T / 2, 0));
+    // from near by: the two leaves' meeting line, ring handles, strap hinges
+    // and nail heads
+    const dd = new Geo();
+    const iron = (geo) => aoColor(geo, '#1d1b19', () => 0.9).gloss(0.4).mat(MAT.METAL);
+    dd.add(iron(Geo.box(0.025, 0.02, 2.35).translate(0, 0.16, 1.2)));
+    for (const sx of [-1, 1]) {
+      dd.add(iron(Geo.torus(0.07, 0.012, 10, 3).rotateX(Math.PI / 2).translate(sx * 0.13, 0.19, 1.12)));
+      dd.add(iron(Geo.cylinder(0.035, 0.03, 8).rotateX(-Math.PI / 2).translate(sx * 0.13, 0.155, 1.19)));
+      for (const z of [0.45, 1.25, 2.0]) dd.add(iron(Geo.box(0.42, 0.012, 0.05).translate(sx * 0.37, 0.162, z)));
+      for (const z of [0.3, 0.75, 1.6]) for (const x of [0.15, 0.3, 0.45]) dd.add(iron(Geo.box(0.02, 0.01, 0.02).translate(sx * x, 0.16, z)));
+    }
+    b.static(dd.translate(0, ty + T / 2, 0), { transform: MZ, solid: false, within: 40 });
+  }
+  // a small graveyard on the north side: crosses of wrought iron or of wood
+  // with a little roof, mounds of snow, and red grave lights that are lit at dusk
+  {
+    const gy = new Geo();
+    const r2 = rng(66);
+    for (let row = 0; row < 2; row++) for (let k = 0; k < 4; k++) {
+      const lx = -W / 2 - 4.6 - row * 3.2, ly = -4.2 + k * 2.6 + (r2() - 0.5) * 0.5;
+      const w = m4.point(MZ, [lx, ly, 0]);
+      const zg = ground(w[0], w[1]) - z0;
+      const one = new Geo();
+      if (r2() < 0.5) {
+        const iron = (geo) => aoColor(geo, '#1d1b19', () => 0.9).gloss(0.4).mat(MAT.METAL);
+        one.add(iron(Geo.box(0.05, 0.05, 1.25).translate(0, 0, 0.62)));
+        one.add(iron(Geo.box(0.05, 0.6, 0.05).translate(0, 0, 0.95)));
+        one.add(iron(Geo.torus(0.13, 0.015, 10, 3).rotateY(Math.PI / 2).translate(0, 0, 0.95)));
+      } else {
+        const wood = (geo) => aoColor(geo, '#5a3e2a', () => 0.85).mat(MAT.WOOD);
+        one.add(wood(cbox(0.09, 0.09, 1.3, 0.015).translate(0, 0, 0.65)));
+        one.add(wood(cbox(0.08, 0.62, 0.08, 0.015).translate(0, 0, 0.98)));
+        for (const s of [-1, 1]) one.add(wood(Geo.box(0.12, 0.3, 0.025).transform(m4.mul(m4.translation(0, s * 0.12, 1.34), m4.rotationX(s * 0.6)))));
+        one.add(snowData(cbox(0.14, 0.5, 0.05, 0.02).translate(0, 0, 1.4)));
+      }
+      one.add(drift(1.0, 1.9, 0.28).translate(0.95, 0, 0));
+      one.add(aoColor(Geo.cylinder(0.05, 0.12, 6).translate(0.35, 0.25, 0.12), '#2b2b2b', () => 0.8).mat(MAT.METAL));
+      one.add(dataColor(Geo.cylinder(0.042, 0.09, 6).translate(0.35, 0.25, 0.24), () => [1, 0.15 + 0.1 * k + 0.2 * row, 0]).mat(MAT.LANTERN).tag(2));
+      gy.add(one.transform(m4.mul(m4.translation(lx, ly, zg - 0.08), m4.rotationZ(Math.PI + (r2() - 0.5) * 0.1))));
+    }
+    b.static(gy, { transform: MZ, solid: false });
   }
   deco.add(drift(W + 4, 2.6, 0.9).translate(-W / 2 - 1.3, 0, 0).rotateZ(0));
   deco.add(drift(3.2, D + 3, 1.0).translate(-W / 2 - 1.2, 0, 0));
@@ -1106,6 +1268,60 @@ function lantern() {
   return g;
 }
 
+// A lantern's small parts, from near by: glazing bars and the frame round the
+// glass, a little door with its hinge and catch, the ring on top, and a
+// scrolled bracket under the head.
+function lanternDetail() {
+  const g = new Geo();
+  const iron = (geo) => aoColor(geo, '#1e1e1e', () => 0.85).gloss(0.4).mat(MAT.METAL);
+  for (const z of [2.42, 2.8]) for (const [x, y, sx, sy] of [[0, 0.13, 0.27, 0.02], [0, -0.13, 0.27, 0.02], [0.13, 0, 0.02, 0.27], [-0.13, 0, 0.02, 0.27]]) g.add(iron(Geo.box(sx, sy, 0.025).translate(x, y, z)));
+  for (const [x, y, sx, sy] of [[0, 0.128, 0.012, 0.012], [0, -0.128, 0.012, 0.012], [0.128, 0, 0.012, 0.012], [-0.128, 0, 0.012, 0.012]]) {
+    g.add(iron(Geo.box(sx, sy, 0.38).translate(x, y, 2.61)));
+    g.add(iron(Geo.box(sx || 0.012, sy || 0.012, 0.012).scale(x ? 1 : 21, y ? 1 : 21, 1).translate(x, y, 2.62)));
+  }
+  g.add(iron(Geo.box(0.012, 0.03, 0.06).translate(0.132, 0.11, 2.5)));
+  g.add(iron(Geo.box(0.02, 0.025, 0.02).translate(0.135, -0.1, 2.62)));
+  g.add(iron(Geo.torus(0.035, 0.008, 8, 3).rotateX(Math.PI / 2).translate(0, 0, 3.12)));
+  for (const s of [-1, 1]) g.add(iron(limbGeo([[0.085 * s, 0, 1.95], [0.16 * s, 0, 2.1], [0.17 * s, 0, 2.28], [0.12 * s, 0, 2.36], [0.09 * s, 0, 2.33]], 0.011, 0.011, 4)));
+  return g;
+}
+
+// A narrow trodden track from a door (point a, leaving it along `out`) to the
+// nearest place on the path that has no fence beside it, with one walker's
+// footprints (pathSurf, tag 1).  Null if the path is far.
+function doorTrack(a, out) {
+  let best = null;
+  PATH_SAMPLES.forEach((p, i) => {
+    const d = i * 4;
+    if (d < 150 && !((d % 52) > 37 && (d % 52) < 50)) return;
+    const dist = Math.hypot(p[0] - a[0], p[1] - a[1]);
+    if (!best || dist < best.dist) best = { p, dist };
+  });
+  if (!best || best.dist > 70) return null;
+  const b2 = [a[0] + out[0] * 2.5, a[1] + out[1] * 2.5];
+  const to = [b2[0] - best.p[0], b2[1] - best.p[1]], tl = Math.hypot(to[0], to[1]) || 1;
+  const c = [best.p[0] + to[0] / tl * (PATH_HALF + 0.35), best.p[1] + to[1] / tl * (PATH_HALF + 0.35)];
+  const line = new Path([a, b2, c], { smooth: 4 });
+  const g = new Geo();
+  const cross = [[-0.9, 0.0], [-0.42, 0.045], [0, 0.03], [0.42, 0.045], [0.9, 0.0]];
+  const n = Math.max(2, Math.ceil(line.length / 0.6));
+  for (let k = 0; k <= n; k++) {
+    const dd = k / n * line.length;
+    const { p, dir } = line.at(dd);
+    for (const [o, dz] of cross) {
+      const x = p[0] - dir[1] * o, y = p[1] + dir[0] * o;
+      g.vert(x, y, ground(x, y) + dz, 0, 0, 1, o, dd);
+    }
+  }
+  for (let k = 0; k < n; k++) for (let j = 0; j < cross.length - 1; j++) {
+    const q = k * cross.length + j;
+    g.quadIdx(q, q + 1, q + cross.length + 1, q + cross.length);
+  }
+  g.computeNormals(true);
+  g.orientByNormals();
+  return dataColor(g, () => [1, 0, 0]).mat(MAT.PATH).tag(1);
+}
+
 // the trodden path: a ribbon over the snow with low banks either side.
 // uv = (offset across, distance along) in metres.
 function pathRibbon() {
@@ -1135,6 +1351,290 @@ function pathRibbon() {
   g.computeNormals(true);
   g.orientByNormals();
   return dataColor(g, (p) => [1, 0, 0]).mat(MAT.PATH);
+}
+
+// ---------------------------------------------------------------------------
+// people.  Everyone is put together from the same parts (personGeo) in a pose
+// of their own, in a local frame with +y forward and +z up.  A person is three
+// meshes: `far`, a few boxes inside the figure that are always drawn; `base`,
+// the whole figure, drawn within FAR_PEOPLE; and `detail` (nose, ears,
+// pompom, scarf ends, cuffs, thumbs, straps, laces, a finer head), drawn only
+// from near by (`within: NEAR_PEOPLE`).  The face, the hair, and the front and back of the
+// coat are painted by the shader (faceSurf, coatSurf): the head carries in
+// its uv the face as seen from the front (x and z in head radii) and in its
+// aux how far forward each point lies; the coat carries its own coordinates
+// the same way.  So a person shows a face, a zip or buttons and pockets in
+// front, and the back of a head and of a coat behind, at any distance and
+// without more triangles.
+
+const NEAR_PEOPLE = 24;
+// Beyond this a person is drawn only as `far`: a few boxes and a ball that
+// lie inside the full figure, in its colours (a couple of pixels high by then)
+const FAR_PEOPLE = 150;
+const SKINS = ['#f3cdb0', '#e8b998', '#d6a17e', '#b57c55', '#8a5a3c', '#f7dccb'];
+// hair colours (the shader's palette, chosen by the low bits of the head's tag)
+const HAIRS = ['#16110e', '#3d2617', '#6e4626', '#b8925a', '#8c3c16', '#a4a4a6', '#dcd2b8', '#2a1d15'];
+const COATS = ['#7b241c', '#1f3a5f', '#4a5a2a', '#5b2c6f', '#2e4053', '#a04000', '#145a32', '#6e2c00', '#c0392b', '#2e86c1', '#d4ac0d', '#1c2833', '#922b21', '#117a65', '#d35400', '#839192'];
+const TROUSERS = ['#1b2631', '#212f3d', '#3e2723', '#17202a', '#4d5656', '#5d4037'];
+const WOOLS = ['#c0392b', '#f4f6f7', '#1f618d', '#f1c40f', '#7d3c98', '#e67e22', '#27ae60', '#ecf0f1', '#943126', '#2c3e50'];
+const FURS = ['#d9cfbf', '#6b4a32', '#8d8a84', '#2e2622'];
+const HAT_KINDS = ['beanie', 'beanie', 'beanie', 'hood', 'fur', 'none'];
+
+// what a person wears and looks like; `o` overrides any of it
+function lookOf(rand, o = {}) {
+  const L = {
+    skin: rand.pick(SKINS), hair: Math.floor(rand() * 8), hairStyle: Math.floor(rand() * 4), eyes: Math.floor(rand() * 3),
+    coat: rand.pick(COATS), coatStyle: Math.floor(rand() * 4), coatLong: rand() < 0.4,
+    trousers: rand.pick(TROUSERS), boots: rand.pick(['#2b1d14', '#3a2a1c', '#1c1c1c', '#5a3a22']),
+    hat: rand.pick(HAT_KINDS), wool: rand.pick(WOOLS), scarf: rand.pick(WOOLS), mitts: rand.pick(WOOLS), fur: rand.pick(FURS),
+    stripes: rand() < 0.5, scarfBack: rand() < 0.5,
+    height: 0.93 + 0.13 * rand(), girth: 0.9 + 0.25 * rand(), headK: 1,
+    pack: rand() < 0.3, packColor: rand.pick(['#7b241c', '#1f3a5f', '#4a5a2a', '#3b3b3b', '#a04000']),
+    goggles: null,
+  };
+  Object.assign(L, o);
+  // a beard or a bald head only under a hat that shows it, and on grown-ups
+  if (L.hairStyle === 3 && L.hat === 'none') L.hairStyle = 0;
+  if (L.headK > 1.1 && L.hairStyle >= 2) L.hairStyle = 1;
+  return L;
+}
+
+// A head of radius r, centred on the origin, facing +y.  Its uv is the face
+// as seen from the front (x, z in head radii), its aux how far forward the
+// point lies (y in head radii), its tag the hair colour, hair style and eyes.
+function faceTag(L) { return L.hair | (L.hairStyle << 3) | (L.eyes << 5); }
+function faceData(g, r, L, fwd = null) {
+  const tag = faceTag(L);
+  for (let i = 0; i < g.vertexCount; i++) {
+    g.uv[i * 2] = g.p[i * 3] / r; g.uv[i * 2 + 1] = g.p[i * 3 + 2] / r;
+    g.x[i * 2] = fwd ?? Math.max(-1, Math.min(1, g.p[i * 3 + 1] / r)); g.x[i * 2 + 1] = tag;
+  }
+  return aoColor(g, L.skin, () => 1).mat(MAT.FACE);
+}
+// (the base figure's head is a little smaller and coarser, so that the finer
+// one of the near detail encloses it)
+function headGeo(r, L, seg = 8, k = 1) {
+  return faceData(Geo.sphere(r * k, seg, Math.round(seg * 0.75)), r, L).scale(0.9, 1, 1.1);
+}
+
+// knitted wool (hats, scarves, mittens): ribs along uv.x; tag 1 adds white
+// stripes along uv.y, 2 a turned-up brim, 4 makes it fur
+const knit = (g, color, tag = 0) => aoColor(g, color, () => 1).mat(MAT.KNIT).tag(tag);
+// a tapering tube through points (open at the ends, which are hidden)
+const limbGeo = (pts, r0, r1, seg = 5) => Geo.tube(pts, (u) => r0 + (r1 - r0) * u, seg, { caps: false });
+// a frame at p whose z axis points along dir
+function alongM(p, dir) {
+  let x = v3.cross(dir, [0, 0, 1]);
+  if (v3.len(x) < 0.2) x = v3.cross(dir, [0, 1, 0]);
+  x = v3.norm(x);
+  return m4.fromBasis(x, v3.cross(dir, x), dir, p);
+}
+
+// A pose: hip height, how far the body leans forward (radians, about the
+// hips), the legs [hip, knee, ankle] in the person's frame, the arms [elbow,
+// wrist] in the frame of the leaning body (origin at the hips), and the feet
+// (pitch of the boot, radians).
+const POSES = {
+  walk: { hip: 0.9, lean: 0.06,
+    legs: [[[-0.1, 0, 0.9], [-0.105, 0.12, 0.47], [-0.11, 0.24, 0.1]], [[0.1, 0, 0.9], [0.105, -0.08, 0.5], [0.11, -0.25, 0.13]]],
+    arms: [[[-0.27, -0.09, 0.27], [-0.28, -0.19, 0.06]], [[0.27, 0.1, 0.26], [0.26, 0.24, 0.08]]], feet: [0.1, -0.25] },
+  stand: { hip: 0.9, lean: 0,
+    legs: [[[-0.1, 0, 0.9], [-0.1, 0.02, 0.48], [-0.1, 0, 0.1]], [[0.1, 0, 0.9], [0.1, 0.02, 0.48], [0.1, 0, 0.1]]],
+    arms: [[[-0.26, -0.02, 0.24], [-0.25, 0.07, 0.02]], [[0.26, 0.02, 0.24], [0.24, 0.1, 0.02]]], feet: [0, 0] },
+  hold: { hip: 0.9, lean: 0,
+    legs: [[[-0.1, 0, 0.9], [-0.1, 0.02, 0.48], [-0.1, 0, 0.1]], [[0.1, 0, 0.9], [0.1, 0.02, 0.48], [0.1, 0, 0.1]]],
+    arms: [[[-0.26, -0.02, 0.24], [-0.25, 0.07, 0.02]], [[0.27, 0.05, 0.76], [0.17, 0.04, 1.0]]], feet: [0, 0] },
+  skate: { hip: 0.92, lean: 0.34,
+    legs: [[[0.1, 0.03, 0.93], [0.1, 0.13, 0.5], [0.1, 0.05, 0.1]], [[-0.1, -0.02, 0.93], [-0.2, -0.3, 0.55], [-0.3, -0.6, 0.24]]],
+    arms: [[[-0.26, -0.12, 0.3], [-0.1, -0.21, 0.14]], [[0.26, -0.12, 0.3], [0.1, -0.21, 0.14]]], feet: [0, -0.5] },
+  skate2: { hip: 0.92, lean: 0.24,
+    legs: [[[0.1, 0.03, 0.93], [0.1, 0.13, 0.5], [0.1, 0.05, 0.1]], [[-0.1, -0.02, 0.93], [-0.22, -0.28, 0.56], [-0.34, -0.55, 0.26]]],
+    arms: [[[-0.42, 0.04, 0.4], [-0.62, 0.14, 0.36]], [[0.42, 0.02, 0.38], [0.6, -0.1, 0.32]]], feet: [0, -0.45] },
+  ski: { hip: 0.78, lean: 0.42,
+    legs: [[[-0.11, -0.06, 0.78], [-0.12, 0.2, 0.46], [-0.12, 0.04, 0.13]], [[0.11, -0.06, 0.78], [0.12, 0.2, 0.46], [0.12, 0.04, 0.13]]],
+    arms: [[[-0.3, 0.12, 0.3], [-0.3, 0.3, 0.17]], [[0.3, 0.12, 0.3], [0.3, 0.3, 0.17]]], feet: [0, 0] },
+  sit: { hip: 0, lean: -0.08, seated: true,
+    legs: [[[-0.1, 0.02, 0.06], [-0.1, 0.44, 0.08], [-0.1, 0.49, -0.36]], [[0.1, 0.02, 0.06], [0.1, 0.44, 0.08], [0.1, 0.49, -0.36]]],
+    arms: [[[-0.25, 0.14, 0.22], [-0.17, 0.33, 0.2]], [[0.25, 0.14, 0.22], [0.17, 0.33, 0.2]]], feet: [0.15, 0.15] },
+};
+
+// A person in a pose: { base, detail, far, nose, body, hands: [left, right],
+// feet: [..] } (the nose alone, the body's matrix, the places of the hands
+// and the frames of the feet in the person's frame, for things to hold or
+// stand on).  `skates` and `skiBoots` in L add those; `lo` makes everything
+// round coarser.
+function personGeo(L, pose) {
+  const base = new Geo(), detail = new Geo();
+  // L.lo: fewer sides to everything round (people seen mostly from afar)
+  const S = L.lo ? 6 : 8;
+  const body = new Geo(), bodyD = new Geo();
+  let noseG = null;
+  const g = L.girth, seated = !!pose.seated;
+  const B = m4.mul(m4.translation(0, 0, pose.hip), m4.rotationX(-pose.lean));
+  // the coat: uv = (across in metres, 0 at the hem .. 1 at the collar),
+  // aux = how far forward, tag = its cut (see coatSurf)
+  const hem = seated ? -0.03 : L.coatLong ? -0.3 : -0.1;
+  const flare = seated ? 0.245 : L.coatLong ? 0.27 : 0.235;
+  const coat = Geo.lathe(L.lo ? [[0.02, hem], [flare, hem + 0.02], [0.213, 0.2], [0.236, 0.5], [0.07, 0.655]]
+    : [[0.02, hem], [flare, hem + 0.02], [0.216, 0.12], [0.21, 0.34], [0.236, 0.5], [0.12, 0.6], [0.07, 0.655]], S);
+  for (let i = 0; i < coat.vertexCount; i++) {
+    const x = coat.p[i * 3], y = coat.p[i * 3 + 1], z = coat.p[i * 3 + 2];
+    coat.uv[i * 2] = x * g; coat.uv[i * 2 + 1] = (z - hem) / (0.655 - hem);
+    coat.x[i * 2] = y / (Math.hypot(x, y) || 1); coat.x[i * 2 + 1] = L.coatStyle | (L.coatLong ? 4 : 0);
+  }
+  coat.scale(g, 0.74 * g, 1);
+  body.add(aoColor(coat, L.coat, (q) => 0.7 + 0.3 * sstep(hem, 0.25, q[2])).mat(MAT.COAT));
+  // the head on its collar, and the scarf
+  const r = 0.105 * L.headK, hc = [0, 0.012, 0.655 + r * 1.05];
+  body.add(headGeo(r, L, S, 0.93).translate(...hc));
+  bodyD.add(headGeo(r, L, 12).translate(...hc));
+  if (L.scarf) {
+    const scarf = Geo.torus(0.085 * g + 0.01, 0.042, S, 3).scale(1, 0.85, 1.25);
+    for (let i = 0; i < scarf.vertexCount; i++) { const u = scarf.uv[i * 2]; scarf.uv[i * 2] = scarf.uv[i * 2 + 1]; scarf.uv[i * 2 + 1] = u * 6; }
+    body.add(knit(scarf.translate(0, 0.008, 0.645), L.scarf, L.stripes ? 1 : 0));
+    // the scarf's ends: both down the front, or one thrown back over the shoulder
+    {
+      const end = (x, y, z, tilt, len) => knit(Geo.box(0.06, 0.016, len).transform(m4.mul(m4.translation(x, y, z), m4.rotationX(tilt), m4.translation(0, 0, -len / 2))), L.scarf, L.stripes ? 1 : 0);
+      if (L.scarfBack) {
+        bodyD.add(end(0.07, 0.16 * g * 0.74 + 0.02, 0.62, 0.12, 0.3));
+        bodyD.add(end(-0.06, -0.17 * g * 0.74 - 0.03, 0.64, -0.12, 0.36));
+      } else {
+        bodyD.add(end(0.06, 0.16 * g * 0.74 + 0.02, 0.62, 0.1, 0.34));
+        bodyD.add(end(0.11, 0.16 * g * 0.74 + 0.01, 0.62, 0.16, 0.26));
+      }
+    }
+  }
+  // nose, ears (unless the hair or a hood covers them)
+  {
+    const nose = Geo.cone(0.021 * L.headK, 0.03 * L.headK, 5).scale(0.8, 1, 1).rotateX(-Math.PI / 2 + 0.35).translate(0, r * 0.93, -r * 0.08);
+    noseG = faceData(nose, r, L, 1).translate(hc[0], hc[1], hc[2]);
+    bodyD.add(noseG);
+    if (L.hat !== 'hood' && L.hat !== 'helmet' && L.hairStyle !== 1) {
+      for (const s of [-1, 1]) {
+        const ear = Geo.sphere(1, 4, 3).scale(0.012, 0.028, 0.036).translate(s * r * 0.92, -0.008, -r * 0.05);
+        bodyD.add(faceData(ear, r, L, 0).translate(hc[0], hc[1], hc[2]));
+      }
+    }
+  }
+  // what is on the head
+  {
+    const at = (geo) => geo.translate(hc[0], hc[1], hc[2]);
+    if (L.hat === 'beanie') {
+      const cap = Geo.lathe([[1.08, 0.14], [1.12, 0.44], [1.0, 0.5], [0.86, 0.9], [0.4, 1.17], [0.02, 1.22]].map(([a, z]) => [a * r, z * r]), S);
+      body.add(at(knit(cap.scale(0.92, 1, 1).rotateX(0.22), L.wool, (L.stripes ? 1 : 0) | 2)));
+      bodyD.add(at(knit(Geo.sphere(0.045 * L.headK, 5, 4).translate(0, -0.27 * r, 1.2 * r), L.stripes ? '#f4f6f7' : L.scarf, 4)));
+    } else if (L.hat === 'hood') {
+      const hood = Geo.lathe([[0.02, -1.3], [0.8, -1.15], [1.28, -0.45], [1.28, 0.3], [1.08, 0.66]].map(([a, z]) => [a * r, z * r]), S);
+      body.add(at(aoColor(hood.rotateX(-Math.PI / 2).scale(1, 1, 1.12).translate(0, 0, -0.06 * r), L.coat, (q, n) => (n[1] > 0.3 ? 0.45 : 0.85)).mat(MAT.CLOTH)));
+      bodyD.add(at(knit(Geo.torus(1.13 * r, 0.16 * r, 10, 3).rotateX(Math.PI / 2).scale(1, 1, 1.12).translate(0, 0.66 * r, -0.06 * r), L.fur, 4)));
+    } else if (L.hat === 'fur') {
+      const cap = Geo.lathe([[1.1, 0.12], [1.22, 0.4], [1.2, 0.9], [0.95, 1.14], [0.02, 1.16]].map(([a, z]) => [a * r, z * r]), S);
+      body.add(at(knit(cap.scale(0.94, 1, 1).rotateX(0.12), L.fur, 4)));
+    } else if (L.hat === 'helmet') {
+      const cap = Geo.lathe([[1.1, -0.12], [1.18, 0.25], [1.08, 0.72], [0.66, 1.1], [0.02, 1.2]].map(([a, z]) => [a * r, z * r]), S);
+      body.add(at(aoColor(cap.scale(0.94, 1, 1).rotateX(0.18), L.wool, () => 1).gloss(0.6).mat(MAT.METAL)));
+    } else if (L.hairStyle === 1) {
+      // long hair falling to the shoulders (painted as hair: see faceSurf)
+      const hair = Geo.lathe([[0.82, -1.25], [1.0, -0.6], [1.02, 0.2], [0.02, 0.6]].map(([a, z]) => [a * r, z * r]), 8);
+      for (let i = 0; i < hair.vertexCount; i++) if (hair.p[i * 3 + 1] > 0.2 * r) hair.p[i * 3 + 1] = 0.2 * r;
+      body.add(at(faceData(hair.scale(0.98, 0.95, 1).translate(0, -0.25 * r, 0), r, L, -1).scale(1, 1, 1)));
+    }
+    if (L.goggles) {
+      // a band round the head with the lens in front (see goggleSurf): over the eyes, or pushed up
+      const zg = L.goggles === 'up' ? 0.62 : 0.03;
+      const band = Geo.cylinder(1.16 * r, 0.33 * r, S, { caps: false });
+      band.aux((p) => Math.max(-1, Math.min(1, p[1] / (1.16 * r))));
+      for (let i = 0; i < band.vertexCount; i++) band.uv[i * 2 + 1] = band.p[i * 3 + 2] / (0.33 * r);
+      body.add(at(aoColor(band.scale(0.94, 1, 1).translate(0, 0.01 * r, zg * r).rotateX(L.goggles === 'up' ? 0.25 : 0), L.mitts, () => 1).mat(MAT.GOGGLE)));
+    }
+  }
+  // a rucksack, and its straps over the shoulders
+  if (L.pack) {
+    const py = -0.215 * g * 0.74 - 0.075;
+    body.add(aoColor(cbox(0.3 * g, 0.15, 0.42, 0.05).translate(0, py, 0.3), L.packColor, (q) => 0.7 + 0.3 * sstep(0.1, 0.5, q[2])).mat(MAT.CLOTH));
+    bodyD.add(aoColor(Geo.box(0.31 * g, 0.17, 0.07).translate(0, py + 0.005, 0.51), L.packColor, () => 0.8).mat(MAT.CLOTH));
+    bodyD.add(aoColor(Geo.box(0.2 * g, 0.05, 0.14).translate(0, py - 0.09, 0.22), L.packColor, () => 0.7).mat(MAT.CLOTH));
+    for (const s of [-1, 1]) {
+      const x = s * 0.1 * g;
+      bodyD.add(aoColor(limbGeo([[x, py + 0.05, 0.5], [x, -0.03, 0.58], [x * 1.1, 0.17 * g * 0.74 + 0.012, 0.47], [x * 1.25, 0.18 * g * 0.74 + 0.012, 0.22]], 0.014, 0.014, 4), '#1c1c1c', () => 0.8).mat(MAT.CLOTH));
+    }
+  }
+  // arms and mittens (with a cuff and a thumb from near by)
+  const hands = [];
+  pose.arms.forEach(([elb, wr], k) => {
+    const s = k ? 1 : -1;
+    const sh = [s * 0.205 * g, 0, 0.5];
+    const el = [elb[0] * (0.6 + 0.4 * g), elb[1], elb[2]], w = [wr[0] * (0.6 + 0.4 * g), wr[1], wr[2]];
+    body.add(aoColor(limbGeo([sh, el, w], 0.062 * g, 0.05 * g, 4), L.coat, () => 0.85).mat(MAT.CLOTH));
+    const dir = v3.norm(v3.sub(w, el));
+    const mc = v3.add(w, v3.scale(dir, 0.045));
+    const Mm = alongM(mc, dir), Mw = alongM(w, dir);
+    body.add(knit(Geo.sphere(1, S - 3, 3).scale(0.042, 0.032, 0.06).transform(Mm), L.mitts, 0));
+    bodyD.add(knit(Geo.sphere(1, 4, 3).scale(0.016, 0.016, 0.03).transform(m4.mul(Mm, m4.translation(-s * 0.03, 0.01, 0.0), m4.rotationY(-s * 0.5))), L.mitts, 0));
+    if (!L.lo) bodyD.add(knit(Geo.cylinder(0.056 * g, 0.05, 8, { caps: false }).transform(m4.mul(Mw, m4.translation(0, 0, -0.04))), L.mitts, 0));
+    hands.push(m4.point(B, mc));
+  });
+  base.add(body.transform(B));
+  detail.add(bodyD.transform(B));
+  // legs and boots (skates or ski boots and skis when wanted)
+  const feet = [];
+  pose.legs.forEach(([hp, kn, an], k) => {
+    const s = k ? 1 : -1;
+    base.add(aoColor(limbGeo([hp, kn, an], 0.078 * g, 0.056 * (0.7 + 0.3 * g), S - 3), L.trousers, (q) => 0.65 + 0.35 * sstep(0, 0.7, q[2])).mat(MAT.CLOTH));
+    const pitch = pose.feet[k];
+    const F = m4.mul(m4.translation(an[0], an[1], an[2]), m4.rotationX(pitch));
+    feet.push(F);
+    if (L.skiBoots) {
+      base.add(aoColor(Geo.box(0.13, 0.3, 0.2).translate(0, 0.04, 0.0), L.boots, () => 0.9).gloss(0.5).mat(MAT.METAL).transform(F));
+      if (!L.lo) detail.add(aoColor(Geo.box(0.136, 0.04, 0.02).translate(0, 0.12, 0.06), '#bdc3c7', () => 1).mat(MAT.METAL).transform(F));
+    } else {
+      base.add(aoColor(Geo.box(0.12, 0.27, 0.12).translate(0, 0.055, -0.045), L.boots, () => 0.8).mat(MAT.CLOTH).transform(F));
+      detail.add(knit(Geo.cylinder(0.066, 0.035, 8, { caps: false }).translate(0, 0.0, 0.0), L.fur, 4).transform(F));
+      detail.add(aoColor(Geo.box(0.06, 0.12, 0.012).transform(m4.mul(m4.translation(0, 0.1, 0.012), m4.rotationX(-0.35))), '#c9b79c', () => 0.8).mat(MAT.CLOTH).transform(F));
+    }
+    if (L.skates) {
+      // the blade on two posts, and the white boot's toe cap
+      detail.add(aoColor(Geo.box(0.02, 0.1, 0.07).translate(0, 0.14, -0.13), '#d5dbdb', () => 1).gloss(0.8).mat(MAT.METAL).transform(F));
+      detail.add(aoColor(Geo.box(0.02, 0.1, 0.07).translate(0, -0.03, -0.13), '#d5dbdb', () => 1).gloss(0.8).mat(MAT.METAL).transform(F));
+      base.add(aoColor(Geo.box(0.012, 0.4, 0.04).translate(0, 0.05, -0.17), '#d5dbdb', () => 1).gloss(0.85).mat(MAT.METAL).transform(F));
+    }
+  });
+  // the far stand-in: torso, head (in the hat's colour) and legs, all inside the figure
+  const far = new Geo();
+  {
+    const zb = Math.max(hem, -0.06) + 0.04;
+    far.add(aoColor(Geo.box(0.28 * g, 0.2 * g, 0.5 - zb).translate(0, 0, (0.5 + zb) / 2), L.coat, () => 0.85).mat(MAT.CLOTH).transform(B));
+    const top = { beanie: L.wool, helmet: L.wool, hood: L.coat, fur: L.fur }[L.hat] || HAIRS[L.hair];
+    far.add(aoColor(Geo.sphere(r * 0.85, 4, 3).translate(...hc), top, () => 1).mat(MAT.CLOTH).transform(B));
+    for (const [hp, kn, an] of pose.legs) {
+      for (const [a, c] of [[hp, kn], [kn, an]]) {
+        const d = v3.sub(c, a), len = v3.len(d);
+        far.add(aoColor(Geo.box(0.06, 0.06, len).translate(0, 0, len / 2).transform(alongM(a, v3.scale(d, 1 / len))), L.trousers, () => 0.8).mat(MAT.CLOTH));
+      }
+    }
+  }
+  return { base, detail, far, nose: noseG.transform(B), body: B, hands, feet };
+}
+
+// A dog, trotting (+y forward), about knee high.
+function dogGeo(coat) {
+  const base = new Geo(), detail = new Geo();
+  base.add(aoColor(Geo.sphere(1, 8, 5).scale(0.13, 0.33, 0.14).translate(0, 0, 0.47), coat, (q) => 0.7 + 0.3 * sstep(0.38, 0.55, q[2])).mat(MAT.KNIT).tag(12));
+  base.add(aoColor(Geo.sphere(1, 7, 5).scale(0.09, 0.12, 0.1).translate(0, 0.38, 0.64), coat, () => 0.95).mat(MAT.KNIT).tag(12));
+  base.add(aoColor(Geo.sphere(1, 6, 4).scale(0.05, 0.08, 0.05).translate(0, 0.5, 0.6), coat, () => 0.9).mat(MAT.KNIT).tag(12));
+  for (const [x, y, f] of [[-0.07, 0.22, 1], [0.07, 0.22, -1], [-0.07, -0.22, -1], [0.07, -0.22, 1]]) {
+    base.add(aoColor(limbGeo([[x, y, 0.45], [x, y + f * 0.06, 0.22], [x, y + f * 0.09, 0.03]], 0.04, 0.025, 4), coat, (q) => 0.6 + 0.4 * sstep(0, 0.4, q[2])).mat(MAT.KNIT).tag(12));
+  }
+  base.add(aoColor(limbGeo([[0, -0.3, 0.52], [0, -0.42, 0.62], [0, -0.48, 0.7]], 0.03, 0.012, 4), coat, () => 0.85).mat(MAT.KNIT).tag(12));
+  // ears, eyes, nose and a red collar from near by
+  for (const s of [-1, 1]) {
+    detail.add(aoColor(Geo.cone(0.035, 0.08, 4).scale(1, 0.5, 1).rotateY(s * 0.3).translate(s * 0.055, 0.34, 0.71), coat, () => 0.8).mat(MAT.KNIT).tag(12));
+    detail.add(aoColor(Geo.sphere(0.012, 4, 3).translate(s * 0.04, 0.47, 0.67), '#0c0a08', () => 1).gloss(0.8).mat(MAT.METAL));
+  }
+  detail.add(aoColor(Geo.sphere(0.018, 4, 3).translate(0, 0.58, 0.61), '#0c0a08', () => 1).gloss(0.7).mat(MAT.METAL));
+  detail.add(aoColor(Geo.torus(0.075, 0.014, 8, 3).rotateX(-0.6).translate(0, 0.3, 0.6), '#b03020', () => 1).mat(MAT.CLOTH));
+  const far = aoColor(Geo.box(0.16, 0.5, 0.18).translate(0, 0.05, 0.47), coat, () => 0.8).mat(MAT.CLOTH);
+  return { base, detail, far };
 }
 
 // ---------------------------------------------------------------------------
@@ -1211,18 +1711,63 @@ function liftChair(color) {
 }
 
 // a rider, sitting: modelled at the seat with +y forward
-const JACKETS = ['#c0392b', '#2e86c1', '#f1c40f', '#27ae60', '#8e44ad', '#e67e22', '#ecf0f1', '#34495e', '#d35400', '#16a085'];
-function rider(rand, x) {
+// the small parts of a chair, for near by: the grip's jaws on the rope and
+// its guide rollers, a spring box, the number plate on the hanger, the
+// cushions' seams, arm rests, the safety bar's struts and the footrest's
+// ski rests
+function liftChairDetail(color, number) {
   const g = new Geo();
-  const jacket = rand.pick(JACKETS), pants = rand.pick(['#2c3e50', '#1b1b1b', '#5d4037', '#37474f']);
-  g.add(aoColor(Geo.box(0.40, 0.26, 0.58).transform(m4.mul(m4.translation(x, -0.12, -2.22), m4.rotationX(-0.12))), jacket, () => 0.9).mat(MAT.CLOTH));
-  g.add(aoColor(Geo.sphere(0.125, 5, 4).translate(x, -0.08, -1.78), rand.pick(['#1b1b1b', '#e74c3c', '#ffffff', '#2980b9']), () => 1).gloss(0.6).mat(MAT.CLOTH));
-  for (const s of [-0.1, 0.1]) {
-    g.add(aoColor(Geo.box(0.13, 0.45, 0.14).translate(x + s, 0.16, -2.46), pants, () => 0.85).mat(MAT.CLOTH));
-    g.add(aoColor(Geo.box(0.12, 0.14, 0.45).translate(x + s, 0.36, -2.72), pants, () => 0.8).mat(MAT.CLOTH));
-    g.add(aoColor(Geo.box(0.07, 1.6, 0.03).translate(x + s, 0.55, -2.98), rand.pick(['#d4ac0d', '#cb4335', '#2471a3', '#17202a']), () => 0.9).gloss(0.6).mat(MAT.METAL));
+  const metal = (geo, c = '#9aa0a6') => aoColor(geo, c, () => 0.9).gloss(0.5).mat(MAT.METAL);
+  for (const s of [-1, 1]) {
+    g.add(metal(Geo.box(0.05, 0.34, 0.13).translate(s * 0.07, 0, 0.1), '#7b7d7d'));
+    g.add(metal(Geo.cylinder(0.065, 0.04, 8).rotateY(Math.PI / 2).translate(0.13, s * 0.24, 0.15), '#2c3e50'));
+    g.add(metal(Geo.box(0.04, 0.04, 0.2).translate(0.12, s * 0.24, 0.05)));
   }
+  g.add(metal(Geo.box(0.12, 0.26, 0.12).translate(0, -0.04, -0.2), '#d0d3d4'));
+  // number plate, both sides (see plateSurf)
+  for (const s of [-1, 1]) {
+    const pl = Geo.quad([-0.11, 0, 0], [0.11, 0, 0], [0.11, 0, 0.13], [-0.11, 0, 0.13]);
+    if (pl.n[1] * s < 0) pl.flip();
+    // read from the front on both sides
+    if (s > 0) for (let i = 0; i < pl.vertexCount; i++) pl.uv[i * 2] = 1 - pl.uv[i * 2];
+    g.add(aoColor(pl.translate(0, -0.14 + s * 0.035, -0.9), '#f4f6f7', () => 1).mat(MAT.PLATE).tag(number));
+  }
+  g.add(metal(Geo.box(0.24, 0.06, 0.16).translate(0, -0.14, -0.84), '#34495e'));
+  // seams between the three places, on the seat and the back
+  for (const x of [-0.33, 0.33]) {
+    g.add(aoColor(Geo.box(0.025, 0.5, 0.012).translate(x, 0.02, -2.505), '#1a1a1a', () => 0.7).mat(MAT.CLOTH));
+    g.add(aoColor(Geo.box(0.025, 0.012, 0.5).transform(m4.mul(m4.translation(x, -0.29, -2.28), m4.rotationX(0.18))), '#1a1a1a', () => 0.7).mat(MAT.CLOTH));
+  }
+  // arm rests on the side frames
+  for (const s of [-1, 1]) g.add(aoColor(cbox(0.07, 0.42, 0.05, 0.015).translate(s * 0.98, -0.05, -2.3), color, () => 0.8).mat(MAT.CLOTH));
+  // the safety bar's struts down to the footrest, and the ski rests
+  for (const x of [-0.62, 0, 0.62]) g.add(metal(Geo.box(0.03, 0.03, 0.62).transform(m4.mul(m4.translation(x, 0.585, -2.75), m4.rotationX(0.11)))));
+  for (const x of [-0.8, -0.4, 0.4, 0.8]) g.add(metal(Geo.box(0.03, 0.12, 0.08).translate(x, 0.62, -3.0), '#2c3e50'));
+  g.add(metal(Geo.box(1.95, 0.03, 0.03).translate(0, 0.55, -2.38), '#c0392b'));
   return g;
+}
+
+// a rider sitting on a chair (the chair's frame: +y forward, the seat's top
+// at z = -2.51), hands on the safety bar, skis on the footrest: { base, detail }
+const CHAIR_POSE = { ...POSES.sit,
+  arms: [[[-0.25, 0.28, 0.2], [-0.2, 0.56, 0.08]], [[0.25, 0.28, 0.2], [0.2, 0.56, 0.08]]] };
+function rider(rand, x) {
+  const L = lookOf(rand, {
+    hat: rand.pick(['helmet', 'helmet', 'beanie', 'hood']), coatLong: false, pack: false, skiBoots: true,
+    goggles: rand.pick(['up', 'eyes', 'up', null]),
+  });
+  const p = personGeo(L, CHAIR_POSE);
+  const M = m4.mul(m4.translation(x, -0.13, -2.5), m4.scaling(L.height));
+  const skiColor = rand.pick(['#d4ac0d', '#cb4335', '#2471a3', '#17202a', '#f0f3f4']);
+  for (const F of p.feet) {
+    const ski = aoColor(Geo.box(0.075, 1.62, 0.03).transform(m4.mul(F, m4.rotationX(-0.15), m4.translation(0, 0.22, -0.13))), skiColor, () => 0.9).gloss(0.6).mat(MAT.METAL);
+    p.base.add(ski);
+    p.detail.add(aoColor(Geo.box(0.09, 0.2, 0.05).transform(m4.mul(F, m4.rotationX(-0.15), m4.translation(0, 0.04, -0.1))), '#2c3e50', () => 0.8).mat(MAT.METAL));
+  }
+  // both poles in one hand, hanging down
+  const h = p.hands[1];
+  for (const dx of [-0.02, 0.02]) p.detail.add(aoColor(limbGeo([[h[0] + dx, h[1] + 0.02, h[2] + 0.12], [h[0] + dx * 3, h[1] + 0.12, h[2] - 0.95]], 0.011, 0.009, 4), '#bdc3c7', () => 1).mat(MAT.METAL));
+  return { base: p.base.transform(M), detail: p.detail.transform(M), far: p.far.transform(M) };
 }
 
 function liftTower(h) {
@@ -1272,6 +1817,41 @@ function liftStation(b, p, d, n, rz, top) {
   g.add(drift(9, 4, 0.8).translate(0, top ? 5 : -5, 0));
   b.static(g, { transform: M, solid: false });
   b.static(solid, { transform: M });
+  // from near by: the drive over the bull wheel (motor housing, gearbox,
+  // axle), a switch cabinet by the hut, and in front of the boarding place
+  // a maze of posts and ropes ending at two turnstiles
+  {
+    const dg = new Geo();
+    const paint = (geo, c, k = 0.85) => aoColor(geo, c, () => k).gloss(0.45).mat(MAT.METAL);
+    dg.add(paint(cbox(1.4, 1.1, 0.7, 0.05).translate(0, 0, up + 1.05), '#d0d3d4'));
+    dg.add(paint(Geo.cylinder(0.28, 0.9, 10).rotateY(Math.PI / 2).translate(-0.45, 0.75, up + 1.0), '#2c3e50'));
+    dg.add(paint(Geo.cylinder(0.12, 0.75, 8).translate(0, 0, up + 0.2), '#7b7d7d'));
+    for (const sx of [-0.5, 0.5]) dg.add(paint(Geo.box(0.12, 0.12, 0.9).translate(sx, 0, up + 1.85), '#7f8c8d'));
+    const hx = top ? -5.8 : 5.8, hy = top ? 2 : -2;
+    dg.add(paint(cbox(0.6, 0.35, 1.4, 0.03).translate(hx + (top ? 2.1 : -2.1), hy - 1.2, 0.7), '#95a5a6'));
+    dg.add(aoColor(Geo.box(0.1, 0.02, 0.1).translate(hx + (top ? 2.1 : -2.1), hy - 1.385, 1.15), '#c0392b', () => 1).mat(MAT.METAL));
+    const side = top ? -1 : 1, y0 = top ? 3.2 : -3.2, dir = top ? 1 : -1;
+    const posts = [];
+    for (let row = 0; row < 4; row++) for (let k = 0; k < 4; k++) posts.push([side * (0.9 + row * 1.0), y0 + dir * (1.2 + k * 1.5)]);
+    for (const [x, y] of posts) {
+      dg.add(paint(Geo.cylinder(0.04, 1.0, 6).translate(x, y, 0), '#bdc3c7'));
+      dg.add(paint(Geo.cylinder(0.16, 0.04, 8).translate(x, y, 0), '#2c3e50'));
+    }
+    for (let row = 0; row < 4; row++) {
+      for (let k = 0; k < 3; k++) {
+        const a = posts[row * 4 + k], c = posts[row * 4 + k + 1];
+        if (row % 2 === 0 && k === 2) continue;
+        if (row % 2 === 1 && k === 0) continue;
+        dg.add(aoColor(limbGeo([[a[0], a[1], 0.92], [(a[0] + c[0]) / 2, (a[1] + c[1]) / 2, 0.84], [c[0], c[1], 0.92]], 0.015, 0.015, 4), '#c0392b', () => 1).mat(MAT.CLOTH));
+      }
+    }
+    for (const k of [0, 1]) {
+      const x = side * (0.9 + k * 1.6), y = y0 + dir * 0.4;
+      dg.add(paint(cbox(0.25, 0.9, 1.0, 0.03).translate(x - side * 0.35, y, 0.5), '#5d6d7e'));
+      for (let a = 0; a < 3; a++) dg.add(paint(Geo.box(0.5, 0.04, 0.04).translate(0.25, 0, 0).rotateZ(a * TAU / 3).translate(x - side * 0.2, y, 0.85), '#bdc3c7'));
+    }
+    b.static(dg, { transform: M, solid: false, within: 70 });
+  }
   stampAO(p.x, p.y, 6, 0.4);
 }
 
@@ -1307,16 +1887,25 @@ function chairlift(b) {
     const times = new Set([0, T]);
     for (const cd of loop.cum) times.add(((cd - off) / v % T + T) % T);
     const keys = [...times].sort((x, y) => x - y).filter((t, i, arr) => i === 0 || t - arr[i - 1] > 0.02);
-    b.dynamic(liftChair(colors[c % 3]), { times: keys, transform: tf, caps: 'none' });
+    addMoving(b, liftChair(colors[c % 3]), { times: keys, transform: tf, caps: 'none' });
+    addMoving(b, liftChairDetail(colors[c % 3], 11 + c * 17), { times: keys, transform: tf, caps: 'none', within: 30 });
     // riders on the way up only (from leaving the bottom wheel to the top wheel)
     const upLen = loop.cum[pts.length - 1];
     for (let lap = 0; lap < 1; lap++) {
       const t0 = ((0 - off) / v % T + T) % T, t1 = t0 + upLen / v;
       const rk = [t0, ...keys.filter((t) => t > t0 + 0.02 && t < t1 - 0.02), t1];
-      const who = new Geo();
+      const who = new Geo(), whoD = new Geo(), whoF = new Geo();
       const nr = 1 + Math.floor(rand() * 3);
-      for (let r = 0; r < nr; r++) who.add(rider(rand, -0.72 + r * 0.72 * (3 / Math.max(2, nr))));
-      b.dynamic(who, { times: rk, transform: tf, caps: 'none' });
+      for (let r = 0; r < nr; r++) {
+        // (looks from a stream of their own; the old rider's five draws are
+        // still made, so that every chair keeps its number of riders)
+        const p = rider(rng(3100 + c * 7 + r), -0.72 + r * 0.72 * (3 / Math.max(2, nr)));
+        for (let i = 0; i < 5; i++) rand();
+        who.add(p.base); whoD.add(p.detail); whoF.add(p.far);
+      }
+      addMoving(b, whoF, { times: rk, transform: tf, caps: 'none' });
+      addMoving(b, who, { times: rk, transform: tf, caps: 'none', within: FAR_PEOPLE * 0.7 });
+      addMoving(b, whoD, { times: rk, transform: tf, caps: 'none', within: NEAR_PEOPLE });
     }
   }
   return line;
@@ -1340,12 +1929,23 @@ function tramGeometry() {
   return { a, b: bb, d, n, za, zb, Lh, rope };
 }
 
+// The cabin.  From near by (CABIN_NEAR) its window panes and the floor of the
+// window band are open (see cabinWinCover) and tramInside() shows through.
+const CABIN_NEAR = 40;
 function tramCabin() {
   const g = new Geo();
   const red = (geo, k = 0.9) => aoColor(geo, '#b3261e', () => k).gloss(0.55).mat(MAT.CABIN);
-  g.add(red(rbox(2.7, 4.4, 1.25, 0.4, 2, [1, 1, 1]).translate(0, 0, -6.75)));
+  // the lower body, open at the top (only the inside's own floor shows)
+  const lower = rbox(2.7, 4.4, 1.25, 0.4, 2, [1, 1, 1]).translate(0, 0, -6.75);
+  const keep = [];
+  for (let i = 0; i < lower.idx.length; i += 3) {
+    if ([0, 1, 2].every((k) => lower.p[lower.idx[i + k] * 3 + 2] > -6.126)) continue;
+    keep.push(lower.idx[i], lower.idx[i + 1], lower.idx[i + 2]);
+  }
+  lower.idx = keep;
+  g.add(red(lower));
   const win = rbox(2.6, 4.3, 1.15, 0.36, 2, [1, 1, 1]).translate(0, 0, -5.6);
-  g.add(dataColor(win, () => [1, 0.5, 0]).mat(MAT.CABINWIN));
+  g.add(dataColor(win, () => [1, 0.5, 0]).mat(MAT.CABINWIN).aux((p, n) => n[2]).cutout());
   g.add(red(rbox(2.7, 4.4, 0.4, 0.18, 1).translate(0, 0, -4.85)));
   g.add(aoColor(cbox(1.2, 2.2, 0.25, 0.05).translate(0, 0, -4.55), '#d0d3d4', () => 0.9).mat(MAT.METAL));
   g.add(aoColor(cbox(0.22, 0.22, 4.1, 0.05).translate(0, 0, -2.4), '#7b7d7d', () => 0.9).mat(MAT.METAL));
@@ -1354,6 +1954,51 @@ function tramCabin() {
   // a red lamp under the floor
   g.add(dataColor(Geo.sphere(0.12, 6, 4).translate(0, 2.0, -7.42), () => [1, 0, 0]).mat(MAT.BEACON));
   return g;
+}
+
+// What is seen of the cabin from near by: its inside (floor, walls below
+// the windows, a ceiling with a light, handrails, a pole), passengers, the
+// glass, the door's frame and handle, and the carriage's side plates, axles
+// and the hanger's braces.  Returns { solid, glass }.
+function tramInside() {
+  const g = new Geo();
+  const quadIn = (p0, p1, p2, p3, color, mat = MAT.CLOTH) => {
+    const q = Geo.quad(p0, p1, p2, p3);
+    return aoColor(q, color, () => 0.8).mat(mat);
+  };
+  const X = 1.24, Y = 2.09, zf = -7.28, zw = -6.12, zc = -5.08;
+  g.add(quadIn([-X, -Y, zf], [X, -Y, zf], [X, Y, zf], [-X, Y, zf], '#5a4332', MAT.WOOD));
+  g.add(quadIn([-X, -Y, zc], [-X, Y, zc], [X, Y, zc], [X, -Y, zc], '#c9c6bd'));
+  for (const [a, b2] of [[[X, -Y], [X, Y]], [[X, Y], [-X, Y]], [[-X, Y], [-X, -Y]], [[-X, -Y], [X, -Y]]]) {
+    g.add(quadIn([a[0], a[1], zf], [a[0], a[1], zw], [b2[0], b2[1], zw], [b2[0], b2[1], zf], '#8f9294'));
+  }
+  g.add(dataColor(Geo.box(0.22, 3.4, 0.03).translate(0, 0, zc - 0.02), () => [1, 0.35, 0]).mat(MAT.LANTERN));
+  const steel = (geo) => aoColor(geo, '#c8ccce', () => 1).gloss(0.6).mat(MAT.METAL);
+  for (const s of [-1, 1]) g.add(steel(limbGeo([[s * (X - 0.06), -Y + 0.2, -6.05], [s * (X - 0.06), Y - 0.2, -6.05]], 0.018, 0.018, 4)));
+  g.add(steel(limbGeo([[0, 0.3, zf], [0, 0.3, zc]], 0.025, 0.025, 6)));
+  // passengers, looking out
+  const rand = rng(404);
+  const spots = [[-0.62, 1.2, 2.6, 'stand'], [0.55, 1.35, 3.6, 'hold'], [-0.5, -0.9, -1.4, 'stand'], [0.6, -1.25, 1.2, 'hold']];
+  for (const [x, y, rot, pose] of spots) {
+    const L = lookOf(rand, { pack: rand() < 0.5, hat: rand.pick(['beanie', 'helmet', 'none', 'fur', 'beanie']) });
+    const p = personGeo(L, POSES[pose]);
+    g.add(p.base.transform(m4.mul(m4.translation(x, y, zf), m4.rotationZ(rot), m4.scaling(L.height * 0.97))));
+  }
+  // the door on the right-hand side: its frame and handle
+  for (const y of [-0.55, 0.55]) g.add(aoColor(Geo.box(0.03, 0.05, 2.1).translate(1.355, y, -6.3), '#5e1510', () => 0.8).mat(MAT.CABIN));
+  g.add(aoColor(Geo.box(0.03, 1.15, 0.05).translate(1.33, 0, -5.24), '#5e1510', () => 0.8).mat(MAT.CABIN));
+  g.add(steel(Geo.box(0.05, 0.22, 0.04).translate(1.37, 0.38, -6.35)));
+  g.add(aoColor(Geo.box(0.04, 1.05, 0.06).translate(1.36, 0, -7.2), '#2c2c2c', () => 0.8).mat(MAT.METAL));
+  // carriage: side plates, axles, and braces from the hanger to the roof
+  for (const s of [-1, 1]) {
+    g.add(aoColor(Geo.box(0.04, 3.0, 0.42).translate(s * 0.27, 0, -0.12), '#4a5866', () => 0.85).gloss(0.4).mat(MAT.METAL));
+    g.add(aoColor(limbGeo([[0, s * 0.1, -3.9], [0, s * 0.85, -4.42]], 0.05, 0.05, 5), '#7b7d7d', () => 0.85).mat(MAT.METAL));
+  }
+  for (const y of [-1.2, -0.4, 0.4, 1.2]) g.add(aoColor(Geo.cylinder(0.04, 0.62, 6).rotateY(Math.PI / 2).translate(-0.31, y, 0.05), '#1c2833', () => 0.9).mat(MAT.METAL));
+  // the glass (see cabinWinSurf)
+  const glass = rbox(2.58, 4.28, 1.1, 0.34, 2, [1, 1, 1]).translate(0, 0, -5.6);
+  const gl = dataColor(glass, () => [1, 0.5, 0]).mat(MAT.CABINWIN).tag(2).blend(0.3);
+  return { solid: g, glass: gl };
 }
 
 function tramStation(b, p, d, n, zr, top) {
@@ -1387,9 +2032,42 @@ function tramStation(b, p, d, n, zr, top) {
   if ((board.n[1] > 0) !== top) board.flip();
   deco.add(dataColor(board.translate(0, back + (top ? -Dp / 2 - 0.05 : Dp / 2 + 0.05), hs - 1.6), () => [1, 0, 0]).mat(MAT.BOARD));
   deco.add(dataColor(Geo.sphere(0.25, 8, 6).translate(0, back, H + 1.0), () => [1, top ? 0.5 : 0, 0]).mat(MAT.BEACON));
-  deco.add(drift(W + 6, 5, 1.0).translate(0, back + (top ? Dp / 2 + 2 : -Dp / 2 - 2), 0));
+  if (top) deco.add(drift(W + 6, 5, 1.0).translate(0, back + Dp / 2 + 2, 0));
+  else for (const sx of [-1, 1]) deco.add(drift(7.5, 4.5, 0.95).translate(sx * 7.6, back - Dp / 2 - 1.8, 0));
+  if (!top) {
+    // the way in, at the end of the lantern path: double doors with glass
+    // panes under a snowy canopy, a lamp either side, and over the canopy a
+    // board showing the time of the moment (see boardSurf)
+    const e = new Geo();
+    const yw = back - Dp / 2 - 0.02;
+    const ge = m4.point(M, [0, yw - 1.0, 0]);
+    const z0 = ground(ge[0], ge[1]) - gz - 0.05;
+    e.add(aoColor(cbox(2.7, 0.3, 2.9, 0.04).translate(0, 0.05, z0 + 1.45), '#3e2a1c', () => 0.8).mat(MAT.WOOD));
+    for (const sx of [-1, 1]) {
+      e.add(aoColor(cbox(1.08, 0.1, 2.5, 0.02).translate(sx * 0.56, -0.12, z0 + 1.27), '#5b3b25', () => 0.8).mat(MAT.WOOD));
+      const gl = Geo.quad([-0.38, 0, 0], [0.38, 0, 0], [0.38, 0, 1.1], [-0.38, 0, 1.1]);
+      if (gl.n[1] > 0) gl.flip();
+      e.add(dataColor(gl.translate(sx * 0.56, -0.175, z0 + 1.2), () => [1, 0.33 + 0.1 * sx, 0]).mat(MAT.GLASS));
+      e.add(aoColor(Geo.box(0.04, 0.05, 0.5).translate(sx * 0.12, -0.21, z0 + 1.1), '#c8ccce', () => 1).gloss(0.7).mat(MAT.METAL));
+      e.add(aoColor(cbox(0.12, 0.12, 0.2, 0.02).translate(sx * 1.65, -0.08, z0 + 2.45), '#202020', () => 0.9).mat(MAT.METAL));
+      e.add(dataColor(Geo.sphere(0.08, 8, 6).translate(sx * 1.65, -0.12, z0 + 2.32), () => [1, 0.2, 0]).mat(MAT.LANTERN));
+      e.add(aoColor(Geo.box(0.08, 1.6, 0.08).transform(m4.mul(m4.translation(sx * 1.6, -0.75, z0 + 2.75), m4.rotationX(-0.45))), '#2b2b2b', () => 0.8).mat(MAT.METAL));
+    }
+    e.add(aoColor(cbox(3.8, 1.7, 0.16, 0.04).translate(0, -0.85, z0 + 3.15), '#3b3f45', (q, nn) => (nn[2] < 0 ? 0.6 : 0.9)).mat(MAT.METAL));
+    e.add(snowData(rbox(3.7, 1.6, 0.3, 0.14, 2, [2, 2, 1]).translate(0, -0.85, z0 + 3.36)));
+    const bd = Geo.quad([-1.3, 0, 0], [1.3, 0, 0], [1.3, 0, 0.85], [-1.3, 0, 0.85]);
+    if (bd.n[1] > 0) bd.flip();
+    e.add(dataColor(bd.translate(0, -0.06, z0 + 3.55), () => [1, 0, 0]).mat(MAT.BOARD));
+    e.add(aoColor(cbox(2.8, 0.1, 1.05, 0.03).translate(0, 0.0, z0 + 3.97), '#1a1a1a', () => 0.8).mat(MAT.METAL));
+    e.add(snowData(rbox(3.0, 1.8, 0.2, 0.1, 2).translate(0, -1.0, z0 - 0.06)));
+    deco.add(e.translate(0, yw, 0));
+  }
   b.static(solid, { transform: M });
   b.static(deco, { transform: M, solid: false });
+  if (!top) {
+    const bp = m4.point(M, [3.6, back - Dp / 2 - 1.3, 0]);
+    bench(b, bp[0], bp[1], Math.atan2(-d[0], d[1]) + Math.PI);
+  }
   stampAO(p[0], p[1], 12, 0.45);
 }
 
@@ -1431,30 +2109,23 @@ function aerialTram(b) {
   };
   // keys: where the motion bends, plus the corners of the cycle
   const times = adaptiveTimes(tf, 0, C2, { tolerance: 0.12, size: 4, maxStep: 6 });
-  b.dynamic(tramCabin(), { times, transform: tf, caps: 'none' });
+  addMoving(b, tramCabin(), { times, transform: tf, caps: 'none' });
+  const inside = tramInside();
+  addMoving(b, inside.solid, { times, transform: tf, caps: 'none', within: CABIN_NEAR });
+  addMoving(b, inside.glass, { times, transform: tf, caps: 'none', within: CABIN_NEAR });
 }
 
 // ---------------------------------------------------------------------------
 // skaters on the swept rink of the frozen lake
 
-function skater(rand) {
-  const g = new Geo();
-  const coat = rand.pick(JACKETS), dark = rand.pick(['#1b2631', '#3e2723', '#212f3d', '#4a235a']);
-  const lean = m4.rotationX(-0.32);
-  const body = new Geo();
-  body.add(aoColor(rbox(0.40, 0.26, 0.62, 0.11, 1).translate(0, 0, 1.22), coat, () => 0.95).mat(MAT.CLOTH));
-  body.add(aoColor(Geo.sphere(0.115, 8, 6).translate(0, 0.02, 1.68), '#e6c2a6', () => 1).mat(MAT.SKIN));
-  body.add(aoColor(Geo.cone(0.13, 0.26, 8).translate(0, 0.0, 1.74), rand.pick(['#c0392b', '#f4f6f7', '#1f618d', '#f1c40f']), () => 1).mat(MAT.CLOTH));
-  body.add(aoColor(Geo.torus(0.12, 0.05, 8, 4).translate(0, 0.0, 1.55), rand.pick(['#e74c3c', '#f39c12', '#27ae60']), () => 1).mat(MAT.CLOTH));
-  // arms folded behind the back
-  for (const s of [-1, 1]) body.add(aoColor(Geo.tube([[s * 0.22, 0, 1.45], [s * 0.26, -0.1, 1.2], [s * 0.1, -0.2, 1.05]], 0.055, 5), coat, () => 0.85).mat(MAT.CLOTH));
-  g.add(body.transform(m4.mul(m4.translation(0, 0, 0.9), lean, m4.translation(0, 0, -0.9))));
-  // legs: one gliding, one pushing out behind
-  g.add(aoColor(Geo.tube([[0.1, 0.05, 0.95], [0.1, 0.12, 0.5], [0.1, 0.05, 0.08]], 0.075, 5), dark, () => 0.85).mat(MAT.CLOTH));
-  g.add(aoColor(Geo.tube([[-0.1, -0.02, 0.95], [-0.2, -0.3, 0.55], [-0.3, -0.62, 0.22]], 0.075, 5), dark, () => 0.85).mat(MAT.CLOTH));
-  g.add(aoColor(Geo.box(0.03, 0.42, 0.05).translate(0.1, 0.08, 0.025), '#d5dbdb', () => 1).gloss(0.8).mat(MAT.METAL));
-  g.add(aoColor(Geo.box(0.03, 0.42, 0.05).transform(m4.mul(m4.translation(-0.3, -0.66, 0.2), m4.rotationX(-0.5))), '#d5dbdb', () => 1).gloss(0.8).mat(MAT.METAL));
-  return g;
+// (every third one with the arms out for balance; one of them a child)
+function skater(rand, i) {
+  const L = lookOf(rand, { skates: true, coatLong: rand() < 0.25, pack: false, boots: rand.pick(['#f4f6f7', '#f4f6f7', '#1c1c1c', '#6e2c00']) });
+  if (i === 4) Object.assign(L, { headK: 1.3, height: 0.62, girth: 1.1, hairStyle: 0, coatLong: false });
+  const p = personGeo(L, i % 3 === 1 || i === 4 ? POSES.skate2 : POSES.skate);
+  // up by the height of the blades, and to the skater's own size
+  const M = m4.mul(m4.scaling(L.height), m4.translation(0, 0, 0.09));
+  return { base: p.base.transform(M), detail: p.detail.transform(M), far: p.far.transform(M) };
 }
 
 // a low bank of swept snow round the rink, open towards the path
@@ -1483,8 +2154,89 @@ function rinkBank() {
   return snowData(g, 0.95);
 }
 
+// A hut on the shore that lends out skates, facing the rink: log walls, a
+// counter under a lifted shutter, skates hanging by their laces, a board
+// with the price, a bench, and a lamp; the small things from near by.
+function skateHut(b, x, y, facing) {
+  const z = ground(x, y) - 0.1;
+  const M = m4.mul(m4.translation(x, y, z), m4.rotationZ(facing));
+  const solid = new Geo(), deco = new Geo(), near = new Geo();
+  const W = 2.8, D = 2.2, H = 2.3;
+  solid.add(dataColor(rbox(W, D, H + 0.4, 0.05, 1).translate(0, 0, (H - 0.4) / 2), (q) => [0.6 + 0.4 * sstep(-0.2, 1.4, q[2]), 0.3, 0]).mat(MAT.LOGS));
+  // a lean-to roof sloping back, with snow on it
+  const roofM = m4.mul(m4.translation(0, -0.1, H + 0.22), m4.rotationX(0.18));
+  deco.add(aoColor(cbox(W + 0.7, D + 0.9, 0.12, 0.03).transform(roofM), '#4a3020', (q, n) => (n[2] < 0 ? 0.55 : 0.9)).mat(MAT.WOOD));
+  deco.add(snowData(rbox(W + 0.6, D + 0.8, 0.3, 0.14, 2, [3, 3, 1]).transform(m4.mul(roofM, m4.translation(0, 0, 0.18)))));
+  // the serving hatch: a dark opening, the counter, the propped shutter
+  const op = Geo.quad([-0.8, 0, 1.0], [0.8, 0, 1.0], [0.8, 0, 1.9], [-0.8, 0, 1.9]);
+  if (op.n[1] < 0) op.flip();
+  deco.add(aoColor(op.translate(0, D / 2 + 0.005, 0), '#0b0806', () => 1).mat(MAT.METAL));
+  deco.add(aoColor(cbox(1.9, 0.45, 0.07, 0.02).translate(0, D / 2 + 0.2, 0.98), '#7a5638', () => 0.9).mat(MAT.WOOD));
+  deco.add(aoColor(cbox(1.8, 0.06, 0.95, 0.02).transform(m4.mul(m4.translation(0, D / 2 + 0.38, 2.15), m4.rotationX(-1.1), m4.translation(0, 0, 0.45))), '#2e5a3a', () => 0.85).mat(MAT.SHUTTER));
+  deco.add(snowData(cbox(1.85, 0.4, 0.08, 0.03).translate(0, D / 2 + 0.2, 1.04)));
+  // the price board, and a lamp over the hatch
+  const pl = Geo.quad([-0.35, 0, 0], [0.35, 0, 0], [0.35, 0, 0.3], [-0.35, 0, 0.3]);
+  if (pl.n[1] < 0) pl.flip();
+  for (let i = 0; i < pl.vertexCount; i++) pl.uv[i * 2] = 1 - pl.uv[i * 2];
+  deco.add(aoColor(pl.translate(0.95, D / 2 + 0.01, 0.35), '#efe6cf', () => 1).mat(MAT.PLATE).tag(5));
+  deco.add(aoColor(Geo.box(0.8, 0.03, 0.4).translate(0.95, D / 2 - 0.005, 0.5), '#3a2a1c', () => 0.8).mat(MAT.WOOD));
+  deco.add(dataColor(Geo.sphere(0.08, 8, 6).translate(-1.2, D / 2 + 0.2, 2.1), () => [1, 0.4, 0]).mat(MAT.LANTERN));
+  deco.add(drift(W + 2, 1.6, 0.5).translate(0, -D / 2 - 0.7, 0.1));
+  // skates hanging by their laces on a rail beside the hatch, and inside on a shelf
+  near.add(aoColor(Geo.box(0.04, 0.04, 1.0).rotateY(Math.PI / 2).translate(-1.05, D / 2 + 0.06, 1.75), '#3b3b3b', () => 0.9).mat(MAT.METAL));
+  for (let k = 0; k < 3; k++) {
+    for (const dx of [-0.05, 0.05]) {
+      const sk = new Geo();
+      sk.add(aoColor(cbox(0.08, 0.2, 0.16, 0.02).translate(0, 0, 0.0), k === 1 ? '#1c1c1c' : '#f2f2ee', () => 0.9).mat(MAT.CLOTH));
+      sk.add(aoColor(Geo.box(0.012, 0.26, 0.03).translate(0, 0.02, -0.1), '#d5dbdb', () => 1).gloss(0.8).mat(MAT.METAL));
+      sk.add(aoColor(Geo.box(0.006, 0.006, 0.18).translate(0, -0.05, 0.16), '#e8e0d0', () => 1).mat(MAT.CLOTH));
+      near.add(sk.transform(m4.mul(m4.translation(-1.3 + k * 0.28 + dx, D / 2 + 0.1, 1.45), m4.rotationX(0.15 * (k - 1)))));
+    }
+  }
+  for (let k = 0; k < 5; k++) near.add(aoColor(cbox(0.09, 0.22, 0.15, 0.02).translate(-0.55 + k * 0.26, D / 2 - 0.3, 1.15), k % 2 ? '#1c1c1c' : '#f2f2ee', () => 0.6).mat(MAT.CLOTH));
+  // a fire basket on three legs in front, its coals glowing after dusk
+  {
+    const fx = 1.9, fy = D / 2 + 1.6;
+    for (let k = 0; k < 3; k++) {
+      const a = k * TAU / 3;
+      deco.add(aoColor(limbGeo([[fx + 0.3 * Math.cos(a), fy + 0.3 * Math.sin(a), 0], [fx + 0.2 * Math.cos(a), fy + 0.2 * Math.sin(a), 0.75]], 0.02, 0.02, 4), '#2b2b2b', () => 0.9).mat(MAT.METAL));
+    }
+    deco.add(aoColor(Geo.cylinder(0.24, 0.3, 10, { r2: 0.34, caps: false }).translate(fx, fy, 0.72), '#2b2420', () => 0.8).mat(MAT.METAL));
+    deco.add(aoColor(Geo.disc(0.24, 10).flip().translate(fx, fy, 0.72), '#2b2420', () => 0.8).mat(MAT.METAL));
+    deco.add(dataColor(Geo.sphere(1, 8, 4).scale(0.29, 0.29, 0.1).translate(fx, fy, 0.95), () => [1, 0.05, 0]).mat(MAT.LANTERN));
+    for (let k = 0; k < 4; k++) near.add(aoColor(cbox(0.5, 0.08, 0.08, 0.02).transform(m4.mul(m4.translation(fx, fy, 1.0), m4.rotationZ(k * 0.8), m4.rotationY(0.3))), '#3a2818', () => 0.7).mat(MAT.WOOD));
+  }
+  b.static(solid, { transform: M });
+  b.static(deco, { transform: M, solid: false });
+  b.static(near, { transform: M, solid: false, within: 40 });
+  stampAO(x, y, 2.5, 0.4);
+}
+
+// brooms and a shovel stuck in the rink's bank beside its opening
+function rinkTools(b) {
+  const c = Math.cos(LAKE.a), sn = Math.sin(LAKE.a);
+  const g = new Geo();
+  [[0.36, 'broom'], [0.42, 'broom'], [-0.38, 'shovel']].forEach(([a, kind], k) => {
+    const lx = Math.cos(a) * (RINK.rx + 0.3), ly = Math.sin(a) * (RINK.ry + 0.3);
+    const x = RINK.x + lx * c - ly * sn, y = RINK.y + lx * sn + ly * c;
+    const t = new Geo();
+    t.add(aoColor(Geo.box(0.03, 0.03, 1.4).translate(0, 0, 0.7), '#a07a50', () => 0.9).mat(MAT.WOOD));
+    if (kind === 'broom') t.add(aoColor(cbox(0.4, 0.08, 0.12, 0.02).translate(0, 0, 1.45), '#6e5236', () => 0.85).mat(MAT.KNIT).tag(4));
+    else {
+      t.add(aoColor(cbox(0.32, 0.03, 0.38, 0.01).translate(0, 0, -0.1), '#c0392b', () => 0.9).gloss(0.5).mat(MAT.METAL));
+      t.add(aoColor(Geo.box(0.16, 0.03, 0.03).translate(0, 0, 1.4), '#1c1c1c', () => 1).mat(MAT.METAL));
+    }
+    g.add(t.transform(m4.mul(m4.translation(x, y, ZLAKE + 0.05), m4.rotationZ(a + k), m4.rotationX(0.15 * (k - 1)))));
+  });
+  b.static(g, { solid: false });
+}
+
 function skaters(b) {
   b.static(rinkBank(), { solid: false });
+  skateHut(b, 82.5, 461, Math.PI / 2 + 0.25);
+  rinkTools(b);
+  bench(b, 80.5, 468.5, Math.PI / 2 + 0.25);
+  bench(b, 81, 453.5, Math.PI / 2 + 0.2);
   const rand = rng(57);
   const c = Math.cos(LAKE.a), sn = Math.sin(LAKE.a);
   const rinks = [[36, 23, 1, 0], [28, 18, 1, 1.3], [20, 13, -1, 2.0], [42, 27, 1, 3.1], [14, 9, 1, 0.6], [32, 21, -1, 4.4], [24, 20, 1, 5.2], [38, 25, 1, 2.6], [18, 15, -1, 3.7]];
@@ -1503,7 +2255,10 @@ function skaters(b) {
       return m4.mul(m4.facing([x, y, ZLAKE + 0.01], [fx, fy, 0]), m4.rotationY(bank));
     };
     const times = adaptiveTimes(tf, 0, P, { tolerance: 0.1, size: 1.0, maxStep: 3 });
-    b.dynamic(skater(rand), { times, transform: tf, caps: 'none' });
+    const sk = skater(rand, i);
+    addMoving(b, sk.far, { times, transform: tf, caps: 'none' });
+    addMoving(b, sk.base, { times, transform: tf, caps: 'none', within: FAR_PEOPLE });
+    addMoving(b, sk.detail, { times, transform: tf, caps: 'none', within: NEAR_PEOPLE });
   });
 }
 
@@ -1511,20 +2266,52 @@ function skaters(b) {
 // skiers carving down the pistes
 
 function skierGeo(rand) {
-  const g = new Geo();
-  const coat = rand.pick(JACKETS), pants = rand.pick(['#1b2631', '#212f3d', '#7b241c', '#17202a', '#f8f9f9']);
-  const body = new Geo();
-  body.add(aoColor(cbox(0.40, 0.26, 0.58, 0.08).translate(0, 0, 1.15), coat, () => 0.95).mat(MAT.CLOTH));
-  body.add(aoColor(Geo.sphere(0.13, 6, 4).translate(0, 0.03, 1.56), rand.pick(['#1b1b1b', '#f4f6f7', '#e74c3c', '#2980b9']), () => 1).gloss(0.6).mat(MAT.CLOTH));
+  const L = lookOf(rand, {
+    hat: rand() < 0.8 ? 'helmet' : 'beanie', goggles: rand() < 0.65 ? 'eyes' : 'up', coatLong: false, skiBoots: true,
+    trousers: rand.pick(['#1b2631', '#212f3d', '#7b241c', '#17202a', '#f8f9f9']),
+  });
+  const p = personGeo(L, POSES.ski);
+  for (const k of ['base', 'detail', 'far']) p[k].scale(L.height);
+  p.hands = p.hands.map((h) => v3.scale(h, L.height));
+  const skiColor = rand.pick(['#d4ac0d', '#cb4335', '#2471a3', '#f0f3f4']);
   for (const s of [-1, 1]) {
-    body.add(aoColor(Geo.box(0.025, 0.025, 1.15).transform(m4.mul(m4.translation(s * 0.3, 0.6, 0.62), m4.rotationX(-0.45))), '#bdc3c7', () => 1).mat(MAT.METAL));
+    p.base.add(aoColor(Geo.box(0.08, 1.7, 0.03).translate(s * 0.12, 0.05, 0.015), skiColor, () => 1).gloss(0.6).mat(MAT.METAL));
+    // binding, and the turned-up tip
+    p.detail.add(aoColor(Geo.box(0.09, 0.36, 0.04).translate(s * 0.12, 0.04, 0.045), '#2c3e50', () => 0.85).gloss(0.5).mat(MAT.METAL));
+    p.detail.add(aoColor(Geo.box(0.08, 0.14, 0.03).transform(m4.mul(m4.translation(s * 0.12, 0.93, 0.045), m4.rotationX(0.5))), skiColor, () => 1).gloss(0.6).mat(MAT.METAL));
   }
-  g.add(body.transform(m4.mul(m4.translation(0, 0, 0.75), m4.rotationX(-0.4), m4.translation(0, 0, -0.75))));
-  for (const s of [-1, 1]) {
-    g.add(aoColor(Geo.box(0.14, 0.16, 0.86).transform(m4.mul(m4.translation(s * 0.12, 0.05, 0.43), m4.rotationX(0.12))), pants, () => 0.85).mat(MAT.CLOTH));
-    g.add(aoColor(Geo.box(0.08, 1.7, 0.03).translate(s * 0.12, 0.05, 0.03), rand.pick(['#d4ac0d', '#cb4335', '#2471a3', '#f0f3f4']), () => 1).gloss(0.6).mat(MAT.METAL));
-  }
-  return g;
+  // poles from the hands back to the snow, with baskets
+  p.hands.forEach((h, k) => {
+    const s = k ? 1 : -1, tip = [s * 0.34, -0.3, 0.03];
+    const top = [h[0], h[1] + 0.03, h[2] + 0.1];
+    p.base.add(aoColor(limbGeo([top, tip], 0.012, 0.009, 4), '#bdc3c7', () => 1).mat(MAT.METAL));
+    const dir = v3.norm(v3.sub(tip, top));
+    p.detail.add(aoColor(Geo.torus(0.045, 0.008, 8, 3).transform(alongM(v3.add(tip, v3.scale(dir, -0.1)), dir)), '#1c1c1c', () => 1).mat(MAT.METAL));
+  });
+  return p;
+}
+
+// Key times for a skier: where the motion bends (adaptiveTimes), and more
+// wherever the straight line between two keys would leave the snow (the
+// ground is a mesh of flat cells, so it bends at every cell's edge) by more
+// than a few centimetres.  `pos` gives the point on the snow at a time.
+function snowKeys(tf, pos, t0, t1) {
+  const keys = adaptiveTimes(tf, t0, t1, { tolerance: 0.1, size: 0.8, maxStep: 2, minStep: 0.05 });
+  const out = [keys[0]];
+  const off = (a, c) => {
+    const pa = pos(a), pc = pos(c);
+    let e = 0;
+    for (let k = 1; k < 16; k++) {
+      const f = k / 16, x = pa[0] + (pc[0] - pa[0]) * f, y = pa[1] + (pc[1] - pa[1]) * f, z = pa[2] + (pc[2] - pa[2]) * f;
+      e = Math.max(e, Math.abs(z - 0.02 - ground(x, y)));
+    }
+    return e;
+  };
+  const split = (a, c) => {
+    if (c - a > 0.04 && off(a, c) > 0.05) { const m = (a + c) / 2; split(a, m); split(m, c); } else out.push(c);
+  };
+  for (let i = 1; i < keys.length; i++) split(keys[i - 1], keys[i]);
+  return out;
 }
 
 function skiers(b) {
@@ -1534,7 +2321,10 @@ function skiers(b) {
     for (let k = 0; k < 3; k++) {
       const speed = 7 + rand() * 3, dur = L / speed;
       const t0 = k * P / 3 + rand() * 6, amp = 4 + rand() * 3, wl = 46 + rand() * 16, ph = rand() * TAU;
-      const geo = skierGeo(rand);
+      // (looks from a stream of their own; the five draws the old skier
+      // made are still made, so that every run keeps its timing)
+      const geo = skierGeo(rng(9100 + pi * 10 + k));
+      for (let i = 0; i < 5; i++) rand();
       const pos = (t) => {
         const dd = Math.min(L, Math.max(0, (t - t0) * speed));
         const q = piste.smoothAt(dd, 6);
@@ -1544,14 +2334,17 @@ function skiers(b) {
       };
       const tf = (t) => {
         const p0 = pos(t - 0.4), p1 = pos(t + 0.4), p = pos(t);
-        const fwd = [p1[0] - p0[0], p1[1] - p0[1], 0];
+        // along the slope, so that the skis lie on it
+        const fwd = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
         // lean into the turn: the side the carve bends towards
         const dd = (t - t0) * speed;
         const lean = -Math.sin(dd / wl * TAU + ph) * 0.35 * sstep(0, 40, dd) * sstep(L, L - 40, dd);
         return m4.mul(m4.facing(p, fwd), m4.rotationY(lean));
       };
-      const times = adaptiveTimes(tf, t0, t0 + dur, { tolerance: 0.25, size: 0.8, maxStep: 4, minStep: 0.15 });
-      b.dynamic(geo, { times, transform: tf });
+      const times = snowKeys(tf, pos, t0, t0 + dur);
+      addMoving(b, geo.far, { times, transform: tf });
+      addMoving(b, geo.base, { times, transform: tf, within: FAR_PEOPLE });
+      addMoving(b, geo.detail, { times, transform: tf, within: NEAR_PEOPLE });
     }
   });
 }
@@ -1563,7 +2356,7 @@ function skiers(b) {
 // thins it towards its outline.
 
 function smoke(b) {
-  const puff = Geo.sphere(1, 7, 4).mat(MAT.SMOKE).color('#ffffff');
+  const puff = weld(Geo.sphere(1, 7, 4).mat(MAT.SMOKE).color('#ffffff'));
   const pose = [puff.clone().blend(SMOKE_OPACITY), puff.clone().blend(SMOKE_OPACITY * 0.42), puff.clone().blend(0)];
   const rand = rng(5);
   const every = 0.9, life = 10, mid = 3.5;
@@ -1580,7 +2373,7 @@ function smoke(b) {
       // still made, so that every other puff keeps its own.)
       if (t0 < ph - every / 2) continue;
       const times = [t0, t0 + mid, t0 + life];
-      b.dynamic((t) => pose[times.indexOf(t)], {
+      addMoving(b, (t) => pose[times.indexOf(t)], {
         times,
         transform: (t) => {
           const u = (t - t0) / life;
@@ -1598,31 +2391,59 @@ const SMOKE_OPACITY = 0.5;
 // lasts many periods, so it is drawn once a period: a stream of walkers
 // about 80 m apart, half of them going each way.
 
-function walkerGeo(rand, extra) {
-  const g = new Geo();
-  const coat = rand.pick(['#7b241c', '#1f3a5f', '#4a5a2a', '#5b2c6f', '#2e4053', '#a04000', '#145a32', '#6e2c00']);
-  const pants = rand.pick(['#1b2631', '#212f3d', '#3e2723', '#17202a']);
-  // a rounded coat, wider at the hem, with a collar
-  g.add(aoColor(Geo.lathe([[0.02, 0.72], [0.25, 0.74], [0.21, 1.25], [0.23, 1.42], [0.06, 1.55]], 7).scale(1, 0.72, 1), coat, (q) => 0.7 + 0.3 * sstep(0.7, 1.3, q[2])).mat(MAT.CLOTH));
-  g.add(aoColor(Geo.sphere(0.11, 6, 5).scale(0.95, 1, 1.08).translate(0, 0.02, 1.67), '#e2b89c', () => 1).mat(MAT.SKIN));
-  g.add(aoColor(Geo.lathe([[0.125, 0], [0.11, 0.12], [0.02, 0.2]], 6).translate(0, 0.0, 1.69), rand.pick(['#c0392b', '#f4f6f7', '#1f618d', '#f1c40f', '#7d3c98']), () => 1).mat(MAT.CLOTH));
-  g.add(aoColor(Geo.torus(0.12, 0.045, 6, 3).scale(1, 0.85, 1).translate(0, 0.01, 1.53), rand.pick(['#e74c3c', '#f39c12', '#27ae60', '#ecf0f1']), () => 1).mat(MAT.CLOTH));
-  // legs mid-stride, arms swinging
-  for (const [s, f] of [[-1, 1], [1, -1]]) {
-    g.add(aoColor(Geo.tube([[s * 0.1, 0, 0.8], [s * 0.11, f * 0.12, 0.45], [s * 0.11, f * 0.25, 0.1]], (u) => 0.085 - 0.025 * u, 5, { caps: false }), pants, () => 0.85).mat(MAT.CLOTH));
-    g.add(aoColor(Geo.box(0.13, 0.27, 0.11).translate(s * 0.11, f * 0.25 + 0.06, 0.055), '#2b1d14', () => 0.8).mat(MAT.CLOTH));
-    g.add(aoColor(Geo.tube([[s * 0.25, 0, 1.42], [s * 0.29, -f * 0.1, 1.15], [s * 0.28, -f * 0.2, 0.93]], (u) => 0.065 - 0.015 * u, 5, { caps: false }), coat, () => 0.85).mat(MAT.CLOTH));
+// sitting on a sledge, legs out in front, holding on to its sides
+const SLEDGE_POSE = { ...POSES.sit, lean: 0.05,
+  legs: [[[-0.1, 0.02, 0.06], [-0.1, 0.4, 0.15], [-0.1, 0.74, 0.1]], [[0.1, 0.02, 0.06], [0.1, 0.4, 0.15], [0.1, 0.74, 0.1]]],
+  arms: [[[-0.28, 0.06, 0.12], [-0.27, 0.22, -0.02]], [[0.28, 0.06, 0.12], [0.27, 0.22, -0.02]]], feet: [1.25, 1.25] };
+// carrying skis over the right shoulder
+const CARRY_POSE = { ...POSES.walk, arms: [POSES.walk.arms[0], [[0.33, 0.17, 0.36], [0.24, 0.27, 0.56]]] };
+
+// A group walking the path together (+y forward): { base, detail }
+//   0: a couple side by side, 1: a skier carrying skis, with a dog,
+//   2: someone pulling a child on a sledge
+function walkerGroup(rand, kind) {
+  const base = new Geo(), detail = new Geo(), far = new Geo();
+  const put = (p, M) => { base.add(p.base.transform(M)); detail.add(p.detail.transform(M)); far.add(p.far.transform(M)); };
+  if (kind === 0) {
+    const A = lookOf(rand, { coatLong: true, coatStyle: 1, hat: 'fur', hairStyle: 2, pack: true, height: 1.04, girth: 1.1, scarfBack: true });
+    const Bw = lookOf(rand, { coatLong: false, coatStyle: 0, hat: 'hood', hairStyle: 1, height: 0.95, girth: 0.92, pack: false });
+    put(personGeo(A, POSES.walk), m4.mul(m4.translation(-0.38, 0.05, 0), m4.scaling(A.height)));
+    put(personGeo(Bw, POSES.walk), m4.mul(m4.translation(0.36, -0.08, 0), m4.scaling(Bw.height)));
+  } else if (kind === 1) {
+    const A = lookOf(rand, { coatLong: false, coatStyle: 3, hat: 'beanie', hairStyle: 0, pack: false, skiBoots: false, goggles: 'up', height: 1.0 });
+    const p = personGeo(A, CARRY_POSE);
+    // a pair of skis over the right shoulder, held in front, and the poles
+    const Ms = m4.mul(m4.translation(0.24, 0.02, 1.49), m4.rotationX(0.42));
+    for (const dx of [-0.045, 0.045]) {
+      p.base.add(aoColor(Geo.box(0.075, 1.72, 0.03).transform(m4.mul(Ms, m4.translation(dx, -0.1, 0.02))), '#c0392b', () => 1).gloss(0.5).mat(MAT.METAL));
+      p.detail.add(aoColor(Geo.box(0.085, 0.3, 0.05).transform(m4.mul(Ms, m4.translation(dx, -0.12, -0.0))), '#2c3e50', () => 0.85).mat(MAT.METAL));
+    }
+    for (const dx of [-0.02, 0.02]) p.base.add(aoColor(limbGeo([[0.26 + dx, 0.48, 1.25], [0.34 + dx, -0.55, 1.55]], 0.011, 0.009, 4), '#bdc3c7', () => 1).mat(MAT.METAL));
+    put(p, m4.scaling(A.height));
+    const dog = dogGeo(rand.pick(['#3a2a1e', '#c8a46e', '#1c1a18', '#8a6a4a']));
+    base.add(dog.base.translate(-0.75, 0.55, 0)); detail.add(dog.detail.translate(-0.75, 0.55, 0));
+    far.add(dog.far.translate(-0.75, 0.55, 0));
+  } else {
+    const A = lookOf(rand, { coatLong: false, coatStyle: 2, hat: 'beanie', pack: false, height: 1.02 });
+    const p = personGeo(A, POSES.walk);
+    put(p, m4.scaling(A.height));
+    // the sledge: slatted seat on two curled runners
+    const sl = new Geo();
+    sl.add(aoColor(cbox(0.44, 0.9, 0.05, 0.015).translate(0, -1.75, 0.24), '#8e5a32', () => 0.9).mat(MAT.WOOD));
+    for (const sx of [-0.19, 0.19]) {
+      sl.add(aoColor(limbGeo([[sx, -2.22, 0.03], [sx, -1.4, 0.03], [sx, -1.2, 0.1], [sx, -1.22, 0.2], [sx, -1.3, 0.22]], 0.017, 0.017, 4), '#3b3b3b', () => 1).gloss(0.6).mat(MAT.METAL));
+      for (const y of [-2.05, -1.5]) sl.add(aoColor(Geo.box(0.04, 0.05, 0.21).translate(sx, y, 0.13), '#7a4a28', () => 0.8).mat(MAT.WOOD));
+    }
+    base.add(sl);
+    far.add(aoColor(Geo.box(0.36, 0.86, 0.06).translate(0, -1.75, 0.22), '#8e5a32', () => 0.8).mat(MAT.WOOD));
+    // the tow rope from the hand behind
+    const h = v3.scale(p.hands[0], A.height);
+    base.add(aoColor(limbGeo([h, [-0.05, -1.0, 0.45], [0, -1.28, 0.23]], 0.01, 0.01, 3), '#c9b79c', () => 0.9).mat(MAT.CLOTH));
+    // and a child sitting on it
+    const Ch = lookOf(rand, { headK: 1.3, height: 0.56, girth: 1.12, hat: rand() < 0.5 ? 'hood' : 'beanie', coatLong: false, pack: false, hairStyle: 0 });
+    put(personGeo(Ch, SLEDGE_POSE), m4.mul(m4.translation(0, -2.0, 0.27), m4.scaling(Ch.height)));
   }
-  if (extra === 1) {
-    // skis over the shoulder
-    g.add(aoColor(Geo.box(0.16, 1.75, 0.04).transform(m4.mul(m4.translation(0.22, -0.1, 1.5), m4.rotationX(0.5))), '#c0392b', () => 1).gloss(0.5).mat(MAT.METAL));
-  } else if (extra === 2) {
-    // pulling a sledge
-    g.add(aoColor(cbox(0.42, 0.95, 0.07, 0.02).translate(0, -1.9, 0.22), '#8e5a32', () => 0.9).mat(MAT.WOOD));
-    for (const s of [-0.18, 0.18]) g.add(aoColor(Geo.tube([[s, -2.4, 0.03], [s, -1.45, 0.03], [s, -1.3, 0.14]], 0.02, 4), '#3b3b3b', () => 1).mat(MAT.METAL));
-    g.add(aoColor(Geo.box(0.02, 1.2, 0.02).transform(m4.mul(m4.translation(0.18, -0.85, 0.55), m4.rotationX(-0.45))), '#d0d3d4', () => 1).mat(MAT.METAL));
-  }
-  return g;
+  return { base, detail, far };
 }
 
 function walkers(b) {
@@ -1632,7 +2453,10 @@ function walkers(b) {
     const up = k % 2 === 0;
     const v = 1.2 + 0.2 * rand();
     const dur = L / v, t0 = k * 13.7;
-    const geo = walkerGeo(rand, k % 3);
+    // (looks from a stream of their own; the walker's old four draws are
+    // still made, so that every walker keeps its speed)
+    const geo = walkerGroup(rng(7100 + k), k % 3);
+    for (let i = 0; i < 4; i++) rand();
     const pos = (t) => {
       const dd = Math.min(L, Math.max(0, up ? (t - t0) * v : L - (t - t0) * v));
       const q = PATH.smoothAt(dd, 4);
@@ -1642,7 +2466,50 @@ function walkers(b) {
     };
     const tf = (t) => { const { p, dir } = pos(t); return m4.facing(p, [dir[0], dir[1], 0]); };
     const times = adaptiveTimes(tf, t0, t0 + dur, { tolerance: 0.1, size: 0.5, maxStep: 25 });
-    b.dynamic(geo, { times, transform: tf });
+    addMoving(b, geo.far, { times, transform: tf });
+    addMoving(b, geo.base, { times, transform: tf, within: FAR_PEOPLE });
+    addMoving(b, geo.detail, { times, transform: tf, within: NEAR_PEOPLE });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// alpine choughs soaring in circles over the hamlet: black, with yellow
+// beaks and red legs, their wings bent a little
+
+function chough() {
+  const g = new Geo();
+  const black = (geo, k = 1) => aoColor(geo, '#0d0d10', () => k).gloss(0.5).mat(MAT.METAL);
+  g.add(black(Geo.sphere(1, 6, 4).scale(0.06, 0.2, 0.06)));
+  g.add(black(Geo.sphere(0.055, 5, 4).translate(0, 0.2, 0.02)));
+  g.add(aoColor(Geo.cone(0.014, 0.05, 4).rotateX(-Math.PI / 2 + 0.25).translate(0, 0.25, 0.01), '#e8c21a', () => 1).mat(MAT.WOOD));
+  for (const s of [-1, 1]) {
+    const w = new Geo();
+    const pts = [[0.03, 0.08, 0], [0.42, 0.06, 0.06], [0.72, -0.02, 0.02], [0.68, -0.12, 0.0], [0.35, -0.1, 0.04], [0.03, -0.06, 0]];
+    for (const [x, y, z] of pts) w.vert(s * x, y, z, 0, 0, 1);
+    for (const [a, b2, c] of [[0, 1, 4], [0, 4, 5], [1, 2, 3], [1, 3, 4]]) s > 0 ? w.tri(a, b2, c) : w.tri(a, c, b2);
+    g.add(black(w.doubleSided(), 0.9));
+    g.add(aoColor(limbGeo([[s * 0.025, -0.08, -0.03], [s * 0.03, -0.18, -0.04]], 0.008, 0.006, 3), '#b8281e', () => 1).mat(MAT.CLOTH));
+  }
+  const tail = new Geo();
+  for (const [x, y] of [[0, -0.15], [0.09, -0.36], [-0.09, -0.36]]) tail.vert(x, y, 0, 0, 0, 1);
+  tail.tri(0, 2, 1);
+  g.add(black(tail.doubleSided(), 0.9));
+  return g;
+}
+
+function choughs(b) {
+  const rand = rng(212);
+  for (let k = 0; k < 7; k++) {
+    const cx = -28 + rand() * 30, cy = 120 + rand() * 90, zc = 40 + rand() * 25;
+    const R = 18 + rand() * 14, ph = rand() * TAU, dir = rand() < 0.5 ? -1 : 1;
+    const laps = 2 + Math.floor(rand() * 2), w = dir * laps * TAU / P;
+    const tf = (t) => {
+      const a = ph + w * t;
+      const p = [cx + R * Math.cos(a), cy + R * Math.sin(a), zc + 6 * Math.sin(a * 0.5 + k)];
+      const f = [-Math.sin(a) * dir, Math.cos(a) * dir, 0];
+      return m4.mul(m4.facing(p, f), m4.rotationY(dir * 0.35));
+    };
+    addMoving(b, chough(), { times: adaptiveTimes(tf, 0, P, { tolerance: 0.15, size: 0.4, maxStep: 2 }), transform: tf, caps: 'none' });
   }
 }
 
@@ -1655,7 +2522,22 @@ function fences(b) {
   for (const side of [-1, 1]) {
     let prev = null;
     for (let d = 2; d < 150; d += 2.6) {
-      if ((d % 52) > 34) { prev = null; continue; }
+      if ((d % 52) > 34) {
+        // where a stretch ends, a gate stands open on its last post
+        if (prev) {
+          const q = PATH.smoothAt(d, 4);
+          const ang = Math.atan2(q.dir[1], q.dir[0]) - side * 1.1;
+          const M = m4.mul(m4.translation(prev[0], prev[1], prev[2]), m4.rotationZ(ang));
+          const gate = new Geo();
+          for (const x of [0.12, 1.25]) gate.add(cbox(0.08, 0.07, 1.05, 0.015).translate(x, 0, 0.6));
+          for (const z of [0.3, 0.68, 1.06]) gate.add(Geo.box(1.18, 0.05, 0.08).translate(0.68, 0, z));
+          gate.add(Geo.box(1.3, 0.04, 0.07).transform(m4.mul(m4.translation(0.68, 0.0, 0.68), m4.rotationY(-0.56))));
+          snow.add(aoColor(gate, wood, () => 0.85).mat(MAT.WOOD).transform(M));
+          snow.add(aoColor(Geo.box(0.12, 0.03, 0.05).translate(1.32, 0.04, 0.85), '#1d1b19', () => 0.9).mat(MAT.METAL).transform(M));
+          snow.add(snowData(cbox(1.15, 0.08, 0.04, 0.02).translate(0.68, 0, 1.11)).transform(M));
+        }
+        prev = null; continue;
+      }
       const q = PATH.smoothAt(d, 4);
       const off = side * (PATH_HALF + 2.9);
       const x = q.p[0] + q.dir[1] * off, y = q.p[1] - q.dir[0] * off;
@@ -1697,6 +2579,87 @@ function bench(b, x, y, facing) {
   g.add(drift(2.6, 1.6, 0.25));
   b.static(g, { transform: m4.mul(m4.translation(x, y, z), m4.rotationZ(facing)) });
   stampAO(x, y, 1.2, 0.3);
+}
+
+// A snowman: three balls of snow, coal eyes, mouth and buttons, a carrot,
+// stick arms, a knitted scarf and an old pot for a hat.
+function snowman(b, x, y, facing) {
+  const z = ground(x, y);
+  const g = new Geo();
+  const balls = [[0.46, 0.38], [0.33, 1.0], [0.23, 1.47]];
+  for (const [r, zc] of balls) g.add(snowData(Geo.sphere(r, 12, 8).scale(1, 1, 0.94).translate(0, 0, zc), 0.95));
+  const coal = (geo) => aoColor(geo, '#121212', () => 1).gloss(0.3).mat(MAT.METAL);
+  for (const s of [-1, 1]) g.add(coal(Geo.sphere(0.025, 5, 4).translate(s * 0.08, 0.2, 1.53)));
+  for (let k = -2; k <= 2; k++) g.add(coal(Geo.sphere(0.016, 4, 3).translate(k * 0.04, 0.205 - 0.006 * k * k, 1.39 + 0.007 * k * k)));
+  for (const zc of [0.95, 1.07, 1.19]) g.add(coal(Geo.sphere(0.025, 5, 4).translate(0, 0.32 - 0.04 * (zc - 1.07) * (zc - 1.07) * 30, zc)));
+  g.add(aoColor(Geo.cone(0.03, 0.2, 6).rotateX(-Math.PI / 2 + 0.12).translate(0, 0.21, 1.47), '#e67e22', () => 1).mat(MAT.WOOD));
+  for (const s of [-1, 1]) {
+    g.add(aoColor(limbGeo([[s * 0.28, 0, 1.08], [s * 0.6, 0.05, 1.3], [s * 0.78, 0.04, 1.42]], 0.018, 0.01, 4), '#4a3324', () => 0.8).mat(MAT.WOOD));
+    g.add(aoColor(limbGeo([[s * 0.6, 0.05, 1.3], [s * 0.7, 0.12, 1.45]], 0.009, 0.006, 4), '#4a3324', () => 0.8).mat(MAT.WOOD));
+  }
+  const scarf = Geo.torus(0.25, 0.05, 10, 4).scale(1, 1, 0.8);
+  for (let i = 0; i < scarf.vertexCount; i++) { const u = scarf.uv[i * 2]; scarf.uv[i * 2] = scarf.uv[i * 2 + 1]; scarf.uv[i * 2 + 1] = u * 6; }
+  g.add(knit(scarf.translate(0, 0, 1.26), '#b03a2e', 1));
+  g.add(knit(Geo.box(0.08, 0.03, 0.32).transform(m4.mul(m4.translation(0.12, 0.25, 1.12), m4.rotationX(0.25), m4.rotationY(-0.1))), '#b03a2e', 1));
+  g.add(aoColor(Geo.cylinder(0.16, 0.2, 10, { r2: 0.13 }).rotateX(-0.15).translate(0, -0.02, 1.62), '#3a3d40', () => 0.9).gloss(0.5).mat(MAT.METAL));
+  g.add(aoColor(Geo.cylinder(0.035, 0.02, 6).translate(0, -0.05, 1.82), '#3a3d40', () => 0.9).mat(MAT.METAL));
+  g.add(drift(1.6, 1.6, 0.2));
+  b.static(g, { transform: m4.mul(m4.translation(x, y, z - 0.05), m4.rotationZ(facing)), solid: false });
+  stampAO(x, y, 0.8, 0.3);
+}
+
+// Red deer at the edge of the forest east of the start: a doe grazing, one
+// looking up towards the path, and a calf.
+function deer(b) {
+  const one = (k, headUp) => {
+    const g = new Geo();
+    const fur = (geo, c, ao = () => 1) => aoColor(geo, c, ao).mat(MAT.KNIT).tag(4);
+    g.add(fur(Geo.sphere(1, 8, 6).scale(0.21, 0.58, 0.27).translate(0, 0, 0.98), '#7a5232', (q) => 0.75 + 0.25 * sstep(0.8, 1.15, q[2])));
+    g.add(fur(Geo.sphere(1, 6, 4).scale(0.13, 0.08, 0.15).translate(0, -0.55, 1.0), '#e8dcc8'));
+    const neckTop = headUp ? [0, 0.62, 1.55] : [0, 0.75, 0.55];
+    g.add(fur(limbGeo([[0, 0.38, 1.05], [0, 0.55, headUp ? 1.3 : 0.85], neckTop], 0.12, 0.07, 6), '#6e4a2c'));
+    const hd = m4.mul(m4.translation(...neckTop), m4.rotationX(headUp ? -0.3 : -1.25));
+    g.add(fur(Geo.sphere(1, 6, 5).scale(0.075, 0.2, 0.09).translate(0, 0.1, 0.02).transform(hd), '#6e4a2c'));
+    g.add(aoColor(Geo.sphere(0.022, 4, 3).translate(0, 0.29, 0.0).transform(hd), '#0c0a08', () => 1).gloss(0.7).mat(MAT.METAL));
+    for (const sx of [-1, 1]) {
+      g.add(fur(Geo.cone(0.045, 0.14, 4).scale(1, 0.45, 1).rotateY(sx * 0.6).translate(sx * 0.06, -0.02, 0.07).transform(hd), '#6e4a2c'));
+      g.add(aoColor(Geo.sphere(0.014, 4, 3).translate(sx * 0.055, 0.13, 0.05).transform(hd), '#0c0a08', () => 1).gloss(0.8).mat(MAT.METAL));
+    }
+    for (const [x, y, f] of [[-0.11, 0.36, 0.04], [0.11, 0.36, -0.03], [-0.11, -0.4, -0.05], [0.11, -0.4, 0.06]]) {
+      g.add(fur(limbGeo([[x, y, 0.95], [x, y + f, 0.45], [x, y + f * 0.5, 0.02]], 0.055, 0.025, 4), '#5e4028', (q) => 0.6 + 0.4 * sstep(0, 0.6, q[2])));
+    }
+    g.add(fur(Geo.cone(0.04, 0.12, 4).rotateX(Math.PI * 0.8).translate(0, -0.58, 1.12), '#4a3220'));
+    return g;
+  };
+  for (const [x, y, rot, size, up] of [[82, -50, 1.3, 1, false], [85.5, -45.5, 2.0, 1.05, true], [79.5, -54.5, 1.6, 0.7, false]]) {
+    const z = ground(x, y);
+    b.static(one(0, up), { transform: m4.mul(m4.translation(x, y, z - 0.03), m4.rotationZ(rot), m4.scaling(size)), solid: false });
+  }
+}
+
+// A yellow signpost with three arrows: minutes on foot to the chapel, the
+// lake and the tram (see plateSurf).
+function signpost(b, x, y) {
+  const z = ground(x, y);
+  const g = new Geo();
+  g.add(aoColor(cbox(0.1, 0.1, 2.5, 0.02).translate(0, 0, 1.0), '#6b5038', (p) => 0.6 + 0.4 * sstep(0, 1, p[2])).mat(MAT.WOOD));
+  g.add(snowData(cbox(0.14, 0.14, 0.07, 0.03).translate(0, 0, 2.27)));
+  const signs = [[2.0, 0.1, 9], [1.72, -0.3, 22], [1.44, 0.45, 38]];
+  for (const [zc, ang, mins] of signs) {
+    const arrow = Geo.extrude([[0, -0.1], [0.62, -0.1], [0.74, 0], [0.62, 0.1], [0, 0.1]], 0.03).rotateX(Math.PI / 2).translate(0.06, 0.015, zc - 0.0);
+    const a = aoColor(arrow, '#e8c21a', () => 0.95).mat(MAT.WOOD);
+    const pl = Geo.quad([0, 0, 0], [0.26, 0, 0], [0.26, 0, 0.13], [0, 0, 0.13]);
+    if (pl.n[1] > 0) pl.flip();
+    const front = aoColor(pl.translate(0.36, -0.017, zc - 0.065), '#e8c21a', () => 1).mat(MAT.PLATE).tag(mins);
+    const pl2 = Geo.quad([0, 0, 0], [0.26, 0, 0], [0.26, 0, 0.13], [0, 0, 0.13]);
+    if (pl2.n[1] < 0) pl2.flip();
+    for (let i = 0; i < pl2.vertexCount; i++) pl2.uv[i * 2] = 1 - pl2.uv[i * 2];
+    const back = aoColor(pl2.translate(0.36, 0.017, zc - 0.065), '#e8c21a', () => 1).mat(MAT.PLATE).tag(mins);
+    const one = Geo.merge(a, front, back, snowData(cbox(0.6, 0.05, 0.03, 0.012).translate(0.38, 0.015, zc + 0.1)));
+    g.add(one.rotateZ(ang));
+  }
+  b.static(g, { transform: m4.translation(x, y, z - 0.3) });
+  stampAO(x, y, 0.4, 0.3);
 }
 
 // Tree positions: a jittered grid over the forest, finer near the path.
@@ -2126,6 +3089,7 @@ fn terrainSurf(sIn: Surface, pf: f32) -> Surface {
 fn cutout(s: Surface) -> f32 {
   let pf = length(fwidth(s.pos));
   if (s.mat == ${MAT.CHAPELWIN}u || s.mat == ${MAT.BELFRY}u) { return archCover(s.uv); }
+  if (s.mat == ${MAT.CABINWIN}u) { return cabinWinCover(s); }
   if (s.mat != ${MAT.NEEDLES}u || s.uv.y < 1.0 || pf > 0.06) { return 1.0; }
   let along = s.uv.y - 1.0;
   let across = s.uv.x;
@@ -2298,7 +3262,7 @@ fn lanternSurf(sIn: Surface) -> Surface {
     let k = s.color.g;
     lev = lanternOn(s.t, k) * (0.9 + 0.1 * sin(s.t * 11.0 + k * 40.0) * sin(s.t * 7.3 + k * 17.0));
   }
-  s.color = vec3f(1.0, 0.62, 0.28);
+  s.color = select(vec3f(1.0, 0.62, 0.28), vec3f(1.0, 0.1, 0.04), s.tag == 2u);
   s.emissive = 0.12 + lev * 8.0;
   s.gloss = 0.6;
   return s;
@@ -2384,8 +3348,14 @@ fn archCover(uv: vec2f) -> f32 {
 fn chapelWinSurf(sIn: Surface, pf: f32, belfry: bool) -> Surface {
   var s = sIn;
   if (belfry) {
-    s.color = vec3f(0.006, 0.006, 0.007);
-    s.gloss = 0.0;
+    // the dark opening, with a bronze bell hanging in it
+    let bx = abs(s.uv.x - 0.5);
+    let v = s.uv.y;
+    let w = 0.09 + 0.16 * smoothstep(0.62, 0.3, v) + 0.03 * smoothstep(0.32, 0.28, v);
+    let bell = step(bx, w) * step(0.26, v) * step(v, 0.66) + step(bx, 0.03) * step(0.62, v) * step(v, 0.72);
+    let shade = 0.35 + 0.65 * (1.0 - bx / max(w, 0.01));
+    s.color = mix(vec3f(0.006, 0.006, 0.007), vec3f(0.30, 0.20, 0.08) * shade, bell);
+    s.gloss = 0.55 * bell;
     return s;
   }
   // leaded glass in small diamonds, glowing in colour at night
@@ -2469,8 +3439,25 @@ fn beaconSurf(sIn: Surface) -> Surface {
   s.emissive = 0.3 + on * 14.0;
   return s;
 }
+// From near by the cabin's panes, and the floor of its window band, are open:
+// its inside is drawn then (tramInside), behind a sheet of glass.
+fn cabinWinCover(s: Surface) -> f32 {
+  if (s.dist <= 0.0 || s.dist > ${f(CABIN_NEAR - 1)}) { return 1.0; }
+  if (s.aux < -0.6) { return 0.0; }
+  if (s.aux > 0.6) { return 1.0; }
+  return smoothstep(0.86, 0.9, abs(fract(s.uv.x / 1.1) - 0.5) * 2.0);
+}
 fn cabinWinSurf(sIn: Surface, pf: f32) -> Surface {
   var s = sIn;
+  if (s.tag == 2u) {
+    // the glass: a faint reflection by day, warm light from inside at night
+    let night = smoothstep(0.15, 0.5, nightOf(s.t));
+    s.color = mix(vec3f(0.05, 0.06, 0.07), vec3f(1.0, 0.85, 0.6) * 0.5, night);
+    s.emissive = night * 0.6;
+    s.gloss = 0.92;
+    s.alpha = select(0.22 + 0.1 * night, 0.0, abs(s.n.z) > 0.6);
+    return s;
+  }
   // window band with posts; lit from inside after dusk
   let post = 1.0 - smoothstep(0.04, 0.06, abs(fract(s.uv.x / 1.1) - 0.5) * 2.0 - 0.9);
   let night = smoothstep(0.15, 0.5, nightOf(s.t));
@@ -2478,6 +3465,179 @@ fn cabinWinSurf(sIn: Surface, pf: f32) -> Surface {
   s.emissive = night * 2.0;
   s.gloss = 0.85;
   if (abs(s.n.z) > 0.6 || post > 0.5) { s.color = vec3f(0.30, 0.03, 0.02); s.emissive = 0.0; s.gloss = 0.5; }
+  return s;
+}
+
+// ---- people (see personGeo)
+const HAIRC = array<vec3f, 8>(${HAIRS.map((h) => `vec3f(${[1, 3, 5].map((k) => f(Math.pow(parseInt(h.slice(k, k + 2), 16) / 255, 2.2))).join(', ')})`).join(', ')});
+
+// a head: uv is the face seen from the front (in head radii), aux how far
+// forward the point lies, tag the hair's colour (bits 0-2) and style (3-4:
+// short, long, short with a beard, bald) and the eyes' colour (5-6)
+fn faceSurf(sIn: Surface, pf: f32) -> Surface {
+  var s = sIn;
+  let q = s.uv;
+  let fr = s.aux;
+  let st = s.tag;
+  var pal = HAIRC;
+  let hair = pal[st & 7u];
+  let style = (st >> 3u) & 3u;
+  let eyeK = (st >> 5u) & 3u;
+  let aa = clamp(pf * 10.0, 0.012, 0.25);
+  let ax = abs(q.x);
+  let front = smoothstep(0.2, 0.45, fr);
+  var col = s.color;
+  // cheeks, and the tip of the nose, reddened by the cold
+  let rosy = 0.5 * (1.0 - smoothstep(0.04, 0.3, length(vec2f(ax - 0.46, q.y + 0.24))))
+           + 0.45 * (1.0 - smoothstep(0.0, 0.16, length(vec2f(q.x, q.y + 0.1)))) * smoothstep(0.85, 0.97, fr);
+  col = mix(col, col * vec3f(1.2, 0.56, 0.52), rosy * front);
+  // ears: redder, with a shadow round them
+  let ear = (1.0 - smoothstep(0.08, 0.2, length(vec2f(fr + 0.05, (q.y + 0.04) * 0.7)))) * smoothstep(0.6, 0.8, ax);
+  col = mix(col, col * vec3f(0.9, 0.55, 0.5), ear * 0.7);
+  // eyes: the whites, the iris and pupil, the line of the lid above
+  let e = vec2f(ax - 0.34, q.y - 0.1);
+  let dw = (length(e / vec2f(0.13, 0.075)) - 1.0) * 0.075;
+  let white = (1.0 - smoothstep(-aa, aa, dw)) * front;
+  var ec = vec3f(0.07, 0.035, 0.015);
+  if (eyeK == 1u) { ec = vec3f(0.06, 0.13, 0.24); } else if (eyeK == 2u) { ec = vec3f(0.1, 0.14, 0.06); }
+  let ir = length(e - vec2f(0.0, -0.004));
+  let iris = 1.0 - smoothstep(-aa, aa, ir - 0.056);
+  let pupil = 1.0 - smoothstep(-aa, aa, ir - 0.024);
+  col = mix(col, vec3f(0.78, 0.76, 0.72), white);
+  col = mix(col, mix(ec, vec3f(0.008), pupil), iris * white);
+  let lid = (1.0 - smoothstep(0.0, aa * 1.5, abs(dw - 0.004) - 0.007)) * step(-0.02, e.y) * front;
+  col = mix(col, col * 0.35, lid);
+  // the brows, in the hair's colour
+  let brow = (1.0 - smoothstep(-aa, aa, sdSegment(vec2f(ax, q.y), vec2f(0.19, 0.25), vec2f(0.49, 0.27)) - 0.03)) * front;
+  col = mix(col, hair * 0.8, brow);
+  // the shadow under the nose, and the mouth with a slight smile
+  col *= 1.0 - 0.25 * (1.0 - smoothstep(0.0, 0.1, length(vec2f(q.x * 1.5, q.y + 0.25)))) * front;
+  let my = q.y + 0.45 - 0.75 * q.x * q.x;
+  let lip = (1.0 - smoothstep(-aa, aa, length(vec2f(max(ax - 0.15, 0.0), my)) - 0.026)) * front;
+  col = mix(col, vec3f(0.30, 0.06, 0.05), lip);
+  // hair: low at the nape, at the brow in front (long hair also down the
+  // sides of the face; only round the back for a bald head), a beard round the jaw
+  var hl = mix(-0.55, 0.5 - 0.12 * ax, smoothstep(-0.15, 0.45, fr));
+  if (style == 1u) { hl = mix(-1.3, 0.46 - 0.1 * ax, smoothstep(0.35, 0.75, fr)); }
+  var hairA = smoothstep(-aa, aa, q.y - hl);
+  if (style == 3u) { hairA = smoothstep(-aa, aa, q.y + 0.45) * smoothstep(-aa, aa, 0.12 - q.y) * smoothstep(0.35, 0.15, fr); }
+  if (style == 2u) {
+    let beard = smoothstep(-aa, aa, -0.5 - q.y + 0.35 * ax * ax) + (1.0 - smoothstep(-aa, aa, abs(q.y + 0.37) - 0.03)) * (1.0 - smoothstep(0.17, 0.17 + aa, ax));
+    hairA = max(hairA, saturate(beard) * smoothstep(0.0, 0.25, fr) * (1.0 - lip));
+  }
+  let strands = 0.75 + 0.5 * noise2(vec2f(q.x * 22.0 + fr * 9.0, q.y * 5.0));
+  s.color = mix(col, hair * strands, hairA);
+  s.gloss = 0.3;
+  return s;
+}
+
+// a coat: uv = (across in metres, 0 at the hem .. 1 at the collar), aux how
+// far forward, tag its cut (0 a quilted zipped jacket, 1 a buttoned coat
+// with a belt, 2 a duffle coat with toggles, 3 an anorak; +4 long)
+fn coatSurf(sIn: Surface, pf: f32) -> Surface {
+  var s = clothSurf(sIn, pf);
+  let fd = 1.0 - smoothstep(0.008, 0.05, pf);
+  if (fd <= 0.0) { return s; }
+  let x = s.uv.x; let v = s.uv.y; let ax = abs(x);
+  let fr = s.aux;
+  let cut = s.tag & 3u;
+  let aa = max(pf, 0.0015);
+  var seam = (1.0 - smoothstep(0.03, 0.03 + aa, v)) * 0.5;
+  seam = max(seam, 1.0 - smoothstep(0.004, 0.004 + aa * 3.0, abs(fr)));
+  var trim = 0.0;
+  var trimC = vec3f(0.04, 0.03, 0.02);
+  if (cut == 0u) {
+    // quilting all round
+    seam = max(seam, (1.0 - smoothstep(0.0, aa * 1.5, abs(fract(v * 7.0) - 0.5) * 2.0 - 0.94)) * 0.6 * step(v, 0.86));
+  }
+  if (fr > 0.2) {
+    if (cut == 0u) {
+      // the zip, and two slanted pocket zips
+      trim = 1.0 - smoothstep(0.005, 0.005 + aa, ax);
+      trim = max(trim, 1.0 - smoothstep(0.003, 0.003 + aa, sdSegment(vec2f(ax, v * 0.75), vec2f(0.09, 0.12), vec2f(0.13, 0.27))));
+      trimC = vec3f(0.5, 0.5, 0.52);
+    } else if (cut == 1u) {
+      // a row of buttons on the placket, flap pockets and a belt
+      seam = max(seam, 1.0 - smoothstep(0.003, 0.003 + aa, abs(ax - 0.035)));
+      let bv = (fract(v * 6.0) - 0.5) / 6.0;
+      trim = (1.0 - smoothstep(0.012, 0.012 + aa, length(vec2f(x, bv * 0.8)))) * step(0.2, v) * step(v, 0.9);
+      let flap = step(0.07, ax) * step(ax, 0.17) * step(0.18, v) * step(v, 0.25);
+      seam = max(seam, flap * 0.35 + (1.0 - smoothstep(0.0, aa * 1.5, abs(v - 0.18))) * step(0.07, ax) * step(ax, 0.17));
+      seam = max(seam, step(0.4, v) * step(v, 0.45) * 0.4);
+      trim = max(trim, step(ax, 0.025) * step(0.395, v) * step(v, 0.455));
+    } else if (cut == 2u) {
+      // toggles on loops, and patch pockets
+      let tv = (fract(v * 5.0 + 0.5) - 0.5) / 5.0;
+      trim = (1.0 - smoothstep(0.007, 0.007 + aa, sdSegment(vec2f(x, tv * 0.8), vec2f(-0.035, 0.0), vec2f(0.035, 0.0)))) * step(0.3, v) * step(v, 0.85);
+      trimC = vec3f(0.55, 0.47, 0.34);
+      let px = abs(ax - 0.12) - 0.06; let py = abs(v - 0.19) - 0.1;
+      seam = max(seam, 1.0 - smoothstep(0.0, aa * 1.5, abs(max(px, py * 0.8))));
+    } else {
+      // a kangaroo pocket, a half zip and a badge
+      let px = ax - 0.14; let py = abs(v - 0.26) - 0.13;
+      seam = max(seam, 1.0 - smoothstep(0.0, aa * 1.5, abs(max(px, py * 0.8))));
+      trim = (1.0 - smoothstep(0.005, 0.005 + aa, ax)) * step(0.68, v);
+      trimC = vec3f(0.45, 0.45, 0.47);
+      let badge = step(abs(x - 0.09), 0.025) * step(abs(v - 0.78), 0.02);
+      trim = max(trim, badge);
+      trimC = mix(trimC, vec3f(0.85, 0.8, 0.7), badge);
+    }
+  } else if (fr < -0.2) {
+    // the back: a yoke across the shoulders and a centre seam
+    seam = max(seam, 1.0 - smoothstep(0.0, aa * 1.5, abs(v - 0.8)));
+    seam = max(seam, (1.0 - smoothstep(0.002, 0.002 + aa, ax)) * step(v, 0.8) * 0.7);
+    if (cut == 1u) {
+      // a half belt with two buttons
+      seam = max(seam, step(ax, 0.13) * step(0.4, v) * step(v, 0.46) * 0.45);
+      trim = (1.0 - smoothstep(0.011, 0.011 + aa, length(vec2f(ax - 0.1, (v - 0.43) * 0.8))));
+    } else if (cut != 2u) {
+      // a reflective band
+      trim = step(abs(v - 0.62), 0.022);
+      trimC = vec3f(0.62, 0.64, 0.66);
+    }
+  }
+  s.color = mix(s.color * (1.0 - 0.5 * seam * fd), trimC, trim * fd);
+  s.gloss = mix(s.gloss, 0.55, trim * fd);
+  return s;
+}
+
+// knitted wool: ribs along uv.x; tag 1 white stripes along uv.y, 2 a
+// turned-up brim, 4 fur (and the dog's coat)
+fn knitSurf(sIn: Surface, pf: f32) -> Surface {
+  var s = sIn;
+  let fd = 1.0 - smoothstep(0.003, 0.02, pf);
+  s.gloss = 0.06;
+  if ((s.tag & 4u) != 0u) {
+    if (fd > 0.0) { s.color *= mix(1.0, 0.65 + 0.7 * noise3(s.pos * 70.0), fd); }
+    return s;
+  }
+  let rib = abs(fract(s.uv.x * 36.0) - 0.5) * 2.0;
+  s.color *= 1.0 - 0.3 * rib * fd;
+  if ((s.tag & 1u) != 0u) {
+    let band = smoothstep(0.42, 0.58, abs(fract(s.uv.y * 3.0) - 0.5) * 2.0);
+    s.color = mix(s.color, vec3f(0.76, 0.76, 0.74), band * 0.9);
+  }
+  if ((s.tag & 2u) != 0u) { s.color *= 1.0 - 0.4 * (1.0 - smoothstep(0.0, 0.05, abs(s.uv.y - 0.31))); }
+  return s;
+}
+
+// a number plate (the number in the tag)
+fn plateSurf(sIn: Surface) -> Surface {
+  var s = sIn;
+  let on = number7((s.uv - vec2f(0.1, 0.12)) / vec2f(0.8, 0.76), f32(s.tag), 2);
+  s.color = mix(s.color, vec3f(0.02), on);
+  s.gloss = 0.4;
+  return s;
+}
+
+// goggles: a strap round the head, with a mirrored lens in front
+fn goggleSurf(sIn: Surface, pf: f32) -> Surface {
+  var s = sIn;
+  let lens = smoothstep(0.5, 0.6, s.aux) * smoothstep(0.08, 0.2, s.uv.y) * smoothstep(0.98, 0.86, s.uv.y);
+  let frame = smoothstep(0.42, 0.5, s.aux) * (1.0 - lens);
+  s.color = mix(s.color * 0.7, vec3f(0.02), frame);
+  s.color = mix(s.color, mix(vec3f(0.85, 0.32, 0.04), vec3f(0.22, 0.08, 0.45), s.uv.y) * 0.3, lens);
+  s.gloss = mix(0.25, 0.95, lens);
   return s;
 }
 
@@ -2517,7 +3677,10 @@ fn lampLight(p: vec3f, n: vec3f, t: f32) -> vec3f {
 fn pathSurf(sIn: Surface, pf: f32) -> Surface {
   var s = snowSurf(sIn, pf, 1.0);
   let u = s.uv.x; let v = s.uv.y;
-  let inside = 1.0 - smoothstep(${f(PATH_HALF - 0.45)}, ${f(PATH_HALF - 0.05)}, abs(u));
+  // (tag 1: a narrow track to a door, one walker's footprints and no runners)
+  let narrow = s.tag == 1u;
+  let hw = select(vec2f(${f(PATH_HALF - 0.45)}, ${f(PATH_HALF - 0.05)}), vec2f(0.2, 0.4), narrow);
+  let inside = 1.0 - smoothstep(hw.x, hw.y, abs(u));
   if (inside > 0.0) {
     let fd = 1.0 - smoothstep(0.01, 0.06, pf);
     var packed = vec3f(0.60, 0.62, 0.66) * (0.9 + 0.1 * noise2(vec2f(u, v) * 1.3));
@@ -2526,13 +3689,16 @@ fn pathSurf(sIn: Surface, pf: f32) -> Surface {
     if (fd > 0.0) {
       // two walkers' tracks
       for (var w = 0; w < 2; w++) {
+        if (narrow && w == 1) { break; }
         let fw = f32(w);
         let st = 0.37 + 0.05 * fw;
         let q = v / st + fw * 0.37;
         let i = floor(q);
         let side = select(-1.0, 1.0, (i - 2.0 * floor(i * 0.5)) > 0.5);
         let hsh = hash21(vec2f(i, fw * 7.0));
-        let c = vec2f(-0.45 + 0.9 * fw + side * 0.12 + (hsh - 0.5) * 0.08 + 0.25 * sin(v / 13.0 + fw * 2.0), (i + 0.5) * st);
+        var cx = -0.45 + 0.9 * fw + side * 0.12 + (hsh - 0.5) * 0.08 + 0.25 * sin(v / 13.0 + fw * 2.0);
+        if (narrow) { cx = side * 0.11 + (hsh - 0.5) * 0.05; }
+        let c = vec2f(cx, (i + 0.5) * st);
         let dl = (vec2f(u, v) - c) / vec2f(0.07, 0.16);
         let r = length(dl);
         let k = (1.0 - smoothstep(0.7, 1.05, r)) * step(0.25, hsh);
@@ -2542,7 +3708,7 @@ fn pathSurf(sIn: Surface, pf: f32) -> Surface {
       // sledge runners
       let sc = 0.35 * sin(v / 23.0) + 0.15 * sin(v / 7.0);
       let run = 1.0 - smoothstep(0.012, 0.03 + pf, abs(abs(u - sc) - 0.21));
-      dent = max(dent, run * 0.7);
+      dent = max(dent, run * 0.7 * select(1.0, 0.0, narrow));
       dent *= fd;
     }
     packed *= 1.0 - 0.13 * dent;
@@ -2578,6 +3744,12 @@ fn surface(sIn: Surface) -> Surface {
     case ${MAT.BOARD}u: { s = boardSurf(s, pf); }
     case ${MAT.CLOTH}u: { s = clothSurf(s, pf); }
     case ${MAT.SKIN}u: { s.gloss = 0.3; }
+    case ${MAT.FACE}u: { s = faceSurf(s, pf); }
+    case ${MAT.COAT}u: { s = coatSurf(s, pf); }
+    case ${MAT.KNIT}u: { s = knitSurf(s, pf); }
+    case ${MAT.GOGGLE}u: { s = goggleSurf(s, pf); }
+    case ${MAT.PLATE}u: { s = plateSurf(s); }
+    case ${MAT.ICE}u: { s.color = vec3f(0.55, 0.68, 0.78); s.gloss = 0.92; }
     case ${MAT.SMOKE}u: { s = smokeSurf(s); }
     case ${MAT.BEACON}u: { s = beaconSurf(s); }
     case ${MAT.CABINWIN}u: { s = cabinWinSurf(s, pf); }
@@ -2618,6 +3790,7 @@ export default {
   build(b) {
     AO_STAMPS.length = 0;
     CHIMNEYS.length = 0;
+    HOUSE_NO = 0;
     REP = newRepeats();
     const rand = rng(1907);
     for (const [x, y, rot, kind] of CHALETS) chalet(b, x, y, rot, kind, rand);
@@ -2630,12 +3803,18 @@ export default {
     skiers(b);
     smoke(b);
     walkers(b);
+    choughs(b);
     fences(b);
     bench(b, 64, 432, 2.3);
     bench(b, 103, 512, 1.6);
     bench(b, -8, 205, -1.5);
+    bench(b, 5.6, -50, Math.PI / 2);
+    snowman(b, -6.8, -49, -2.58);
+    deer(b);
+    signpost(b, 4.1, -57.2);
     b.static(pathRibbon());
     b.instances(lantern(), LAMPS.map(([x, y, z, along]) => ({ transform: m4.mul(m4.translation(x, y, z - 2.55 - 0.05), m4.rotationZ(along)), data: along })));
+    b.instances(lanternDetail(), LAMPS.map(([x, y, z, along]) => m4.mul(m4.translation(x, y, z - 2.55 - 0.05), m4.rotationZ(along))), { within: 30, solid: false });
     for (const [x, y] of LAMPS) stampAO(x, y, 0.6, 0.25);
     const trees = placeTrees();
     for (const { geo, solid } of terrainMeshes()) b.static(geo, { solid });

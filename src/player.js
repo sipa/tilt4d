@@ -39,6 +39,10 @@
 // about 84 degrees and a slow steady turn (0.4 degrees a second) from there.
 // The wheel's steps shrink in the same way.  And the tilt stops for a moment
 // on every quarter turn (level, 90 degrees).
+//
+// A car goes where it points (along F), and the mouse turns it as it turns a
+// walker.  Left alone it rolls out, by a friction that is small up to C and
+// grows quickly beyond (see DRAG).
 
 import { f4 } from './math.js';
 
@@ -47,7 +51,18 @@ const T_AXIS = [0, 0, 0, 1];
 const Z_AXIS = [0, 0, 1, 0];
 const HALF_PI = Math.PI / 2;
 const MAX_SPEED = 4; // in units of C; nothing special happens there, it only keeps things in hand
+// Driving: what slows the car, as a share of the engine's plain acceleration
+// (0.25 * accel * C per second per second), at a speed of s times C:
+//   DRAG[0] + DRAG[1] * s + DRAG[2] * max(0, s - 1)^2
+// The first two are the road: a quarter of the engine holds C, and a car left
+// alone at C takes about half a minute to roll out.  The third is what comes
+// on top beyond C: at 1.5 C it takes half of the engine to keep going, and
+// the engine's all is 2 C (2.8 C with Shift).  The speed meant is the car's
+// own, along F: in a tilted view that is the speed at which the stretched
+// scenery goes by, and 1 / cos(tilt) times the speed over the ground.
+const DRAG = [0.1, 0.15, 0.6];
 const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, which carries the feet 1.27 m up
+const MAX_CLIMB = Math.PI / 3; // walking: the slope of the ground at which there is no way up it any more
 
 // The player's body for collisions: an upright cylinder from `lo` to `hi`
 // above the feet on the ground, a sphere about the eye otherwise.  Things
@@ -74,8 +89,7 @@ export class Player {
     this.rate = 1; // seconds of scene time per second that pass for a player left alone
     this.vel = [0, 0, 0, 0]; // what the controls add to that, in m/s (the 4th: C * seconds per second)
     this.speed = 0; // drive mode: the car's speed along F
-    this.viewYaw = 0;
-    this.viewPitch = 0;
+    this.viewPitch = 0; // the ground modes: looking up or down, which leaves the frame as it is
     this.mode = 'walk';
     this.C = 10;
     this.walkSpeed = 3;
@@ -104,7 +118,6 @@ export class Player {
   rest(yaw = this.yaw()) {
     const c = Math.cos(yaw), s = Math.sin(yaw);
     this.M.set([c, -s, 0, 0, 0, 0, 1, 0, s, c, 0, 0, 0, 0, 0, 1]);
-    this.viewYaw = 0;
     this.tiltHold = 0;
     this.stop();
   }
@@ -173,15 +186,14 @@ export class Player {
     this.mode = mode;
     this._setDown();
     this.eye = this.eyeHeights?.[mode] ?? 1.7;
-    // what was only a look offset becomes part of the frame
-    if (this.viewYaw) f4.rotCols(M, F, R, this.viewYaw);
-    this.viewYaw = 0;
     if (now.ground && !was.ground) {
       this.viewPitch = clamp(Math.asin(clamp(M[F * 4 + 2], -1, 1)), -1.55, 1.55);
       this._upright();
     } else if (was.ground && !now.ground) {
       f4.rotCols(M, F, U, this.viewPitch);
       this.viewPitch = 0;
+    } else if (mode === 'walk') {
+      this._upright(); // out of a car that leans with the slope: stand up, facing the same way on the map
     }
     if (now.ground || was.ground) this.stop();
     if (now.ground) {
@@ -325,19 +337,16 @@ export class Player {
     // ---- the frame
     switch (this.mode) {
       case 'walk':
+      case 'drive':
+        // looking left or right turns the walker, and the car: it steers
         f4.rotCols(M, F, R, lx);
         this.viewPitch = clamp(this.viewPitch - ly, -1.55, 1.55);
-        break;
-      case 'drive': {
-        this.viewYaw += lx;
-        this.viewPitch = clamp(this.viewPitch - ly, -1.55, 1.55);
-        const steer = input.move[0];
-        if (steer) {
+        if (this.mode === 'drive' && input.move[0]) {
+          // the steering keys turn it at a rate, which is higher while it is moving
           const moving = Math.min(1, Math.abs(this.speed) / (0.33 * C));
-          f4.rotCols(M, F, R, steer * (0.35 + 0.65 * moving) * 0.9 * dt);
+          f4.rotCols(M, F, R, input.move[0] * (0.35 + 0.65 * moving) * 0.9 * dt);
         }
         break;
-      }
       default:
         f4.rotCols(M, F, R, lx);
         f4.rotCols(M, F, U, -ly);
@@ -360,14 +369,22 @@ export class Player {
         // towards the speed asked for, along F and R as they are now
         const mx = input.move[0], my = input.move[2], ml = Math.hypot(mx, my);
         const s = ml > 0.01 ? (input.run ? this.runSpeed : this.walkSpeed) / ml : 0;
+        const want = [0, 1, 2, 3].map((i) => s * (my * f[i] + mx * r[i]));
+        this._climb(want, f, r);
         const k = 1 - Math.exp(-dt / 0.12);
-        for (let i = 0; i < 4; i++) vel[i] += (s * (my * f[i] + mx * r[i]) - vel[i]) * k;
+        for (let i = 0; i < 4; i++) vel[i] += (want[i] - vel[i]) * k;
         break;
       }
       case 'drive': {
-        // a car goes where it points, and holds its speed
+        // a car goes where it points; the engine, the brake, and friction
+        // (see DRAG), which like the brake stops the car but does not turn
+        // it round
+        const slow = (by) => { this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), by); };
+        const s = Math.abs(this.speed) / C, over = Math.max(0, s - 1);
+        const drag = (DRAG[0] + DRAG[1] * s + DRAG[2] * over * over) * 0.25 * this.accel * C * dt;
         this.speed += input.move[2] * 0.25 * rate * C * dt;
-        if (input.brake) this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), C * dt);
+        if (input.brake) slow(C * dt);
+        slow(drag);
         this.speed = clamp(this.speed, -MAX_SPEED * C, MAX_SPEED * C);
         for (let i = 0; i < 4; i++) vel[i] = this.speed * f[i];
         break;
@@ -433,6 +450,35 @@ export class Player {
       f4.orthonormalize(M, [O, F, U, R]);
       this._bounds();
     }
+  }
+
+  // Walking on sloping ground.  The pace is kept along the slope, so on the
+  // map the part of the motion that goes straight up or down the slope
+  // shrinks by the slope's cosine.  Going up is harder than that: it shrinks
+  // by 1 - (slope / MAX_CLIMB)^2 as well, so that a gentle hill is hardly
+  // felt, a steep one is slow, and at 60 degrees there is no way up at all.
+  // Ground that steep is like a wall to a walker: it can be walked along and
+  // down, but not up, by any zigzag or by jumping at it.  (A peak with such
+  // slopes all round is for flying to.)  The part of the motion along the
+  // contour is left as it is.  As with walls, what is taken off v (a
+  // velocity along f and r) lies in the slice.
+  _climb(v, f, r) {
+    const g = this.ground, P = this.P;
+    if (!g || (this.feet !== null && !this.air)) return; // level ground, or standing on top of something
+    const e = 0.4;
+    const dx = (g(P[0] + e, P[1], P[3]) - g(P[0] - e, P[1], P[3])) / (2 * e);
+    const dy = (g(P[0], P[1] + e, P[3]) - g(P[0], P[1] - e, P[3])) / (2 * e);
+    const steep = Math.hypot(dx, dy);
+    if (steep < 1e-4) return;
+    const nx = dx / steep, ny = dy / steep; // uphill, on the map
+    const up = v[0] * nx + v[1] * ny; // how fast v goes that way
+    const slope = Math.atan(steep);
+    const keep = Math.cos(slope) * (up > 0 ? Math.max(0, 1 - (slope / MAX_CLIMB) ** 2) : 1);
+    // "uphill" as it appears in the slice, along f and r
+    const mf = nx * f[0] + ny * f[1], mr = nx * r[0] + ny * r[1], ml2 = mf * mf + mr * mr;
+    if (ml2 < 1e-12) return;
+    const k = (1 - keep) * up / ml2;
+    for (let i = 0; i < 4; i++) v[i] -= k * (mf * f[i] + mr * r[i]);
   }
 
   // Free movement still respects the scene's floor and ceiling, if any.
@@ -567,14 +613,16 @@ export class Player {
   }
 
   // Keeps the eye at a fixed height above the ground (or above the feet,
-  // when those are off it) and leans the frame so that U is the ground
-  // normal, which keeps F and R (and so the motion) tangent to the ground.
+  // when those are off it).  A car leans with the ground: its U becomes the
+  // ground normal, which keeps F and R (and so its motion) tangent to the
+  // ground.  A walker stands upright whatever the slope: U stays +Z, so the
+  // horizon stays level (what a slope does to their pace is in _climb).
   _stickToGround(blend, snap) {
     const g = this.ground, P = this.P;
     const z = g ? g(P[0], P[1], P[3]) : 0;
     P[2] = (this.feet ?? z) + this.eye;
     let n = Z_AXIS;
-    if (g && this.align && this.feet === null) {
+    if (g && this.align && this.mode === 'drive') {
       const e = 0.4;
       const dx = (g(P[0] + e, P[1], P[3]) - g(P[0] - e, P[1], P[3])) / (2 * e);
       const dy = (g(P[0], P[1] + e, P[3]) - g(P[0], P[1] - e, P[3])) / (2 * e);
@@ -586,16 +634,16 @@ export class Player {
     if (ang > 1e-6) f4.rotTowards(this.M, u, n, snap ? ang : ang * blend);
   }
 
-  // Camera axes (the frame plus any view-only look offset), for the renderer.
+  // Camera axes for the renderer: the frame, looking up or down by
+  // viewPitch in the ground modes.
   camera() {
-    const cy = Math.cos(this.viewYaw), sy = Math.sin(this.viewYaw);
     const cp = Math.cos(this.viewPitch), sp = Math.sin(this.viewPitch);
-    const r = this.col(R), u = this.col(U), f = this.col(F);
-    const mix = (a, b, c) => [0, 1, 2, 3].map((k) => a * r[k] + b * u[k] + c * f[k]);
+    const u = this.col(U), f = this.col(F);
+    const mix = (b, c) => [0, 1, 2, 3].map((k) => b * u[k] + c * f[k]);
     return {
-      R: mix(cy, 0, -sy),
-      U: mix(-sy * sp, cp, -cy * sp),
-      F: mix(sy * cp, sp, cy * cp),
+      R: this.col(R),
+      U: mix(cp, -sp),
+      F: mix(sp, cp),
       O: this.col(O),
       P: this.P.slice(),
       C: this.C,
@@ -609,14 +657,21 @@ export class Player {
     const speed = Math.hypot(v[0], v[1], v[2]);
     const timeRate = this.rate + v[3] / C;
     return {
+      // What the controls have added (see the head of this file): how fast
+      // that is, counting its part through time as length, and its two
+      // parts.  On the ground it lies in the slice, and `slice` is the speed
+      // at which the scenery passes in the view.  (In flight it lies there
+      // too unless the view is tilted while coasting: the velocity stays as
+      // it is then and the slice turns away from it.)
+      slice: Math.hypot(v[0], v[1], v[2], v[3]), // m/s
+      speed, // through space, m/s
+      through: v[3] / C, // through time, seconds of scene time per second
+      timeRate, // all of the time that passes: the resting rate and `through`
       // the line of sight and the player's motion through spacetime (in units
       // of C), as (space, time) pairs in the plane that contains the line of
       // sight and the time axis
       sight: [sight, cam.F[3]],
       travel: [sight > 1e-6 ? (v[0] * cam.F[0] + v[1] * cam.F[1] + v[2] * cam.F[2]) / sight / C : 0, timeRate],
-      speed,
-      fraction: speed / C,
-      timeRate,
       tilt: Math.acos(clamp(o[3], -1, 1)), // of the slice against a level one, 0..pi
       // seconds of scene time per metre along the line of sight (negative = past)
       lookGradient: cam.F[3] / C,

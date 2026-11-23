@@ -1,15 +1,21 @@
 // Heads-up display: the tilt gauge, the readouts and the key hints.
 
+import { UNITS, speedText } from './units.js';
+
 const PAST = '#ffb454', FUTURE = '#5ad1ff', INK = '#e9edf2', DIM = 'rgba(233,237,242,0.35)';
 
 const TILT_HINT = ['Wheel', 'tilt into time'];
 const KEY_HINTS = {
   walk: [['W A S D', 'move'], ['Shift', 'run'], ['Space', 'jump'], ['Mouse', 'look']],
-  drive: [['W S', 'faster / slower'], ['A D', 'steer'], ['Space', 'brake'], ['Mouse', 'look around']],
+  drive: [['W S', 'faster / slower'], ['A D', 'steer'], ['Space', 'brake'], ['Mouse', 'steer and look']],
   fly: [['W A S D', 'thrust'], ['Space C', 'up / down'], ['Q E', 'roll'], ['B', 'brake'], ['Mouse', 'turn']],
   swim: [['W A S D', 'swim'], ['Space C', 'up / down'], ['Shift', 'sprint'], ['Mouse', 'turn']],
 };
 const COMMON_HINTS = [['M', 'mode'], ['T', 'time colouring'], ['R', 'level and stop'], ['P', 'freeze'], ['[ ]', 'pace'], ['Esc', 'menu']];
+
+// A description can be a function instead of a text: it is given
+// { mark(k) }, which writes out k times the speed that the scene's car treats
+// as its mark (see DRAG in player.js) in the units chosen.
 
 // The one control that is not in other games, the same in every mode.
 const TILT = ['Wheel / Z X', 'Tilt the view into time: what lies ahead turns to the past (or, the other way, the future), further back the further off it is. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
@@ -24,10 +30,11 @@ export const CONTROLS = {
   ],
   drive: [
     TILT,
-    ['W / S', 'Faster / slower. The speed holds; S from rest reverses.'],
+    ['W / S', (c) => `Faster / slower; S from rest reverses. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it.`],
     ['A / D', 'Steer.'],
+    ['Shift', (c) => `More power: a top speed of ${c.mark(2.8)} instead of ${c.mark(2)}.`],
     ['Space', 'Brake.'],
-    ['Mouse', 'Look around without steering.'],
+    ['Mouse', 'Steer too: the car turns with the view. Up and down only looks.'],
   ],
   fly: [
     TILT,
@@ -69,13 +76,17 @@ export class Hud {
     this.gauge = $('gauge').getContext('2d');
     this.el = {
       scene: $('hud-scene'), mode: $('hud-mode'), state: $('hud-state'), fps: $('hud-fps'), keys: $('hud-keys'), hint: $('hud-hint'),
-      speed: $('ro-speed'), rate: $('ro-rate'), clock: $('ro-clock'), tilt: $('ro-tilt'), look: $('ro-look'),
+      speed: $('ro-speed'), space: $('ro-space'), time: $('ro-time'), rate: $('ro-rate'), clock: $('ro-clock'), tilt: $('ro-tilt'), look: $('ro-look'),
     };
     this.mode = null;
+    this.units = UNITS.ms;
     this.fpsAcc = 0; this.fpsN = 0; this.fpsText = '';
   }
 
   setVisible(v) { this.root.hidden = !v; }
+
+  // The units of the readouts (one of UNITS).
+  setUnits(u) { this.units = u; }
 
   setMode(mode, modeName) {
     this.mode = mode;
@@ -85,17 +96,26 @@ export class Hud {
 
   update(st, sceneName, player, dt, info) {
     const el = this.el;
-    el.scene.textContent = sceneName;
+    // (the page is only touched where a text has changed: most of these stay the same from frame to frame)
+    const put = (e, text) => { if (e.shown !== text) { e.shown = text; e.textContent = text; } };
+    put(el.scene, sceneName);
     const sticky = player.paused ? 'frozen' : player.timeScale !== 1 ? `everything at ×${player.timeScale}` : '';
-    el.state.textContent = this.flashText && performance.now() < this.flashUntil ? this.flashText : sticky;
-    el.speed.textContent = `${st.speed.toFixed(1)} m/s  (${st.fraction.toFixed(2)} C)`;
-    el.rate.textContent = `${st.timeRate >= 0 ? '' : '−'}${Math.abs(st.timeRate).toFixed(2)} s per second`;
-    el.clock.textContent = fmtClock(st.t);
+    put(el.state, this.flashText && performance.now() < this.flashUntil ? this.flashText : sticky);
+    // the speed in the slice, and its parts through space and through time
+    const u = this.units;
+    const tint = (e, v) => { const colour = Math.abs(v) < 0.005 ? '' : v < 0 ? PAST : FUTURE; if (e.colour !== colour) { e.colour = colour; e.style.color = colour; } };
+    const rate = (v, plus) => `${Math.abs(v) < 0.005 ? '' : v < 0 ? '−' : plus}${Math.abs(v).toFixed(2)} s/s`;
+    put(el.speed, speedText(u, st.slice));
+    put(el.space, speedText(u, st.speed));
+    put(el.time, rate(st.through, '+'));
+    tint(el.time, st.through);
+    put(el.rate, rate(st.timeRate, ''));
+    put(el.clock, fmtClock(st.t));
     const deg = st.tilt * 180 / Math.PI;
-    el.tilt.textContent = deg < 0.05 ? 'level' : `${deg.toFixed(deg < 10 || Math.abs(deg - 90) < 10 ? 1 : 0)}°`;
-    const g = st.lookGradient * 10;
-    el.look.textContent = Math.abs(g) < 0.005 ? 'the present' : `${Math.abs(g).toFixed(2)} s ${g < 0 ? 'earlier' : 'later'} per 10 m`;
-    el.look.style.color = Math.abs(g) < 0.005 ? '' : g < 0 ? PAST : FUTURE;
+    put(el.tilt, deg < 0.05 ? 'level' : `${deg.toFixed(deg < 10 || Math.abs(deg - 90) < 10 ? 1 : 0)}°`);
+    const g = st.lookGradient * u.span / u.perM;
+    put(el.look, Math.abs(g) < 0.005 ? 'the present' : `${Math.abs(g).toFixed(2)} s ${g < 0 ? 'earlier' : 'later'} per ${u.span} ${u.length}`);
+    tint(el.look, g);
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) {
       el.fps.textContent = `${Math.round(this.fpsN / this.fpsAcc)} fps · ${info.tets.toLocaleString()} tets`;
@@ -108,7 +128,8 @@ export class Hud {
   // the scene's time axis: up is later, right is further ahead.  The coloured
   // line is the line of sight (and, dotted, its continuation behind you); the
   // arrow is your motion through spacetime, as far as it lies in this plane:
-  // straight up while you stand still, as long as the radius at speed C.
+  // straight up while you stand still, and as long as the radius when it
+  // takes in as much as time ordinarily passing does.
   drawGauge(st) {
     const c = this.gauge, S = 300, cx = S / 2, cy = S / 2, r = 112;
     c.clearRect(0, 0, S, S);
