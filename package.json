@@ -1,0 +1,14 @@
+{
+  "name": "tilt4d",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rendering as a projection from 4D to 2D: a browser demo where acceleration tilts your view through time",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "shot": "node tools/shot.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}

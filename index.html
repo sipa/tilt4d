@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>tilt4d</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="hud" hidden>
+  <div class="hud-top">
+    <span id="hud-scene"></span>
+    <span id="hud-mode"></span>
+    <span id="hud-state"></span>
+  </div>
+  <div class="hud-fps" id="hud-fps"></div>
+  <div class="hud-hint" id="hud-hint"></div>
+  <div class="reticle"></div>
+  <div class="hud-panel">
+    <canvas id="gauge" width="300" height="300"></canvas>
+    <dl class="readout">
+      <dt>speed</dt><dd id="ro-speed"></dd>
+      <dt>time flows</dt><dd id="ro-rate"></dd>
+      <dt class="wide-only">scene clock</dt><dd class="wide-only" id="ro-clock"></dd>
+      <dt>tilt</dt><dd id="ro-tilt"></dd>
+      <dt>looking at</dt><dd id="ro-look"></dd>
+    </dl>
+  </div>
+  <div class="hud-keys" id="hud-keys"></div>
+</div>
+
+<div id="touch" hidden>
+  <div class="t-top"></div>
+  <div class="t-stick"><div class="t-knob"></div></div>
+  <div class="t-actions"></div>
+</div>
+
+<div id="overlay">
+  <div class="panel">
+    <header>
+      <h1>tilt4d</h1>
+      <p class="tagline">Rendering as a projection from four dimensions to two.</p>
+    </header>
+
+    <div class="columns">
+      <section class="about">
+        <p>An ordinary 3D renderer shows one flat slice of spacetime: everything as it is <em>right now</em>.
+        Here the world is a single fixed four-dimensional scene, with the whole history of every object laid out at once,
+        and you are a camera inside it. What you see is still a three-dimensional slice of it, but the slice need not be level.</p>
+        <p>Besides turning left and right and looking up and down, there is one more way to turn: <em>tilting</em>,
+        which swings your line of sight out of space and into time. Ahead of you the slice then dips into the <span class="past">past</span>,
+        behind you it rises into the <span class="future">future</span>, by one second for every <b>C</b> metres at a tilt of 45°.
+        Your own time slows as you tilt: at a right angle it stands still, and beyond that it runs backwards.
+        You move about as usual, but within the slice you see: walking forward in a tilted view takes you further back in time.</p>
+        <p class="aside">It resembles relativity, but it is not: the rotation is an ordinary Euclidean one and light is instantaneous,
+        so the world stretches along the tilt instead of contracting.</p>
+
+        <figure>
+          <svg viewBox="0 0 440 236" role="img" aria-label="Two buildings whose floors are moments in time, each with an elevator riding straight up: up is the future, down the past, right is ahead and left is behind. With a level view the line of sight stays on one floor. With a tilted view it leans: lower floors ahead, higher floors behind.">
+            <g class="floors">
+              <path d="M46 38H170M46 66H170M46 94H170M46 122H170M46 150H170M46 178H170"/>
+              <path d="M268 38H392M268 66H392M268 94H392M268 122H392M268 150H392M268 178H392"/>
+            </g>
+            <g class="shaft">
+              <path d="M108 192V24"/>
+              <path d="M330 192V24"/>
+            </g>
+            <path class="sight now" d="M54 108H162"/>
+            <path class="sight past-line" d="M330 108L386 137.8"/>
+            <path class="sight future-line" d="M330 108L274 78.2"/>
+            <rect class="cabin" x="100" y="97" width="16" height="22" rx="2"/>
+            <rect class="cabin" x="322" y="97" width="16" height="22" rx="2" transform="rotate(28 330 108)"/>
+            <text class="tag future" x="108" y="12" text-anchor="middle">future</text>
+            <text class="tag past" x="108" y="210" text-anchor="middle">past</text>
+            <text x="40" y="112" text-anchor="end">behind</text>
+            <text x="176" y="112">ahead</text>
+            <text class="tag future" x="330" y="12" text-anchor="middle">future</text>
+            <text class="tag past" x="330" y="210" text-anchor="middle">past</text>
+            <text x="262" y="112" text-anchor="end">behind</text>
+            <text x="398" y="112">ahead</text>
+            <text class="tag" x="162" y="102" text-anchor="end">now</text>
+            <text class="tag past" x="390" y="165" text-anchor="end">earlier</text>
+            <text class="tag future" x="270" y="59">later</text>
+            <text class="cap" x="108" y="230" text-anchor="middle">level</text>
+            <text class="cap" x="330" y="230" text-anchor="middle">tilted</text>
+          </svg>
+          <figcaption>Picture an elevator in a tall building where every floor is one moment of the scene. Riding straight up plays the scene forward,
+          and ordinarily you can only look along the floor you are on. Tilt, and your line of sight leans:
+          looking ahead now shows lower floors, looking back shows higher ones, and stepping forward along it takes you down as well as across.
+          The further you lean, the slower the ride up. tilt4d does the same with a real up direction besides.</figcaption>
+        </figure>
+      </section>
+
+      <section class="start">
+        <h2>Scenes</h2>
+        <div id="scene-list" class="scene-list"></div>
+        <p id="status" class="status"></p>
+        <h2>Controls <span id="controls-mode"></span></h2>
+        <table id="controls" class="controls"></table>
+        <p id="controls-common" class="chips"></p>
+        <p class="fine" id="how-to-enter">Click a scene to enter. <kbd>Esc</kbd> brings this page back.</p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

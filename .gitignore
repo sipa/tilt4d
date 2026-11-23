@@ -1,0 +1,18 @@
+# Dependencies (npm install brings them back from package-lock.json)
+node_modules/
+
+# Pictures from tools/shot.mjs, which writes shot.png where it is run unless
+# told otherwise.  The project itself has no image files: everything is drawn
+# by code.  To commit a picture all the same, add an exception for it below,
+# such as  !docs/*.png
+*.png
+
+# Certificates and private keys, in case ones for `tools/serve.mjs --cert
+# --key` are kept in the tree.  (The self-signed one it makes for --https
+# lives in ~/.cache/tilt4d, outside the project.)
+*.pem
+*.key
+*.crt
+
+# Logs
+*.log
