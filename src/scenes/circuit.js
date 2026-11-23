@@ -1599,6 +1599,37 @@ export default {
   ground: (x, y) => Math.max(0, Math.max(heightAt(x, y), meshHeight(x, y)) + ROAD_LIFT),
   wgsl,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // The Coastal Circuit: driving music.  Four on the floor, a bass in
+  // quavers, semiquavers up and down the chords, and a tune the second time
+  // round.
+  music: {
+    seconds: 32, bpm: 120, reverb: 1.6, echo: [0.375, 0.32], seed: 31,
+    build(m) {
+      const { n, notes, tune } = m;
+      const b = m.beat;
+      const drums = m.track({ gain: 0.9, hall: 0.08 }), hats = m.track({ pan: 0.25, hall: 0.1 }), low = m.track({});
+      const arp = m.track({ pan: -0.3, hall: 0.25, echo: 0.3 }), pads = m.track({ hall: 0.4 });
+      const lead = m.track({ pan: 0.15, hall: 0.35, echo: 0.3, vib: [5.5, 9] });
+      // two bars to a chord: D, B minor, G, A
+      const chords = [['D2', 'D4 F#4 A4'], ['B1', 'B3 D4 F#4'], ['G1', 'G3 B3 D4'], ['A1', 'A3 C#4 E4']];
+      for (let bar = 0; bar < 16; bar++) {
+        const t0 = bar * 4 * b, [root, tones] = chords[(bar >> 1) % 4], r = n(root), ch = notes(tones);
+        for (let i = 0; i < 4; i++) m.kick(drums, t0 + i * b, i === 0 ? 0.7 : 0.6);
+        m.snare(drums, t0 + b, 0.8);
+        m.snare(drums, t0 + 3 * b, 0.9);
+        for (let i = 0; i < 8; i++) m.hat(hats, t0 + i * b / 2, i % 2 ? 1.2 : 0.6, i === 7 && bar % 4 === 3);
+        [0, 0, 0, 12, 0, 0, 0, 12].forEach((up, i) => m.tone(low, t0 + i * b / 2, 0.16, r + up, { type: 'sawtooth', cutoff: 1000, cutTo: 350, cutTime: 0.15, gain: 0.15, a: 0.004, d: 0.12, s: 0.3, r: 0.05 }));
+        const run = [ch[0], ch[1], ch[2], ch[0] + 12, ch[1] + 12, ch[0] + 12, ch[2], ch[1]];
+        for (let i = 0; i < 16; i++) m.pluck(arp, t0 + i * b / 4, run[i % 8], { type: 'sawtooth', gain: i % 4 === 0 ? 0.19 : 0.14, decay: 0.16, bright: 5200, dark: 900 });
+        if (bar % 2 === 0) m.pad(pads, t0, 8 * b, [r + 24, ...ch], { cutoff: 1500, gain: 0.06, a: 0.4, r: 0.6 });
+      }
+      const sing = (t, d, p) => m.tone(lead, t, d * 0.92, p, { type: 'sawtooth', detune: 6, cutoff: 3000, gain: 0.17, a: 0.02, d: 0.25, s: 0.75, r: 0.12 });
+      tune(32 * b, b, `F#5 A5 F#5:.5 E5:.5 D5  E5:1.5 F#5:.5 A5:2  B5 A5 F#5 D5  F#5:3 -
+                       G5 B5 G5:.5 F#5:.5 E5  D5:1.5 E5:.5 G5:2  A5 G5 E5 C#5  E5:2 A5 -`, sing);
+    },
+  },
+
   build(b) {
     const rand = rng(1234);
 

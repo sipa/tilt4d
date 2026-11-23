@@ -1561,6 +1561,37 @@ export default {
   accel: 0.6,
   wgsl,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // The Coral Reef: under water, so muffled.  Chords that drift, a rising
+  // figure like light coming down, the vents puffing together every six
+  // seconds with single bubbles in between, and something large far off.
+  music: {
+    seconds: 48, reverb: 3.5, tail: 6, echo: [0.5, 0.4], lowpass: 4200, seed: 53,
+    build(m) {
+      const { n, notes } = m;
+      const water = m.track({ hall: 0.5 }), deep = m.track({ hall: 0.2 }), far = m.track({ hall: 0.9, echo: 0.3 });
+      const harp = [m.track({ pan: -0.4, hall: 0.6, echo: 0.4 }), m.track({ pan: 0.4, hall: 0.6, echo: 0.4 })];
+      const fizz = [-0.7, -0.2, 0.3, 0.8].map((pan) => m.track({ pan, hall: 0.5 }));
+      [['F2', 'C3 A3 E4 G4'], ['G2', 'D3 B3 E4 A4'], ['E2', 'B2 G3 D4 F#4'], ['A2', 'E3 G3 C4 D4']].forEach(([root, tones], k) => {
+        const t0 = k * 12, ch = notes(tones);
+        m.pad(water, t0, 12, ch, { cutoff: 1000, gain: 0.08, a: 3, r: 3, detune: 8 });
+        m.pad(deep, t0, 12, [n(root)], { type: 'sine', cutoff: 400, gain: 0.07, a: 2, r: 3, detune: 3 });
+        for (let j = 0; j < 4; j++) {
+          [ch[0], ch[1], ch[2], ch[3], ch[1] + 12, ch[2] + 12].forEach((p, i) => m.pluck(harp[(k + j) % 2], t0 + j * 3 + i * 0.25, p + 12, { type: 'triangle', gain: 0.15 - i * 0.012, decay: 1.4, bright: 2500, dark: 800 }));
+        }
+      });
+      for (let k = 0; k < 8; k++) {
+        const many = 6 + Math.floor(m.rand() * 4);
+        for (let i = 0; i < many; i++) m.bubble(fizz[Math.floor(m.rand() * 4)], k * 6 + 1.5 + m.rand() * 1.1, 500 + 900 * m.rand(), 0.35 + 0.4 * m.rand());
+      }
+      for (let i = 0; i < 40; i++) m.bubble(fizz[i % 4], m.rand() * 48, 700 + 1400 * m.rand(), 0.18 + 0.2 * m.rand());
+      for (const [t, low, high] of [[8, 'A3', 'E4'], [31, 'G3', 'D4']]) {
+        m.tone(far, t, 2.2, n(high), { from: n(low), glide: 1.6, gain: 0.07, a: 0.8, d: 1, s: 0.8, r: 1.5 });
+        m.tone(far, t + 2.8, 2.4, n(low) - 2, { from: n(high), glide: 2, gain: 0.06, a: 0.8, d: 1, s: 0.8, r: 1.8 });
+      }
+    },
+  },
+
   build(b) {
     const rand = rng(11);
     const wreck = { x: chanX(88) + 2, y: 88 };

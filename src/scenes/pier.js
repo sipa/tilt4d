@@ -3524,6 +3524,51 @@ export default {
   ground: (x, y) => ground(x, y),
   wgsl,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // The Pleasure Pier: a fairground organ's waltz.  Forty bars in three
+  // quarters of a minute, which is a quarter of the pier's own round of
+  // things: pedal and reeds going oom-pah-pah, the tune on the pipes, a
+  // glockenspiel joining in for every other strain.
+  music: {
+    seconds: 45, bpm: 160, reverb: 1.5, echo: [0.375, 0.15], seed: 71,
+    build(m) {
+      const { n, notes, tune } = m;
+      const b = m.beat, bar = 3 * b;
+      const pedal = m.track({ hall: 0.15 }), reeds = m.track({ pan: -0.25, hall: 0.25, vib: [5.8, 7] }), pipes = m.track({ pan: 0.2, hall: 0.3, vib: [5.8, 11] });
+      const chimes = m.track({ pan: 0.35, hall: 0.4 }), kit = m.track({ gain: 0.8, hall: 0.12 });
+      const chord = {
+        C: ['C3', 'E4 G4 C5'], G7: ['G2', 'F4 G4 B4'], C7: ['C3', 'E4 G4 Bb4'], F: ['F2', 'F4 A4 C5'],
+        D7: ['D3', 'F#4 A4 C5'], 'F#o': ['F#2', 'F#4 A4 C5'], A7: ['A2', 'E4 G4 C#5'], Dm: ['D3', 'F4 A4 D5'],
+      };
+      const form = 'C C G7 G7 G7 G7 C C  C C G7 G7 G7 G7 C C7  F F C C D7 D7 G7 G7  C C G7 G7 G7 G7 C C  F F#o C A7 Dm G7 C C'.split(/\s+/);
+      form.forEach((name, k) => {
+        const t0 = k * bar, [root, tones] = chord[name];
+        // the pedal: the root, and the fifth where the chord stays for another bar
+        m.tone(pedal, t0, b * 0.9, n(root) + (k > 0 && name === form[k - 1] && k % 2 ? 7 : 0), { type: 'triangle', cutoff: 700, gain: 0.15, a: 0.01, d: 0.3, s: 0.5, r: 0.15 });
+        for (const i of [1, 2]) {
+          for (const p of notes(tones)) m.tone(reeds, t0 + i * b, b * 0.45, p, { type: 'square', cutoff: 2100, gain: 0.06, a: 0.01, d: 0.1, s: 0.6, r: 0.06 });
+          m.noise(kit, t0 + i * b, { dur: 0.04, gain: 0.07, type: 'bandpass', freq: 2600, q: 0.8 });
+        }
+        m.kick(kit, t0, 0.4, { from: 110, to: 50, dur: 0.2 });
+        if (k % 8 === 0) m.noise(kit, t0, { dur: 0.5, gain: 0.08, type: 'highpass', freq: 6000 });
+      });
+      const pipe = (t, d, p) => {
+        m.tone(pipes, t, d * 0.85, p, { type: 'square', cutoff: 3600, gain: 0.13, a: 0.015, d: 0.15, s: 0.8, r: 0.08 });
+        m.tone(pipes, t, d * 0.85, p + 12, { gain: 0.04, a: 0.015, d: 0.15, s: 0.8, r: 0.08 });
+        m.noise(pipes, t, { dur: 0.02, gain: 0.03, type: 'bandpass', freq: 4000, q: 1 });
+      };
+      const chime = (t, d, p) => m.bell(chimes, t, p + 12, { partials: 'bars', gain: 0.1, decay: 0.7 });
+      const A = 'E5 G5 C6  B5 A5 G5  F5 G5 B5  D6:2 B5  D5 G5 B5  A5 G5 F5  E5 G5 E5  C5:3';
+      const A2 = 'E5 G5 C6  C6 B5 G5  F5 G5 B5  D6:2 B5  D5 G5 B5  A5 G5 F5  G5 E5 C5  E5:2 Bb5';
+      const B = 'A5:2 C6  A5 F5 A5  G5:2 E5  C5 E5 G5  F#5:2 A5  C6 A5 F#5  G5 B5 D6  D6:2 G5';
+      const coda = 'F5 A5 C6  C6 A5 F#5  G5:2 E5  E5 G5 A5  F5:2 D5  B4 D5 F5  E5 G5 C6  C6:2 -';
+      [A, A2, B, A, coda].forEach((text, i) => {
+        tune(i * 8 * bar, b, text, pipe);
+        if (i === 1 || i === 3) tune(i * 8 * bar, b, text, chime);
+      });
+    },
+  },
+
   build(b) {
     SIGNS.length = 0;
     // terrain: the beach and sea bed (fine round the pier), the land

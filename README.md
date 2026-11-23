@@ -62,7 +62,7 @@ node tools/bundle.mjs       # or: npm run bundle
 ```
 
 writes `dist/tilt4d.html`: the page with its stylesheet and all its scripts,
-every scene included, minified into one file of about 650 kB (230 kB as a web
+every scene included, minified into one file of about 670 kB (240 kB as a web
 server sends it compressed). The shaders are minified too: they are the
 template strings marked `/* wgsl */` in the scripts, and an unmarked one is
 left as it is (the tool points out any it finds). It needs nothing beside it, so it can be uploaded
@@ -120,6 +120,7 @@ The **Settings** button at the top of the menu opens a small panel:
 |---|---|---|
 | Mode | the control modes the scene offers | `M` |
 | Time colouring | off, slight, full (see below) | `T` |
+| Music | off, soft, full (see below) | `N` |
 | Units | m/s, km/h or mph, for the readouts and for the speeds the menu names | |
 | Readouts | shown or hidden | `H` |
 | Pace | everything at ⅛ to 8 times its speed | `[` `]` |
@@ -160,6 +161,16 @@ minute. (A level view is not changed: everything in it is now.)
 blue outright, with a contour line for every whole second, which makes the
 tilt of the slice directly visible), and none. Adding `?cast=2` to the address
 makes the slight colouring twice as strong.
+
+Every scene has **music** of its own, and the music belongs to the scene's
+time: it plays at the pace at which time passes for you. Tilt the view and it
+slows and sinks in pitch, at 90° it falls silent, beyond that it plays
+backwards, and when you come back to a moment you were at before, the piece is
+at the same bar again. (In the Time Lab it ticks once for every second on the
+clocks.) Nothing is downloaded for it: each piece is made up for its scene and
+synthesised in the browser when the scene loads, which takes a second or two
+and some 15 to 30 MB of memory while the scene is open. `N` goes round soft,
+off and full.
 
 ### Checking performance
 
@@ -341,6 +352,13 @@ The slice is drawn like this:
 * Small parts of things (door handles, faces, wheel spokes) are given by the
   scenes as detail that is drawn only from near by, so they cost nothing
   across the rest of the scene.
+
+The music is in `src/music.js`: a small synthesiser on an offline Web Audio
+context, which each scene's score (the `music` of its definition) is written against, and
+a player that keeps the piece on the scene's time. A piece is kept as samples
+twice, forwards and backwards, and whichever fits the direction of time is
+played at the speed of its pace, steered so that it stays on the moment the
+player is at.
 
 `src/renderer.js` and `src/wgsl.js` hold the renderer, `src/builder.js` turns
 scene descriptions into those two kinds of geometry. A scene is built in a

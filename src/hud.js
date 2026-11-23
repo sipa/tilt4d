@@ -54,7 +54,7 @@ export const CONTROLS = {
   ],
   common: [
     ['M', 'control mode'], ['R', 'level the view and stop'], ['P', 'freeze and look around'],
-    ['[ / ]', 'slow motion / fast forward'], ['T', 'time colouring: slight, full, off'], ['Backspace', 'back to the start'], ['H', 'hide the HUD'], ['F', 'full screen'], ['G', 'measure the frame time'],
+    ['[ / ]', 'slow motion / fast forward'], ['T', 'time colouring: slight, full, off'], ['N', 'music: soft, off, full'], ['Backspace', 'back to the start'], ['H', 'hide the HUD'], ['F', 'full screen'], ['G', 'measure the frame time'],
   ],
 };
 

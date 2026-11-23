@@ -198,6 +198,35 @@ export default {
   skyDistance: 900,
   wgsl,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // The Time Lab: clockwork.  A tick on every second of scene time, so that
+  // it keeps step with the clocks on the runway, and a figure of struck bars
+  // going round four chords.
+  music: {
+    seconds: 32, bpm: 120, reverb: 1.8, echo: [0.375, 0.28], seed: 11,
+    build(m) {
+      const { notes } = m;
+      const clock = m.track({ gain: 0.9, hall: 0.12 });
+      const left = m.track({ pan: -0.35, hall: 0.25, echo: 0.22 }), right = m.track({ pan: 0.35, hall: 0.25, echo: 0.22 });
+      const soft = m.track({ hall: 0.5 }), high = m.track({ pan: 0.15, hall: 0.7, echo: 0.3 });
+      for (let s = 0; s < 32; s++) m.tick(clock, s, s % 4 === 0 ? 1.3 : 0.95, s % 2 ? 1900 : 2500);
+      const chords = ['A3 C4 E4 A4 C5 E5', 'F3 A3 C4 F4 A4 C5', 'D3 F3 A3 D4 F4 A4', 'E3 G3 B3 E4 G4 B4'].map(notes);
+      const figure = [0, 2, 3, 2, 4, 2, 3, 1];
+      chords.forEach((ch, k) => {
+        const t0 = k * 8;
+        m.pad(soft, t0, 8, [ch[0], ch[1], ch[2], ch[3]], { type: 'triangle', cutoff: 1100, gain: 0.07, a: 1.5, r: 1.5 });
+        for (const t of [t0, t0 + 4]) m.tone(soft, t, 3.2, ch[0] - 12, { gain: 0.07, a: 0.02, d: 1.5, s: 0.4, r: 0.8 });
+        for (let i = 0; i < 32; i++) {
+          m.bell(left, t0 + i * 0.25, ch[figure[i % 8]], { partials: 'bars', gain: i % 4 === 0 ? 0.27 : 0.19, decay: 0.5 });
+          // the same figure three quavers later and an octave up, on the other side
+          if (k % 2 === 1 || i >= 16) m.bell(right, t0 + (i + 3) * 0.25, ch[figure[i % 8]] + 12, { partials: 'bars', gain: 0.13, decay: 0.4 });
+        }
+        m.bell(high, t0, ch[4] + 12, { partials: 'glass', gain: 0.1, decay: 3 });
+        m.bell(high, t0 + 5, ch[5] + 12, { partials: 'glass', gain: 0.07, decay: 3 });
+      });
+    },
+  },
+
   build(b) {
     const rand = rng(7);
 

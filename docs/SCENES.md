@@ -77,6 +77,7 @@ export default {
   walkSpeed: 3, runSpeed: 8, // optional, metres per second
   eyeHeight: { walk: 1.7, drive: 1.25 },                  // optional
   accel: 1,                  // optional: how quickly drive, fly and swim change speed (times 0.25 C per second per second for a car, whose friction goes by it too, and 0.5 C for thrust)
+  music: { seconds, build(m) { ... } },                    // optional: the scene's music, see "Music" below
 
   env: { dayLength: 600 },   // optional: settings for the built-in day/night sky (see below)
   wgsl: `...`,               // optional: shader hooks (see below)
@@ -649,6 +650,55 @@ functions (either or both) for the scene's WGSL to define, with the built-in
 ones at hand as `envDayPhase0` and `envSunVec0`. `src/scenes/pier.js` slows
 its dusk and turns its sunset that way. Do not edit the text that
 `dayNightEnv` returns: the single-file build shortens it.
+
+## Music
+
+A scene gets its music from the `music` of its definition; without one it is
+silent. That is a score: the length of its loop, how the whole sounds, and a
+`build(m)` that puts the notes down.
+
+```js
+music: {
+  seconds: 32,               // the length of the loop
+  bpm: 120,                  // optional: beats a minute, which sets m.beat
+  reverb: 2,                 // how long the hall rings, seconds
+  echo: [0.375, 0.3],        // seconds between repeats, and how much of each comes back
+  seed: 7,                   // for m.rand(), which is the same every time
+  // tail: 4,                // how long sounds may ring on past the loop's end (they are carried over to its start)
+  // lowpass: 4000,          // a filter over the whole piece, Hz
+  build(m) {
+    const { notes } = m;
+    const keys = m.track({ pan: -0.3, hall: 0.3, echo: 0.2 });   // a place in the mix
+    const soft = m.track({ hall: 0.5 });
+    m.pad(soft, 0, 16, notes('A2 E3 A3 C4'), { cutoff: 900 });   // a chord: time, length, pitches
+    for (let i = 0; i < 64; i++) m.bell(keys, i * 0.25, 69 + [0, 3, 7, 12][i % 4], { partials: 'bars', decay: 0.5 });
+  },
+},
+```
+
+`m` has `track`, the pitched sounds `tone`, `bell`, `pluck`, `pad` and `drone`,
+`noise`, and the drums `kick`, `snare`, `hat`, `tick`, `thud`, `jingle` and
+`bubble`; `m.beat` is the length of a beat and `m.rand()` a random number that
+is the same every time. Pitches are MIDI numbers, and `m.n('F#4')`,
+`m.notes('C3 E3 G3')` and `m.tune(start, unit, 'E5 G5:2 -:.5', play)` write
+them by name. All of these are described where they are defined, in
+`src/music.js`. Times are seconds from the start of the loop; what still rings
+at its end is carried over to the start. Every scene in `src/scenes/` has a
+score to look at.
+
+The piece is tied to the scene's time: second 0 of the loop sounds at scene
+time 0, and it is played at the pace of the player's own time, backwards when
+that runs backwards. So choose a loop that divides one of the scene's own
+cycles if it has any, put beats on whole seconds if there are clocks to keep
+step with, and expect the piece to be heard slowed down and in reverse: long
+notes and plain rhythms survive that best. Keep the bass modest (a piece is
+brought to a set loudness as a whole, so a heavy bass makes the rest quiet).
+Write your own notes: nothing in a score may be someone else's tune.
+
+Nobody can listen on a machine without sound, so check a score by what can be
+measured: render it in a browser with `renderPiece(def.music)` from
+`src/music.js` and look at its level second by second, at how much of it lies
+below 200 Hz, and at which pitches it holds.
 
 ## Testing
 

@@ -2606,6 +2606,46 @@ export default {
   shadowRadii: [40, 240],
   wgsl,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // Old Town: a round dance for the festival, in six-eight and in the Dorian
+  // mode.  A hand drum and a tambourine, a lute, a held fifth as of a
+  // hurdy-gurdy, a pipe with the tune, and the tower's bell every eight bars.
+  music: {
+    seconds: 40.32, reverb: 1.4, echo: [0.42, 0.2], seed: 41,
+    build(m) {
+      const { n, notes, tune } = m;
+      const e = 0.21, bar = 6 * e; // a quaver, and a bar of six
+      const drum = m.track({ gain: 0.9, hall: 0.15 }), shake = m.track({ pan: 0.4, hall: 0.2 }), lute = m.track({ pan: -0.35, hall: 0.3 });
+      const pipe = m.track({ pan: 0.1, hall: 0.4, echo: 0.15, vib: [5.2, 10] }), reed = m.track({ pan: -0.1, hall: 0.3, vib: [5.2, 6] });
+      const hum = m.track({ hall: 0.3, lowpass: 900 }), tower = m.track({ hall: 0.8 });
+      m.drone(hum, n('D3'), { type: 'sawtooth', gain: 0.045, cutoff: 600 });
+      m.drone(hum, n('A3'), { type: 'sawtooth', gain: 0.03, cutoff: 700, swell: [8, 0.5] });
+      const chord = { Dm: notes('D3 A3 D4 F4'), C: notes('C3 G3 C4 E4'), Am: notes('A2 E3 A3 C4'), F: notes('F3 C4 F4 A4') };
+      const A = 'Dm Dm C C Dm Dm Am Dm', B = 'F F C C Dm C Am Dm';
+      `${A} ${A} ${B} ${A}`.split(' ').forEach((name, k) => {
+        const t0 = k * bar, c = chord[name];
+        m.thud(drum, t0, 0.65);
+        m.thud(drum, t0 + 3 * e, 0.45);
+        if (k % 2) m.thud(drum, t0 + 5 * e, 0.3);
+        for (const [i, v] of [[1, 0.35], [2, 0.8], [4, 0.35], [5, 0.8]]) m.jingle(shake, t0 + i * e, v);
+        [c[0], c[1], c[2], c[3], c[2], c[1]].forEach((p, i) => m.pluck(lute, t0 + i * e, p, { gain: i === 0 ? 0.28 : 0.2, decay: 0.5, bright: 3800, dark: 700 }));
+        if (k % 8 === 0) m.bell(tower, t0, n('D4'), { partials: 'glass', gain: 0.12, decay: 4 });
+      });
+      const blow = (t, d, p) => {
+        m.tone(pipe, t, d * 0.9, p, { type: 'triangle', gain: 0.22, a: 0.03, d: 0.2, s: 0.8, r: 0.1 });
+        m.noise(pipe, t, { dur: 0.03, gain: 0.03, type: 'bandpass', freq: 3000, q: 1 });
+      };
+      // (a second player an octave below, where the tune comes round again)
+      const both = (t, d, p) => { blow(t, d, p); m.tone(reed, t, d * 0.9, p - 12, { type: 'sawtooth', cutoff: 1400, gain: 0.06, a: 0.03, d: 0.2, s: 0.8, r: 0.1 }); };
+      const first = 'A4:3 D5:2 E5  F5:2 E5 D5:2 A4  E5:2 D5 C5:2 G4  C5:3 E5:3  D5:2 F5 A5:2 G5  F5:2 E5 D5:3  C5:2 E5 D5:2 C5  D5:6';
+      const second = 'A5:3 F5:2 A5  C6:2 A5 F5:3  G5:3 E5:2 G5  C6:2 G5 E5:3  F5:2 G5 A5:2 F5  E5:2 F5 G5:2 E5  C5:2 D5 E5:2 C5  D5:6';
+      tune(0, e, first, blow);
+      tune(8 * bar, e, first, both);
+      tune(16 * bar, e, second, blow);
+      tune(24 * bar, e, first, both);
+    },
+  },
+
   build(b) {
     const rand = rng(1871);
     STYLE = rng(29);

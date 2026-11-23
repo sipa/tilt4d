@@ -6,6 +6,7 @@ import { SCENES } from './scenes/index.js';
 import { Hud, CONTROLS, keyCaps } from './hud.js';
 import { TouchControls, TOUCH_CONTROLS } from './touch.js';
 import { UNITS, roundLength, roundSpeed, withUnits } from './units.js';
+import { Music } from './music.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -17,6 +18,7 @@ const overlay = $('overlay');
 const statusEl = $('status');
 const hud = new Hud();
 const player = new Player();
+const music = new Music(); // (each scene's own piece, played at the pace of the player's time: see music.js)
 // ?ease=0.04 sets how much of the tilting rate is left at 90 degrees (1 = no easing; see player.js)
 if (num('ease', 0) > 0) player.ease = Math.min(1, Math.max(0.001, num('ease', 0)));
 // ?cast=2 makes the slight colouring by time twice as strong as usual
@@ -42,8 +44,9 @@ let timeTint = shot ? 1 : [0, 1, 2].includes(kept('tint', 1)) ? kept('tint', 1) 
 let redraw = true; // the picture behind the menu has to be drawn again
 // The other choices of the menu's settings panel (see SETTINGS below).  A
 // still frame for the tools takes none of them from the browser.
-const FOVS = [50, 62, 75, 90], LOOK_SPEEDS = [0.5, 0.75, 1, 1.5, 2], RESOLUTIONS = [0, 1, 0.75, 0.5];
-const DEFAULTS = { tint: 1, hud: 1, units: 'ms', fov: 62, look: 1, invert: 0, res: 0 };
+const FOVS = [50, 62, 75, 90], LOOK_SPEEDS = [0.5, 0.75, 1, 1.5, 2], RESOLUTIONS = [0, 1, 0.75, 0.5], MUSIC_LEVELS = [0, 0.4, 1];
+const DEFAULTS = { tint: 1, music: 1, hud: 1, units: 'ms', fov: 62, look: 1, invert: 0, res: 0 };
+music.level = shot ? 0 : keptOf('music', MUSIC_LEVELS, DEFAULTS.music); // how loud the music is: 0 off, 0.4 soft, 1
 let units = !shot && UNITS[stored('units')] ? stored('units') : DEFAULTS.units; // a key of UNITS
 let fovDeg = params.has('fov') ? num('fov', 62) : shot ? 62 : keptOf('fov', FOVS, DEFAULTS.fov); // the vertical field of view (?fov=70 sets any)
 let lookSpeed = shot ? 1 : keptOf('look', LOOK_SPEEDS, DEFAULTS.look); // a factor on how far the mouse or a dragging finger turns the view
@@ -59,7 +62,8 @@ let jumpPressed = false; // Space went down since the last frame (a quick tap ca
 // for poking at things from the browser console
 window.tilt4d = {
   player, get renderer() { return renderer; }, get scene() { return current; }, measure: () => measure(),
-  get settings() { return { mode: player.mode, tint: timeTint, units, hud: +hudWanted, pace: player.timeScale, fov: fovDeg, look: lookSpeed, invert: invertLook, res: resolution }; },
+  get settings() { return { mode: player.mode, tint: timeTint, music: music.level, units, hud: +hudWanted, pace: player.timeScale, fov: fovDeg, look: lookSpeed, invert: invertLook, res: resolution }; },
+  music,
 };
 
 function setStatus(text, isError = false) {
@@ -188,6 +192,7 @@ async function loadScene(id) {
     player.setPose(def.spawn);
     applyMode();
     showUnits();
+    if (!shot) music.load(def.music); // (it is not waited for: the music comes in when it is ready)
     setStatus('');
     redraw = true;
     console.info(`scene ${entry.id}: built in ${buildMs} ms`, data.stats);
@@ -265,6 +270,13 @@ function setTouchMode(on) {
 }
 
 const sceneModes = () => (current ? current.def.modes || Object.keys(MODES) : []);
+function cycleMusic() {
+  music.level = MUSIC_LEVELS[(MUSIC_LEVELS.indexOf(music.level) + MUSIC_LEVELS.length - 1) % MUSIC_LEVELS.length];
+  keep('music', music.level);
+  renderSettings();
+  hud.flash(['music off', 'music, soft', 'music'][MUSIC_LEVELS.indexOf(music.level)]);
+}
+
 function cycleMode() {
   const modes = sceneModes();
   const next = modes[(modes.indexOf(player.mode) + 1) % modes.length];
@@ -283,6 +295,8 @@ const SETTINGS = [
     get: () => player.mode, set: (v) => { player.setMode(v); applyMode(); } },
   { id: 'tint', label: 'Time colouring', key: 'T', options: [[0, 'off'], [1, 'slight'], [2, 'full']],
     get: () => timeTint, set: (v) => { timeTint = v; } },
+  { id: 'music', label: 'Music', key: 'N', options: [[0, 'off'], [0.4, 'soft'], [1, 'full']],
+    get: () => music.level, set: (v) => { music.level = v; } },
   { id: 'units', label: 'Units', options: Object.entries(UNITS).map(([id, u]) => [id, u.label]),
     get: () => units, set: (v) => { units = v; showUnits(); } },
   { id: 'hud', label: 'Readouts', key: 'H', options: [[1, 'shown'], [0, 'hidden']],
@@ -351,6 +365,7 @@ function buildSceneList() {
     b.innerHTML = `<b>${s.name}</b><i>${MODES[s.mode]?.name ?? ''} ${weight}</i><span>${withUnits(UNITS[units], s.blurb)}</span>`;
     b.addEventListener('click', async () => {
       if (b.disabled) return;
+      music.unlock(); // (here and not only on entering: some browsers want it within the click itself, and a scene may take a while to load)
       // While this is still a user gesture: capture the mouse or, on a touch
       // screen, go full screen and (where the browser allows) landscape.
       if (touchMode) {
@@ -382,6 +397,7 @@ function enter() {
   playing = true;
   entered = true;
   showSettings(false);
+  music.unlock(); // (this is where the user has just clicked or pressed a key, which is what a browser wants before a page may sound)
   const hint = (touchMode && current.entry.touchHint) || current.entry.hint;
   if (hint && !current.hinted) {
     current.hinted = true;
@@ -398,6 +414,7 @@ function leave() {
   redraw = true;
   if (document.pointerLockElement === canvas) document.exitPointerLock?.(); // (Esc lets go of the mouse by itself; the other ways here do not)
   renderSettings(); // (the keys may have changed some of them)
+  music.hush();
   overlay.hidden = false;
   hud.setVisible(false);
   touch.setActive(false);
@@ -445,6 +462,7 @@ addEventListener('keydown', (e) => {
     case 'KeyH': hudWanted = !hudWanted; keep('hud', hudWanted); hud.setVisible(hudWanted); renderSettings(); break;
     case 'KeyF': toggleFullscreen(); break;
     case 'KeyT': cycleTint(); break;
+    case 'KeyN': cycleMusic(); break;
     case 'KeyG': measure(); break;
     case 'BracketLeft': player.timeScale = Math.max(0.125, player.timeScale / 2); break;
     case 'BracketRight': player.timeScale = Math.min(8, player.timeScale * 2); break;
@@ -455,8 +473,11 @@ addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 
 canvas.addEventListener('click', () => {
+  if (playing) music.unlock(); // (should the browser have put the sound to sleep meanwhile)
   if (playing && !touchMode && document.pointerLockElement !== canvas) canvas.requestPointerLock?.()?.catch?.(() => {});
 });
+// (no frames are drawn while the page is hidden, so nothing would keep the music to the scene's time)
+document.addEventListener('visibilitychange', () => { if (document.hidden) music.hush(); });
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement !== canvas && playing) leave();
 });
@@ -591,7 +612,13 @@ function frame(now) {
     const scale = Math.min(devicePixelRatio || 1, 1.5) * (params.has('scale') ? num('scale', 1) : share * (playing ? 1 : 0.5));
     renderer.resize(canvas.clientWidth * scale, canvas.clientHeight * scale);
     renderer.render({ ...player.camera(), fovY: fovFor(canvas.clientWidth / canvas.clientHeight), time: now / 1000, timeTint, timeCast });
-    if (playing && hudWanted) hud.update(player.status(), current.entry.name, player, dt, renderer.info);
+    if (playing) {
+      const st = player.status();
+      // the music goes at the pace of the player's own time: what the tilt and their motion make of it, and the pace of
+      // everything (and where frames come so slowly that the scene itself falls behind the clock, that much slower)
+      music.update(st.t, player.paused ? 0 : st.timeRate * player.timeScale * (rawDt > dt ? dt / rawDt : 1));
+      if (hudWanted) hud.update(st, current.entry.name, player, dt, renderer.info);
+    }
   }
   requestAnimationFrame(frame);
 }

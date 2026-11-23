@@ -3787,6 +3787,36 @@ export default {
   ground: (x, y) => ground(x, y),
   wgsl,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // Winter Valley: an evening in three-four.  A music box with the tune, a
+  // harp, strings underneath, and sleigh bells from the ninth bar on.
+  music: {
+    seconds: 72 * 60 / 84, bpm: 84, reverb: 2.8, tail: 5, echo: [60 / 84, 0.25], seed: 61,
+    build(m) {
+      const { n, notes, tune } = m;
+      const b = m.beat, bar = 3 * b;
+      const box = m.track({ pan: 0.15, hall: 0.55, echo: 0.2 }), harp = m.track({ pan: -0.3, hall: 0.4 }), strings = m.track({ hall: 0.5 });
+      const low = m.track({ hall: 0.2 }), sleigh = m.track({ gain: 0.8, pan: 0.45, hall: 0.3 });
+      const chord = { G: ['G2', 'G3 B3 D4'], Em: ['E2', 'G3 B3 E4'], C: ['C3', 'G3 C4 E4'], D: ['D3', 'F#3 A3 D4'], Am: ['A2', 'A3 C4 E4'] };
+      const form = 'G G Em Em C C D D  G G Em Em C D G G  Am Am D D G Em C G'.split(/\s+/);
+      form.forEach((name, k) => {
+        const t0 = k * bar, [root, tones] = chord[name], ch = notes(tones);
+        m.tone(low, t0, 2 * b, n(root), { type: 'triangle', cutoff: 500, gain: 0.1, a: 0.03, d: 0.8, s: 0.5, r: 0.5 });
+        [ch[0], ch[2], ch[1] + 12, ch[2], ch[0] + 12, ch[2]].forEach((p, i) => m.pluck(harp, t0 + i * b / 2, p, { gain: i === 0 ? 0.17 : 0.12, decay: 0.9, bright: 3200, dark: 600 }));
+        if (k === 0 || name !== form[k - 1]) {
+          let bars = 1;
+          while (form[k + bars] === name) bars++;
+          m.pad(strings, t0, bars * bar, [n(root) + 12, ...ch], { cutoff: 1400, gain: 0.05, a: 1, r: 1.2 });
+        }
+        if (k >= 8) [0.6, 0.3, 0.3].forEach((v, i) => m.jingle(sleigh, t0 + i * b, v));
+      });
+      const ring = (t, d, p) => m.bell(box, t, p, { partials: 'box', gain: 0.26, decay: 1.2 + d });
+      tune(0, b, `D5:2 B4  G4 B4 D5  E5:2 D5  B4:3  C5:2 E5  G5 E5 C5  D5:2 F#5  A5:3
+                  B5:2 A5  G5 D5 B4  E5:2 G5  B5:3  C6 B5 A5  F#5:2 A5  G5:3  G4:2 -
+                  A4 C5 E5  A5:2 G5  F#5 D5 A4  D5:3  B4 D5 G5  B5:2 G5  C5 E5 D5  G4:3`, ring);
+    },
+  },
+
   build(b) {
     AO_STAMPS.length = 0;
     CHIMNEYS.length = 0;

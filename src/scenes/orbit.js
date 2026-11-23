@@ -1438,6 +1438,30 @@ export default {
   near: 0.5,
   wgsl: WGSL,
 
+  // The music (see "Music" in docs/SCENES.md).
+  // The Orbital Station: slow and wide.  A deep held note, four chords of a
+  // quarter of a minute each (the ring turns once in two of them), far glassy
+  // notes, and the beacons' pulse.
+  music: {
+    seconds: 60, reverb: 5, tail: 7, echo: [0.75, 0.45], seed: 23,
+    build(m) {
+      const { n, notes } = m;
+      const deep = m.track({ hall: 0.3 }), wide = m.track({ hall: 0.6 });
+      const stars = [m.track({ pan: -0.6, hall: 0.9, echo: 0.5 }), m.track({ pan: 0.6, hall: 0.9, echo: 0.5 }), m.track({ hall: 0.9, echo: 0.5 })];
+      const beacon = [m.track({ pan: -0.8, hall: 0.5 }), m.track({ pan: 0.8, hall: 0.5 })];
+      m.drone(deep, n('D1'), { gain: 0.06, swell: [4, 0.5] });
+      m.drone(deep, n('D2'), { gain: 0.07, swell: [3, 0.4] });
+      m.drone(deep, n('A2'), { gain: 0.045, swell: [5, 0.6] });
+      ['D3 A3 E4 F4', 'Bb2 F3 A3 D4', 'G2 D3 Bb3 A3', 'A2 E3 D4 E4'].map(notes)
+        .forEach((ch, k) => m.pad(wide, k * 15, 15, ch, { cutoff: 1000, gain: 0.08, a: 4, r: 4, detune: 9 }));
+      const scale = notes('D5 F5 G5 A5 C6 D6 F6');
+      for (let i = 0; i < 22; i++) {
+        m.bell(stars[i % 3], (i + m.rand() * 0.8) * 60 / 22, scale[Math.floor(m.rand() * scale.length)], { partials: 'glass', gain: 0.12 + 0.08 * m.rand(), decay: 4 });
+      }
+      for (let i = 0; i < 16; i++) m.tone(beacon[i % 2], i * 3.75, 0.08, n('A5'), { gain: 0.08, a: 0.005, d: 0.1, s: 0.3, r: 0.25 });
+    },
+  },
+
   build(b) {
     const rand = rng(1234);
     stationStatic(b);
