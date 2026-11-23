@@ -16,6 +16,9 @@ tilting and speeding up are the same thing. The demo keeps the tilt and what
 it does to time, but no longer ties it to the player's speed; see "How it
 works" below.
 
+The source is at <https://github.com/sipa/tilt4d>, under the MIT license (see
+[License](#license) at the end). The project is very LLM-assisted.
+
 ## Running it
 
 ```
@@ -417,3 +420,14 @@ It needs a Chromium that Playwright can find (`npx playwright install chromium`)
 `--browser firefox` renders in Firefox instead (run it under `xvfb-run -a`),
 and `node tools/check-wgsl.mjs` validates every scene's shader with naga, the
 WGSL compiler Firefox uses.
+
+## License
+
+tilt4d is open source under the MIT license: see [LICENSE](LICENSE).
+Copyright (c) 2026 Pieter Wuille.
+
+The source repository is <https://github.com/sipa/tilt4d>.
+
+The project is very LLM-assisted: most of its code, its scenes, its music and
+this documentation were written by Claude, to the author's concept and under
+his direction.

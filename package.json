@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Rendering as a projection from 4D to 2D: a browser demo where acceleration tilts your view through time",
+  "license": "MIT",
+  "author": "Pieter Wuille",
+  "homepage": "https://github.com/sipa/tilt4d",
+  "repository": { "type": "git", "url": "git+https://github.com/sipa/tilt4d.git" },
   "scripts": {
     "start": "node tools/serve.mjs",
     "shot": "node tools/shot.mjs",

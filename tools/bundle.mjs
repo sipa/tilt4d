@@ -82,7 +82,17 @@ const put = (what, find, text) => {
 };
 put('stylesheet link', '<link rel="stylesheet" href="style.css">', `<style>\n${inStyle(css.trim())}\n</style>`);
 put('script tag', '<script type="module" src="src/main.js"></script>', `<script type="module">\n${inScript(js.trim())}\n</script>`);
-put('doctype', '<!doctype html>', '<!doctype html>\n<!-- tilt4d in one file, made by tools/bundle.mjs from index.html, style.css and src/. Edit those, not this. -->\n');
+// The single file goes out on its own, so it carries the licence with it.
+const licence = readFileSync(path.join(ROOT, 'LICENSE'), 'utf8').trim();
+if (licence.includes('--')) { console.log('LICENSE has "--" in it, which cannot stand in a comment of a page.'); process.exit(1); }
+put('doctype', '<!doctype html>', `<!doctype html>
+<!--
+tilt4d in one file, made by tools/bundle.mjs from index.html, style.css and src/. Edit those, not this.
+The source is at https://github.com/sipa/tilt4d
+
+${licence}
+-->
+`);
 // anything else the page still asks a server for would be missing from the single file
 const left = [...html.matchAll(/<(?:script|link|img|source|iframe)\b[^>]*\b(?:src|href)="(?!data:|#)([^"]*)"/g)].map((m) => m[1]);
 if (left.length) {

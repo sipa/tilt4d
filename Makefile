@@ -10,14 +10,14 @@
 OUT ?= dist/tilt4d.html
 
 # Everything that goes into the file: the page, its stylesheet and every
-# script, all the scenes included.
+# script, all the scenes included (and the licence, which the file carries).
 SOURCES := index.html style.css $(wildcard src/*.js src/scenes/*.js)
 
 .PHONY: all clean
 
 all: $(OUT)
 
-$(OUT): $(SOURCES) tools/bundle.mjs tools/minify-shaders.mjs node_modules/.package-lock.json
+$(OUT): $(SOURCES) LICENSE tools/bundle.mjs tools/minify-shaders.mjs node_modules/.package-lock.json
 	node tools/bundle.mjs --out $@
 
 # (npm writes this file whenever it installs)

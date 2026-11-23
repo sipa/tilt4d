@@ -241,6 +241,10 @@ body.touch .seg button { padding: 8px 12px; min-width: 42px; }
 .chips { margin: 10px 0 0; font-size: 12.5px; color: var(--dim); line-height: 2.1; }
 .chips span { display: inline-block; margin-right: 14px; white-space: nowrap; }
 .fine { margin: 12px 0 0; font-size: 13px; color: var(--dim); }
+/* who made it, under what terms, and where the source is */
+.credits { margin-top: 24px; padding-top: 12px; border-top: 1px solid rgba(233, 237, 242, 0.07); font-size: 12.5px; color: var(--dim); }
+.credits a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--faint); }
+.credits a:hover, .credits a:focus-visible { border-bottom-color: var(--ink); outline: none; }
 
 @media (max-width: 1000px), (max-height: 560px) {
   .hud-keys { display: none; }
