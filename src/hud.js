@@ -30,7 +30,7 @@ export const CONTROLS = {
   ],
   drive: [
     TILT,
-    ['W / S', (c) => `Faster / slower; S from rest reverses. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it.`],
+    ['W / S', (c) => `Faster / slower; S from rest reverses. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Hills slow it, and ground steeper than 45° it cannot climb.`],
     ['A / D', 'Steer.'],
     ['Shift', (c) => `More power: a top speed of ${c.mark(2.8)} instead of ${c.mark(2)}.`],
     ['Space', 'Brake.'],

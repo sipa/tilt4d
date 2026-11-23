@@ -62,7 +62,10 @@ const MAX_SPEED = 4; // in units of C; nothing special happens there, it only ke
 // scenery goes by, and 1 / cos(tilt) times the speed over the ground.
 const DRAG = [0.1, 0.15, 0.6];
 const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, which carries the feet 1.27 m up
-const MAX_CLIMB = Math.PI / 3; // walking: the slope of the ground at which there is no way up it any more
+// The slope of the ground at which there is no way up it any more, on foot
+// and in a car (see _climb), and the time in which a slope that holds a car
+// altogether wears its own speed down.
+const MAX_CLIMB = Math.PI / 3, MAX_CLIMB_CAR = Math.PI / 4, HILL_TIME = 1;
 
 // The player's body for collisions: an upright cylinder from `lo` to `hi`
 // above the feet on the ground, a sphere about the eye otherwise.  Things
@@ -387,6 +390,18 @@ export class Player {
         slow(drag);
         this.speed = clamp(this.speed, -MAX_SPEED * C, MAX_SPEED * C);
         for (let i = 0; i < 4; i++) vel[i] = this.speed * f[i];
+        // A hill holds the car back (see _climb): that is a share of its
+        // motion, as for a walker, and the car's own speed is what it would
+        // be on the flat.  But where the slope takes most or all of the
+        // motion, the car's own speed is worn down too, to what gets through
+        // (at a rate that goes as the square of the share held back, so that
+        // moderate hills leave it alone): a car that a slope has brought to
+        // rest does not shoot off at full speed when it is turned away.
+        this._climb(vel, f, r);
+        if (this.speed) {
+          const through = f4.dot(vel, f), held = clamp(1 - through / this.speed, 0, 1);
+          this.speed += (through - this.speed) * (1 - Math.exp(-dt * held * held / HILL_TIME));
+        }
         break;
       }
       default: {
@@ -452,16 +467,17 @@ export class Player {
     }
   }
 
-  // Walking on sloping ground.  The pace is kept along the slope, so on the
-  // map the part of the motion that goes straight up or down the slope
-  // shrinks by the slope's cosine.  Going up is harder than that: it shrinks
-  // by 1 - (slope / MAX_CLIMB)^2 as well, so that a gentle hill is hardly
-  // felt, a steep one is slow, and at 60 degrees there is no way up at all.
-  // Ground that steep is like a wall to a walker: it can be walked along and
-  // down, but not up, by any zigzag or by jumping at it.  (A peak with such
-  // slopes all round is for flying to.)  The part of the motion along the
-  // contour is left as it is.  As with walls, what is taken off v (a
-  // velocity along f and r) lies in the slice.
+  // Walking and driving on sloping ground.  The pace is kept along the slope,
+  // so on the map the part of the motion that goes straight up or down the
+  // slope shrinks by the slope's cosine (a car leans with the ground, which
+  // does that by itself).  Going up is harder than that: it shrinks by
+  // 1 - (slope / limit)^2 as well, so that a gentle hill is hardly felt, a
+  // steep one is slow, and at the limit there is no way up at all: 60 degrees
+  // on foot, 45 in a car.  Ground that steep is like a wall: it can be gone
+  // along and down, but not up, by any zigzag or by jumping at it.  (A peak
+  // with such slopes all round is for flying to.)  The part of the motion
+  // along the contour is left as it is.  As with walls, what is taken off v
+  // (a velocity along f and r) lies in the slice.
   _climb(v, f, r) {
     const g = this.ground, P = this.P;
     if (!g || (this.feet !== null && !this.air)) return; // level ground, or standing on top of something
@@ -473,7 +489,8 @@ export class Player {
     const nx = dx / steep, ny = dy / steep; // uphill, on the map
     const up = v[0] * nx + v[1] * ny; // how fast v goes that way
     const slope = Math.atan(steep);
-    const keep = Math.cos(slope) * (up > 0 ? Math.max(0, 1 - (slope / MAX_CLIMB) ** 2) : 1);
+    const car = this.mode === 'drive';
+    const keep = (car && this.align ? 1 : Math.cos(slope)) * (up > 0 ? Math.max(0, 1 - (slope / (car ? MAX_CLIMB_CAR : MAX_CLIMB)) ** 2) : 1);
     // "uphill" as it appears in the slice, along f and r
     const mf = nx * f[0] + ny * f[1], mr = nx * r[0] + ny * r[1], ml2 = mf * mf + mr * mr;
     if (ml2 < 1e-12) return;
@@ -616,7 +633,8 @@ export class Player {
   // when those are off it).  A car leans with the ground: its U becomes the
   // ground normal, which keeps F and R (and so its motion) tangent to the
   // ground.  A walker stands upright whatever the slope: U stays +Z, so the
-  // horizon stays level (what a slope does to their pace is in _climb).
+  // horizon stays level.  (What a slope does to the pace of either is in
+  // _climb.)
   _stickToGround(blend, snap) {
     const g = this.ground, P = this.P;
     const z = g ? g(P[0], P[1], P[3]) : 0;

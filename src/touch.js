@@ -43,7 +43,7 @@ export const TOUCH_CONTROLS = {
   ],
   drive: [
     TILT,
-    ['Left thumb', (c) => `Up and down speed up and slow down; left and right steer. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Its top speed is ${c.mark(2)}.`],
+    ['Left thumb', (c) => `Up and down speed up and slow down; left and right steer. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Its top speed is ${c.mark(2)}. Hills slow it, and ground steeper than 45° it cannot climb.`],
     ['Right thumb', 'Drag sideways to steer too: the car turns with the view. Up and down only looks.'],
     ['brake', 'Hold to stop.'],
   ],

@@ -89,7 +89,9 @@ A walker cannot go up ground steeper than 60° (the slope is measured over
 0.8 m), and is slowed well before that. So a rise of more than about 1.4 m
 that `ground` makes within a step's length is a wall to them, and one of 1 m
 slows them to a sixth of their pace: give stairs and ramps a real slope, of
-30° or less where people are meant to walk up briskly.
+30° or less where people are meant to walk up briskly. A car's limit is 45°,
+which a rise of 0.8 m already makes, and it loses a quarter of its speed on
+20°: keep roads gentler than that.
 
 In the modes with a ground, the player's `z` follows `ground` plus the eye
 height. There are no collisions. `spawn.pos[2]` is ignored in those modes.

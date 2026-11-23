@@ -96,7 +96,7 @@ suits it; `M` switches.
 | mode | controls |
 |---|---|
 | **Walk** | `W A S D` walk, `Shift` run, `Space` jump, mouse to look. You stay upright on a slope, and going up it slows you: hardly on a gentle hill, a good deal on a steep one, and ground steeper than 60° cannot be walked up at all. |
-| **Drive** | `W` / `S` speed up / slow down (`S` from rest reverses), `A` / `D` or the mouse steer, `Space` brake, `Shift` for more power. Left alone the car rolls out: slowly below a speed that depends on the scene (30 m/s on the Coastal Circuit; the menu's list of controls names it), quickly above it. |
+| **Drive** | `W` / `S` speed up / slow down (`S` from rest reverses), `A` / `D` or the mouse steer, `Space` brake, `Shift` for more power. Left alone the car rolls out: slowly below a speed that depends on the scene (30 m/s on the Coastal Circuit; the menu's list of controls names it), quickly above it. Hills slow it, and ground steeper than 45° it cannot climb. |
 | **Fly** | mouse to turn, `W A S D` and `Space` / `C` to thrust, `Q` / `E` roll, `Shift` for more thrust, `B` to brake. No drag. |
 | **Swim** | as Fly, but the water brings you back to rest. `Shift` sprints. |
 
@@ -289,8 +289,14 @@ a slope, so that on the map the part of their motion that goes straight up or
 down it shrinks by the slope's cosine. Going up it shrinks further, by
 `1 − (slope / 60°)²`: at 15° about a tenth is lost, at 45° more than two
 thirds, and ground of 60° or more is like a wall, which can be walked along or
-down but not up, by any zigzag or by jumping at it. (A car leans with the
-ground and is not held back.)
+down but not up, by any zigzag or by jumping at it.
+
+A car leans with the ground, and a hill holds it back in the same way with a
+limit of 45°: flat out it does 93% of its speed up a slope of 10°, three
+quarters up 20°, a third up 30°, and from 45° nothing. A slope that takes
+most of the car's motion also wears down the speed the car itself has, so
+that one brought to rest by a hillside does not shoot off when it is turned
+away.
 
 What the tilt does to the view goes as `tan θ` (things are stretched by
 `1 / cos θ`), which runs off to infinity at 90°. So a held tilt key turns at a
