@@ -18,6 +18,9 @@
 //                   default), 0 none, 2 full: amber = the player's past, blue =
 //                   their future, a line per second
 //
+//   --page file     the page to load, relative to the project (default
+//                   index.html); dist/tilt4d.html checks the single-file build
+//
 //   --browser firefox   render in Firefox instead of Chromium: a second,
 //                   independent WebGPU implementation.  Needs a display (run
 //                   under `xvfb-run -a`) and a Vulkan driver such as Mesa's.
@@ -84,7 +87,7 @@ try {
   page.on('pageerror', (e) => { console.log('[pageerror] ' + e.message); });
   const q = new URLSearchParams({ shot: '1', scene: args.scene || 'lab' });
   for (const k of ['pos', 't', 'yaw', 'pitch', 'tilt', 'tiltdir', 'mode', 'hud', 'fov', 'tint', 'cast']) if (args[k] !== undefined) q.set(k, args[k]);
-  await page.goto(`http://127.0.0.1:${port}/?${q}`);
+  await page.goto(`http://127.0.0.1:${port}/${(args.page || '').replace(/^\/+/, '')}?${q}`);
   await page.waitForFunction(() => window.__shot && (window.__shot.ready || window.__shot.error), null, { timeout: 180000 });
   const state = await page.evaluate(() => window.__shot);
   if (state.error) {

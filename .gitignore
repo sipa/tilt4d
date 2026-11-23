@@ -16,3 +16,6 @@ node_modules/
 
 # Logs
 *.log
+
+# The single-file build made by tools/bundle.mjs
+dist/

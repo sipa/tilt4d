@@ -6,9 +6,11 @@
   "description": "Rendering as a projection from 4D to 2D: a browser demo where acceleration tilts your view through time",
   "scripts": {
     "start": "node tools/serve.mjs",
-    "shot": "node tools/shot.mjs"
+    "shot": "node tools/shot.mjs",
+    "bundle": "node tools/bundle.mjs"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "playwright-core": "^1.65.1"
   }
 }

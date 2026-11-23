@@ -26,7 +26,8 @@ then open <http://localhost:8080/> in a browser with WebGPU (current Chrome or
 Edge, Safari 26, Firefox 141 or later; on Linux it may need enabling in the
 browser's flags). There is no build step and nothing to install: the page is
 plain ES modules. Any static file server works, but the page has to come from
-`http://localhost` or `https`, not from a `file:` URL.
+`http://localhost` or `https`, not from a `file:` URL (the single-file build
+below can be opened from disk).
 
 To use it from another machine, listen on more than localhost and serve HTTPS:
 
@@ -42,6 +43,33 @@ menu but cannot start. `--https` makes a self-signed certificate (kept in
 on localhost and forward the port: `ssh -L 8080:localhost:8080 <host>`.
 
 Pick a scene from the menu. `Esc` brings the menu back.
+
+### As a single file
+
+```
+make
+```
+
+or, without make,
+
+```
+npm install                 # once: fetches esbuild for the tool
+node tools/bundle.mjs       # or: npm run bundle
+```
+
+writes `dist/tilt4d.html`: the page with its stylesheet and all its scripts,
+every scene included, minified into one file of about 360 kB (135 kB as a web
+server sends it compressed). The shaders are minified too: they are the
+template strings marked `/* wgsl */` in the scripts, and an unmarked one is
+left as it is (the tool points out any it finds). It needs nothing beside it, so it can be uploaded
+to any web host under any name (over https, as above), passed on to someone,
+or opened straight from disk. It takes the same address parameters as the page
+itself. `make` fetches the tool the first time and afterwards rebuilds the
+file only when something it is made from has changed; `make clean` removes it
+and `make OUT=public/index.html` writes it elsewhere. With the tool itself,
+`--out` names the file and `--no-minify` leaves the code readable.
+`node tools/shot.mjs --page dist/tilt4d.html --scene lab` renders from it,
+which is a way to check a build.
 
 ## Controls
 

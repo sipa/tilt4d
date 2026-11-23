@@ -183,14 +183,14 @@ const num = (v) => {
 // SceneBuilder.horizon).  `textures` is what the builder collected.
 export function textureDecls(textures) {
   return (textures || []).map((t, i) => {
-    let code = `
+    let code = /* wgsl */ `
 @group(0) @binding(${6 + i}) var ${t.name}_tex: texture_2d<f32>;
 @group(0) @binding(${10 + i}) var ${t.name}_smp: sampler;
 fn ${t.name}(uv: vec2f) -> vec4f { return textureSampleLevel(${t.name}_tex, ${t.name}_smp, uv, 0.0); }
 `;
     const h = t.horizon;
     if (h) {
-      code += `
+      code += /* wgsl */ `
 // 0 where the land hides a light in the direction l from a point at p, 1
 // where it does not.  \`above\` is how high p is over the land, in metres.
 fn ${t.name}SunAt(p: vec3f, l: vec3f, above: f32) -> f32 {
