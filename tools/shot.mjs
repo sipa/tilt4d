@@ -1,4 +1,5 @@
-// Renders one frame of a scene in headless Chromium and saves it as a PNG.
+// Renders one frame of a scene in headless Chromium and saves it as a PNG
+// (or, where --out ends in .jpg, as a JPEG).
 //
 //   node tools/shot.mjs --scene lab --out /tmp/lab.png [options]
 //
@@ -14,6 +15,9 @@
 //   --size WxH      image size (default 960x540)
 //   --fov deg       vertical field of view (default 62); a small value zooms in
 //   --hud           include the HUD in the picture
+//   --card          lay the page's mark, name and tagline over the foot of the
+//                   picture: this is how preview.jpg is made, the picture that
+//                   a link to the page shows where it is posted (see README.md)
 //   --tint n        the colouring by time: 1 slight, as the page starts out (the
 //                   default), 0 none, 2 full: amber = the player's past, blue =
 //                   their future, a line per second
@@ -101,7 +105,28 @@ try {
     const running = state.liveDraws !== state.draws ? ` (${state.liveDraws} in a running frame)` : '';
     console.log(`build ${state.buildMs} ms; drawing ${state.triangles} static triangles and ${state.tets} tetrahedra in ${state.draws} draw calls for this view${running}`);
   }
-  await page.screenshot({ path: out });
+  if (args.card && !failed) {
+    // The name, the tagline and the mark are the page's own (index.html).
+    await page.evaluate(() => {
+      const card = document.createElement('div');
+      card.style.cssText = 'position:fixed;inset:0;z-index:99;display:flex;flex-direction:column;justify-content:flex-end;padding:0 5vw 6.5vh;'
+        + 'background:linear-gradient(to top,rgba(5,7,10,.94) 0%,rgba(5,7,10,.8) 30%,rgba(5,7,10,0) 62%);'
+        + 'font-family:Inter,"Helvetica Neue","Segoe UI",system-ui,sans-serif;color:#e9edf2;';
+      const name = document.createElement('div');
+      name.style.cssText = 'display:flex;align-items:center;gap:2.6vh;font-size:13vh;font-weight:700;letter-spacing:-.03em;line-height:1.1;';
+      const mark = new Image();
+      mark.src = document.querySelector('link[rel=icon]').href;
+      mark.style.cssText = 'width:11.5vh;height:11.5vh;';
+      name.append(mark, document.querySelector('h1').textContent);
+      const line = document.createElement('div');
+      line.style.cssText = 'margin-top:2.2vh;max-width:86vw;font-size:5vh;font-weight:500;line-height:1.3;text-wrap:balance;';
+      line.innerHTML = document.querySelector('.tagline').innerHTML;
+      card.append(name, line);
+      document.body.append(card);
+      return Promise.all([mark.decode(), document.fonts.ready]);
+    });
+  }
+  await page.screenshot(/\.jpe?g$/i.test(out) ? { path: out, type: 'jpeg', quality: 88 } : { path: out });
   console.log('wrote ' + out);
 } catch (e) {
   failed = true;

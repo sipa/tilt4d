@@ -1,5 +1,10 @@
 # tilt4d
 
+*What would you see if you could not just turn left, right, up, and down, but
+also before and after?*
+
+[![A town street with the view tilted into time: the side in amber is seen as it was a little earlier, the side in blue as it will be a little later.](preview.jpg)](https://wuille.net/tilt4d)
+
 See it [live](https://wuille.net/tilt4d).
 
 A browser demo of rendering as a projection from **four** dimensions to two.
@@ -67,7 +72,7 @@ node tools/bundle.mjs       # or: npm run bundle
 ```
 
 writes `dist/tilt4d.html`: the page with its stylesheet and all its scripts,
-every scene included, minified into one file of about 670 kB (240 kB as a web
+every scene included, minified into one file of about 680 kB (240 kB as a web
 server sends it compressed). The shaders are minified too: they are the
 template strings marked `/* wgsl */` in the scripts, and an unmarked one is
 left as it is (the tool points out any it finds). It needs nothing beside it, so it can be uploaded
@@ -79,6 +84,16 @@ and `make OUT=public/index.html` writes it elsewhere. With the tool itself,
 `--out` names the file and `--no-minify` leaves the code readable.
 `node tools/shot.mjs --page dist/tilt4d.html --scene lab` renders from it,
 which is a way to check a build.
+
+One thing is worth putting next to it on a web server all the same:
+`preview.jpg`, the picture that a link to the page shows where it is posted
+(in a chat, on social media), together with the title and the description in
+the head of `index.html`. `make` puts a copy of it beside the file, so that
+`dist/` (or wherever `OUT` points) holds all there is to upload; the tool by
+itself writes only the file. Such previews want full addresses, so the page
+names the one of its public copy, <https://wuille.net/tilt4d/>: for a copy
+that lives elsewhere, change `og:url` and `og:image` there. The page's icon
+needs no file: it is drawn in the page's head.
 
 ## Controls
 
@@ -422,6 +437,13 @@ It needs a Chromium that Playwright can find (`npx playwright install chromium`)
 `--browser firefox` renders in Firefox instead (run it under `xvfb-run -a`),
 and `node tools/check-wgsl.mjs` validates every scene's shader with naga, the
 WGSL compiler Firefox uses.
+
+With `--card` it lays the page's mark, name and tagline over the picture. That
+is how `preview.jpg` was made:
+
+```
+node tools/shot.mjs --scene plaza --tilt 38 --tiltdir 270 --pitch 5 --tint 2 --size 1200x630 --card --out preview.jpg
+```
 
 ## License
 

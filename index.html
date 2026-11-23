@@ -3,8 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>tilt4d</title>
-<link rel="icon" href="data:,">
+<title>tilt4d: tilt your view into time</title>
+<meta name="description" content="What would you see if you could not just turn left, right, up, and down, but also before and after? A 4D world in your browser, where tilting your view shows the past ahead of you and the future behind.">
+<meta name="theme-color" content="#05070a">
+<!-- What a link to the page shows where it is posted.  The picture is preview.jpg, which has to lie next to the
+     page on its server; the two addresses are those of the public copy (a link preview takes only full ones). -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tilt4d">
+<meta property="og:title" content="tilt4d: tilt your view into time">
+<meta property="og:description" content="What would you see if you could not just turn left, right, up, and down, but also before and after? A 4D world in your browser, where tilting your view shows the past ahead of you and the future behind.">
+<meta property="og:url" content="https://wuille.net/tilt4d/">
+<meta property="og:image" content="https://wuille.net/tilt4d/preview.jpg">
+<meta property="og:image:type" content="image/jpeg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A town street with the view tilted into time: one side of it, in amber, is seen as it was a little earlier, the other, in blue, as it will be a little later.">
+<meta name="twitter:card" content="summary_large_image">
+<!-- The mark of the tilt gauge: a line of sight leaning out of the level, towards the past ahead and the future behind. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0e13'/%3E%3Cpath d='M8 32h48' stroke='%23e9edf2' stroke-opacity='.3' stroke-width='3.5' stroke-linecap='round'/%3E%3Cpath d='M32 32l21 12' stroke='%23ffb454' stroke-width='8' stroke-linecap='round'/%3E%3Cpath d='M32 32l-21-12' stroke='%235ad1ff' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23e9edf2'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -45,7 +61,7 @@
   <div class="panel">
     <header>
       <h1>tilt4d</h1>
-      <p class="tagline">Rendering as a projection from four dimensions to two.</p>
+      <p class="tagline">What would you see if you could not just turn left, right, up, and down, but also <span class="past">before</span> and <span class="future">after</span>?</p>
       <div class="settings-box">
         <button type="button" id="settings-toggle" aria-expanded="false" aria-controls="settings-panel">Settings</button>
         <div id="settings-panel" class="settings-panel" hidden>

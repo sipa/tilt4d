@@ -37,7 +37,7 @@ export const SCENES = [
     id: 'circuit',
     name: 'Coastal Circuit',
     mode: 'drive',
-    blurb: 'Drive a 3.6 km seaside circuit among traffic at {15 m/s}, {30 m/s} and {45 m/s}, past a train and a ladder of timing boards down the main straight.',
+    blurb: 'Drive a 3.6 km seaside circuit among traffic, past a train and a ladder of timing boards down the main straight.',
     hint: 'Roll the mouse wheel forward (or hold X) to tilt the view into time: every timing board down the straight shows an earlier time than the one before it. Then drive (W): tilted, the car heads into the past as well as down the road.',
     touchHint: 'Hold + at the lower right to tilt the view into time: every timing board down the straight shows an earlier time than the one before it. Then push the left stick up to drive: tilted, the car heads into the past as well as down the road.',
     weight: 2,
