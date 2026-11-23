@@ -1,5 +1,7 @@
 # tilt4d
 
+See it [live](https://wuille.net/tilt4d).
+
 A browser demo of rendering as a projection from **four** dimensions to two.
 The world is one fixed 4D scene (space plus scene time), and what is on screen
 is a 3D slice of it. Besides turning and looking up and down, the camera has
