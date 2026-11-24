@@ -41,6 +41,7 @@ struct Globals {
   probeX: vec4f,    // the axes of that picture: 4D unit vectors inside the slice
   probeY: vec4f,
   probeZ: vec4f,
+  shadowAt: vec4f,  // xyz: the point the shadow maps are laid out about (the player, or the scene's shadowCentre)
 };
 @group(0) @binding(0) var<uniform> G: Globals;
 
@@ -247,7 +248,8 @@ struct DrawU { tRel: f32, p0: f32, p1: f32, p2: f32 };
 // steps of one mesh; and the placing matrices of meshes that only move.
 // A chunk's kind: 0 a mesh stored vertex by vertex at every key, 1 one mesh
 // placed by a key's matrix, 2 the same with a movement of its own that
-// repeats (a cycle: see cutTet).
+// repeats (a cycle: see cutTet), stored as the poses of one round, 3 a stiff
+// mesh whose round is a matrix for each pose.
 struct DynRun { first: u32, count: u32, tmpl: u32, per: u32, vert: u32, nv: u32, key: u32, kind: u32 };
 struct DynKey { r0: vec4f, r1: vec4f, r2: vec4f, t: vec4f };   // the matrix by rows; t.x the key's time, t.y the sign of its determinant
 @group(1) @binding(0) var<storage, read> dynVerts: array<DynVert>;
@@ -310,7 +312,7 @@ fn shadowCoord(wpos: vec3f, B: mat3x3f, cascade: u32) -> vec3f {
   var r = select(G.shadow.z, G.shadow.y, cascade == 0u);
   if (cascade == 2u) { r = G.shadow2.x; }
   let texel = 2.0 * r / G.timeInfo.z;
-  let c = G.P.xyz * B;
+  let c = G.shadowAt.xyz * B;
   let q = wpos * B;
   let cs = floor(c.xy / texel) * texel;
   return vec3f((q.xy - cs) / r, 0.5 - (q.z - c.z) / (2.0 * G.shadow.w));
@@ -339,13 +341,20 @@ fn sunShadow(wpos: vec3f, n: vec3f, sunDir: vec3f) -> f32 {
   let valid = smoothstep(0.90, 0.985, dot(l, sunDir));
   if (valid <= 0.0) { return 1.0; }
   let B = shadowBasis(l);
-  let dist = length(wpos - G.P.xyz);
+  let dist = length(wpos - G.shadowAt.xyz);
   let r0 = G.shadow.y; let r1 = G.shadow.z; let r2 = G.shadow2.x;
   let three = G.shadow2.y > 2.5;
+  let one = G.shadow2.y < 1.5;
   let texel0 = 2.0 * r0 / G.timeInfo.z; let texel1 = 2.0 * r1 / G.timeInfo.z; let texel2 = 2.0 * r2 / G.timeInfo.z;
   let depthScale = 1.0 / (2.0 * G.shadow.w);
   var s = 1.0;
-  if (dist < r0 * 0.92) {
+  if (one) {
+    // a single map (a scene no bigger than a room): it fades out at its edge
+    if (dist < r0) {
+      s = shadowTap(shadowCoord(wpos + n * texel0 * 2.0, B, 0u), 0u, texel0 * 1.5 * depthScale);
+      s = mix(s, 1.0, smoothstep(r0 * 0.8, r0, dist));
+    }
+  } else if (dist < r0 * 0.92) {
     s = shadowTap(shadowCoord(wpos + n * texel0 * 2.0, B, 0u), 0u, texel0 * 1.5 * depthScale);
     let f = smoothstep(r0 * 0.75, r0 * 0.92, dist);
     if (f > 0.0) { s = mix(s, shadowTap(shadowCoord(wpos + n * texel1 * 1.5, B, 1u), 1u, texel1 * 1.5 * depthScale), f); }
@@ -460,6 +469,25 @@ fn keyBetween(A: DynKey, B: DynKey, t: f32) -> DynKey {
   K.t = vec4f(t, A.t.y, 0.0, 0.0);
   return K;
 }
+// The same between two poses of a stiff mesh's round, u of the way on.
+fn poseBetween(A: DynKey, B: DynKey, u: f32) -> DynKey {
+  if (u <= 0.0) { return A; }
+  if (u >= 1.0) { return B; }
+  var K: DynKey;
+  K.r0 = mix(A.r0, B.r0, u); K.r1 = mix(A.r1, B.r1, u); K.r2 = mix(A.r2, B.r2, u);
+  K.t = A.t;
+  return K;
+}
+// The matrix that does what C does and then what K does, with K's time.
+fn keyAfter(K: DynKey, C: DynKey) -> DynKey {
+  let cw = vec3f(C.r0.w, C.r1.w, C.r2.w);
+  var R: DynKey;
+  R.r0 = vec4f(K.r0.x * C.r0.xyz + K.r0.y * C.r1.xyz + K.r0.z * C.r2.xyz, dot(K.r0.xyz, cw) + K.r0.w);
+  R.r1 = vec4f(K.r1.x * C.r0.xyz + K.r1.y * C.r1.xyz + K.r1.z * C.r2.xyz, dot(K.r1.xyz, cw) + K.r1.w);
+  R.r2 = vec4f(K.r2.x * C.r0.xyz + K.r2.y * C.r1.xyz + K.r2.z * C.r2.xyz, dot(K.r2.xyz, cw) + K.r2.w);
+  R.t = vec4f(K.t.x, K.t.y * C.t.y, 0.0, 0.0);
+  return R;
+}
 fn cutTet(instance: u32, vi: u32) -> TetCut {
   var r: TetCut;
   r.ok = false;
@@ -474,8 +502,8 @@ fn cutTet(instance: u32, vi: u32) -> TetCut {
   // its corners: vertex numbers within the mesh, bit 30 for "at the later
   // key"; the top bit of the first records the tetrahedron's orientation
   let raw = dynTmpl[run.tmpl + n % run.per];
-  let kind = run.kind;
-  r.kind = kind;
+  var kind = run.kind;
+  var mesh = run.vert; // (a mesh that only moves: where its vertices are)
   // (a mesh that only moves: the two keys this step runs between)
   var K0: DynKey;
   var K1: DynKey;
@@ -489,7 +517,7 @@ fn cutTet(instance: u32, vi: u32) -> TetCut {
   var p0 = 0u; var p1 = 0u; var u0 = 0.0; var u1 = 0.0;
   if (kind == 1u) {
     K0 = dynKeys[run.key + step]; K1 = dynKeys[run.key + step + 1u];
-  } else if (kind == 2u) {
+  } else if (kind >= 2u) {
     // the cycle's record: where the poses are, the vertices of each, how
     // many there are, the time from pose to pose and when a round starts
     let cy = dynRuns[run.vert];
@@ -504,11 +532,24 @@ fn cutTet(instance: u32, vi: u32) -> TetCut {
     K0 = keyBetween(A, B, te); K1 = keyBetween(A, B, tl);
     let np = i32(cy.tmpl);
     let i0 = u32(((m % np) + np) % np);
-    p0 = cy.first + i0 * cy.count;
-    p1 = cy.first + ((i0 + 1u) % cy.tmpl) * cy.count;
     u0 = select((te - g0) / dt, 0.0, te <= g0);
     u1 = select((tl - g0) / dt, 1.0, tl >= g1);
+    if (kind == 3u) {
+      // A stiff mesh, stored once: its poses are matrices, and what lies
+      // between two of them is the matrix between.  That and the key make one
+      // matrix for each end of the step, and from here on this is a mesh that
+      // only moves.
+      let C0 = dynKeys[cy.key + i0]; let C1 = dynKeys[cy.key + (i0 + 1u) % cy.tmpl];
+      K0 = keyAfter(K0, poseBetween(C0, C1, u0));
+      K1 = keyAfter(K1, poseBetween(C0, C1, u1));
+      mesh = cy.first;
+      kind = 1u;
+    } else {
+      p0 = cy.first + i0 * cy.count;
+      p1 = cy.first + ((i0 + 1u) % cy.tmpl) * cy.count;
+    }
   }
+  r.kind = kind;
   var tet: vec4u;
   var tet2: vec4u;
   var later = vec4<bool>(false);
@@ -533,7 +574,7 @@ fn cutTet(instance: u32, vi: u32) -> TetCut {
         }
       } else {
         // the mesh as it is ...
-        tet[k] = run.vert + v;
+        tet[k] = mesh + v;
         m = dynVerts[tet[k]].pos.xyz;
       }
       // ... placed by the key

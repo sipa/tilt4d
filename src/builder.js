@@ -157,7 +157,8 @@ export class SceneBuilder {
     this.cycles = [];
     this.shared = new Map(); // meshes, lists and runs of keys already stored, by their contents (see _share)
     // per layer: { count, t0, t1, box: [minx, miny, minz, maxx, maxy, maxz], tmpl, per, vert, nv, key, kind, ... }
-    // (kind: 0 stored vertex by vertex, 1 one mesh placed by keys, 2 that with a cycle)
+    // (kind: 0 stored vertex by vertex, 1 one mesh placed by keys, 2 the poses of a cycle placed by keys,
+    // 3 one mesh moved by the matrices of a cycle and placed by keys)
     this.chunks = [[], [], []];
     // one entry per static() call and layer: { layer, first, count, from, to, period, box }
     this.sCalls = [];
@@ -731,29 +732,48 @@ export class SceneBuilder {
       if (cy.transform) g = g.clone().transform(cy.transform(u));
       return g;
     };
+    // A stiff mesh that its round only moves (a fixed Geo with
+    // `cycle.transform`: a gear, a hand, a pendulum) is stored once, as it
+    // is, with a matrix for each pose: 64 bytes a pose, whatever the mesh.
+    // Going evenly from one pose's matrix to the next is the same thing as
+    // every vertex going in a straight line.  (`cycle.store: 'poses'` keeps
+    // such a mesh vertex by vertex at every pose all the same, for comparing.)
+    const stiff = typeof geo !== 'function' && !!cy.transform && !cy.paint && cy.store !== 'poses';
     const poses = [];
-    for (let i = 0; i < n; i++) poses.push(pose(i / n));
-    const g0 = poses[0], nv = g0.vertexCount;
+    const poseOf = (i) => poses[i] || (poses[i] = pose(i / n));
+    const g0 = stiff ? geo : poseOf(0), nv = g0.vertexCount;
     if (nv === 0) return this;
-    for (const g of poses) {
-      if (g.idx.length !== g0.idx.length) throw new Error('dynamic(): the mesh must keep the same triangles at every pose of a cycle');
-    }
     const dv = this.dv, base = dv.count;
-    dv.reserve(nv * n);
-    const own = poses.map((g, i) => this._putDyn(g, nv, 0, null, cy.paint ? cy.paint(i / n) : null, base + i * nv, 0).box);
-    const vertBase = this._share(dv, base, nv * n);
+    let own, vertBase, poseKeys = 0, turned = false;
+    if (stiff) {
+      dv.reserve(nv);
+      const box = this._putDyn(g0, nv, 0, null, null, base, 0).box;
+      vertBase = this._share(dv, base, nv);
+      const placed = this._putKeys(Array.from({ length: n }, (_, i) => i / n), (u) => cy.transform(u), [box]);
+      poseKeys = placed.keyBase;
+      own = placed.boxes;
+      turned = placed.mirrored; // (a round that mirrors the mesh: it is stored the other way round from how it is seen)
+    } else {
+      for (let i = 0; i < n; i++) {
+        if (poseOf(i).idx.length !== g0.idx.length) throw new Error('dynamic(): the mesh must keep the same triangles at every pose of a cycle');
+      }
+      dv.reserve(nv * n);
+      own = poses.map((g, i) => this._putDyn(g, nv, 0, null, cy.paint ? cy.paint(i / n) : null, base + i * nv, 0).box);
+      vertBase = this._share(dv, base, nv * n);
+    }
 
     // ---- where the keys put it.  Between two of them the matrix goes
     // evenly from one to the other, which is what moving every vertex in a
     // straight line comes to.
-    const { keyBase, mirrored, mats } = this._putKeys(times, xf, own);
+    const placedKeys = this._putKeys(times, xf, own);
+    const { keyBase, mats } = placedKeys, mirrored = placedKeys.mirrored !== turned;
     // The record of the cycle goes with numbers of single precision, as the
     // shader has them: the two have to agree on which stretches from pose to
     // pose fall within which stretch from key to key.
     const f = Math.fround;
     const dt = f(cy.period / n), start = f(cy.start ?? 0);
     const cycle = this.cycles.length;
-    this.cycles.push({ vert: vertBase, nv, n, dt, start });
+    this.cycles.push({ vert: vertBase, nv, n, dt, start, key: poseKeys });
     const grid = (m) => f(start + f(m * dt)); // when pose m of the endless row of them is reached
     const mod = (m) => ((m % n) + n) % n;
     // the mesh at the time t (within the stretch from key k to the next):
@@ -788,7 +808,7 @@ export class SceneBuilder {
       growBox(box, b1);
       for (const { layer, list, per, dark } of lists) {
         this.chunks[layer].push({ count: per * count, t0, t1, box, within, path: [b0, b1], dark,
-          tmpl: list, per, vert: 0, nv: ma, key: keyBase + k, kind: 2, cycle, steps: count, grid0: grid(ma), dt });
+          tmpl: list, per, vert: 0, nv: ma, key: keyBase + k, kind: stiff ? 3 : 2, cycle, steps: count, grid0: grid(ma), dt });
       }
     }
     for (const { per } of lists) this.counts.tetrahedra += per * steps;
@@ -796,7 +816,7 @@ export class SceneBuilder {
     // ---- the ends: the mesh as it is at that moment, worked out as the shader does
     const poseAt = (k) => {
       const p = at(f(times[k]), Math.min(k, nk - 2));
-      const a = poses[mod(p.m)], b = poses[mod(p.m + 1)];
+      const a = poseOf(mod(p.m)), b = poseOf(mod(p.m + 1));
       let g = a;
       if (p.u > 0 && b !== a) {
         g = a.clone();
@@ -854,17 +874,18 @@ export class SceneBuilder {
     // A chunk of a mesh with a cycle says in `vert` where the cycle's record
     // is, and in `nv` which stretch from pose to pose it starts with.  Those
     // records come after the chunks' in the same table: where the poses are,
-    // how many vertices each has, how many poses there are, and (as the bits
+    // how many vertices each has, how many poses there are, (as the bits
     // of single-precision numbers) the time from pose to pose and the time a
-    // round starts at.
+    // round starts at, and, for a stiff mesh stored once, where among the
+    // keys the matrices of its poses are.
     const runs = new Uint32Array(Math.max(1, all.length + this.cycles.length) * 8);
     all.forEach((c, i) => {
-      runs.set([0, c.count, c.tmpl, c.per, c.kind === 2 ? all.length + c.cycle : c.vert, c.nv >>> 0, c.key, c.kind], i * 8);
+      runs.set([0, c.count, c.tmpl, c.per, c.kind >= 2 ? all.length + c.cycle : c.vert, c.nv >>> 0, c.key, c.kind], i * 8);
     });
     const bits = new Float32Array(2), asBits = new Uint32Array(bits.buffer);
     this.cycles.forEach((c, i) => {
       bits[0] = c.dt; bits[1] = c.start;
-      runs.set([c.vert, c.nv, c.n, asBits[0], asBits[1], 0, 0, 0], (all.length + i) * 8);
+      runs.set([c.vert, c.nv, c.n, asBits[0], asBits[1], 0, c.key, 0], (all.length + i) * 8);
     });
     // chunk table: [tetrahedra to a step, count] and [t0, t1, centre xyz, half-size xyz, radius]
     const chunkRange = new Uint32Array(all.length * 2);
@@ -884,12 +905,12 @@ export class SceneBuilder {
     const chunkSteps = new Float64Array(all.length * 6);
     all.forEach((c, i) => {
       chunkNear[i] = c.within < BIG ? c.within : Infinity;
-      if (c.kind === 2) {
+      if (c.kind >= 2) {
         // (and how big the thing is, as half its bounds each way, at whichever end it is bigger)
         const [p, q] = c.path;
         chunkSteps.set([c.steps, c.grid0, c.dt, Math.max(p[3] - p[0], q[3] - q[0]) / 2, Math.max(p[4] - p[1], q[4] - q[1]) / 2, Math.max(p[5] - p[2], q[5] - q[2]) / 2], i * 6);
       }
-      if (c.within < BIG || c.kind === 2) {
+      if (c.within < BIG || c.kind >= 2) {
         const mid = (b) => [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
         const a = mid(c.path[0]), z = mid(c.path[c.path.length - 1]), d = [z[0] - a[0], z[1] - a[1], z[2] - a[2]];
         const len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];

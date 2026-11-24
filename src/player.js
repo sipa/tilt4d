@@ -76,7 +76,7 @@ const MAX_SPEED = 4; // in units of C; nothing special happens there, it only ke
 // leans into time (a car that has turned in a tilted view), the scenery is
 // stretched that way, and this is more than the speed over the ground.
 const DRAG = [0.1, 0.15, 0.6];
-const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, which carries the feet 1.27 m up
+const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, which carries the feet 1.27 m up (a scene's jumpSpeed says otherwise)
 // The slope of the ground at which there is no way up it any more, on foot
 // and in a car (see _climb), and the time in which a slope that holds a car
 // altogether wears its own speed down.
@@ -84,7 +84,8 @@ const MAX_CLIMB = Math.PI / 3, MAX_CLIMB_CAR = Math.PI / 4, HILL_TIME = 1;
 
 // The player's body for collisions: an upright cylinder from `lo` to `hi`
 // above the feet on the ground, a sphere about the eye otherwise.  Things
-// lower than `lo` are stepped over.
+// lower than `lo` are stepped over.  A scene's `body` replaces any of these
+// numbers (a small world wants a small body).
 const BODY = {
   walk: { r: 0.35, lo: 0.45, hi: 1.8 },
   drive: { r: 0.9, lo: 0.35, hi: 1.3 },
@@ -114,6 +115,8 @@ export class Player {
     this.walkSpeed = 3;
     this.runSpeed = 8;
     this.accel = 1;
+    this.body = BODY;
+    this.jumpSpeed = JUMP;
     // walk mode, off the ground: the height of the feet (null while they are
     // on the ground), how fast it is changing, and whether they are in the air
     this.feet = null;
@@ -208,6 +211,9 @@ export class Player {
     this._setDown();
     this.eyeHeights = { walk: 1.7, drive: 1.25, ...(def.eyeHeight || {}) };
     this.accel = def.accel ?? 1;
+    this.body = {};
+    for (const m of Object.keys(BODY)) this.body[m] = { ...BODY[m], ...(def.body?.[m] || {}) };
+    this.jumpSpeed = def.jumpSpeed ?? JUMP;
     this.tiltHold = 0;
     this.timeScale = 1;
     this.paused = false;
@@ -283,14 +289,15 @@ export class Player {
   _land() {
     const s = this.solids, P = this.P;
     if (!s) return;
-    const open = (x, y) => s.clearColumn(x, y, (this.ground ? this.ground(x, y, P[3]) : 0) + BODY.walk.lo, P[2]);
+    const open = (x, y) => s.clearColumn(x, y, (this.ground ? this.ground(x, y, P[3]) : 0) + this.body.walk.lo, P[2]);
     if (open(P[0], P[1])) return;
-    for (let d = 1; d <= 80; d += 1) {
-      const n = Math.max(8, Math.round(d * 4));
+    const w = this.body.walk.r / BODY.walk.r; // (the search is laid out for a person: rings a metre apart)
+    for (let k = 1; k <= 80; k += 1) {
+      const d = k * w, n = Math.max(8, Math.round(k * 4));
       for (let i = 0; i < n; i++) {
         const a = i * 2 * Math.PI / n, x = P[0] + d * Math.cos(a), y = P[1] + d * Math.sin(a);
         // open at the spot itself and a body's width round it
-        if (open(x, y) && open(x + 0.6, y) && open(x - 0.6, y) && open(x, y + 0.6) && open(x, y - 0.6)) {
+        if (open(x, y) && open(x + 0.6 * w, y) && open(x - 0.6 * w, y) && open(x, y + 0.6 * w) && open(x, y - 0.6 * w)) {
           P[0] = x; P[1] = y;
           return;
         }
@@ -514,7 +521,7 @@ export class Player {
     // With solid surfaces about, in steps short enough that none of them can
     // be stepped across.
     let left = this.paused ? 0 : dt * this.timeScale;
-    const stride = this.solids && this.solids.count ? BODY[this.mode].r * 0.5 : Infinity;
+    const stride = this.solids && this.solids.count ? this.body[this.mode].r * 0.5 : Infinity;
     const P = this.P;
     let jump = this.mode === 'walk' && !!input.jump;
     for (let i = 0; left > 0; i++) {
@@ -586,15 +593,16 @@ export class Player {
   // Returns whether the player had to be moved.
   _bounds() {
     const P = this.P, z = P[2], vel = this.vel;
+    const size = (this.body[this.mode]?.r ?? BODY.fly.r) / BODY.fly.r; // (the margins below go with the ordinary body)
     if (this.ground) {
-      const floor = this.ground(P[0], P[1], P[3]) + 0.6;
+      const floor = this.ground(P[0], P[1], P[3]) + 0.6 * size;
       if (P[2] < floor) {
         P[2] = floor;
         if (vel[2] < 0) vel[2] = 0;
       }
     }
     if (this.ceiling !== null && this.ceiling !== undefined) {
-      const top = (typeof this.ceiling === 'function' ? this.ceiling(P[0], P[1], P[3]) : this.ceiling) - 0.4;
+      const top = (typeof this.ceiling === 'function' ? this.ceiling(P[0], P[1], P[3]) : this.ceiling) - 0.4 * size;
       if (P[2] > top) {
         P[2] = top;
         if (vel[2] > 0) vel[2] = 0;
@@ -609,7 +617,7 @@ export class Player {
   // walk on: up or down a small step, and off the edge into a fall.  (Things
   // lower than the body's `lo` cannot be stood on: those are walked through.)
   _vertical(h, jump) {
-    const P = this.P, body = BODY.walk;
+    const P = this.P, body = this.body.walk;
     const g = this.ground ? this.ground(P[0], P[1], P[3]) : 0;
     const s = this.solids && this.solids.count ? this.solids : null;
     // the highest thing to stand on that is no higher than z
@@ -618,12 +626,13 @@ export class Player {
       return f >= g + body.lo ? f : g;
     };
     if (this.feet === null) this.feet = g;
+    const size = body.lo / BODY.walk.lo; // (the steps below are a person's: 0.25 m up, 0.3 m down)
     if (!this.air) {
-      const f = floor(this.feet + 0.25);
+      const f = floor(this.feet + 0.25 * size);
       if (jump) {
         this.air = true;
-        this.vz = JUMP;
-      } else if (f >= this.feet - 0.3) {
+        this.vz = this.jumpSpeed;
+      } else if (f >= this.feet - 0.3 * size) {
         this.feet = f;
       } else {
         this.air = true; // walked off the edge
@@ -657,7 +666,7 @@ export class Player {
   // Moves the player out of whatever solid surface they have run into, and
   // takes away the part of their motion that was going into it.
   _collide() {
-    const P = this.P, body = BODY[this.mode];
+    const P = this.P, body = this.body[this.mode];
     let hits;
     if (MODES[this.mode].ground) {
       const g = this.ground ? this.ground(P[0], P[1], P[3]) : 0;

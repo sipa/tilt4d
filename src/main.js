@@ -5,7 +5,7 @@ import { Colliders } from './collide.js';
 import { SCENES } from './scenes/index.js';
 import { Hud, CONTROLS, keyCaps } from './hud.js';
 import { TouchControls, TOUCH_CONTROLS } from './touch.js';
-import { UNITS, roundLength, roundSpeed, withUnits } from './units.js';
+import { UNITS, roundLength, roundSpeed, unitsFor, withUnits } from './units.js';
 import { Music } from './music.js';
 
 const $ = (id) => document.getElementById(id);
@@ -175,7 +175,7 @@ async function loadScene(id) {
       const buildMs = Math.round(performance.now() - t0);
       const t1 = performance.now();
       const onGround = def.ground || (flat ? () => 0 : null);
-      const solids = def.solid === false ? null : new Colliders(data.solidTris, onGround);
+      const solids = def.solid === false ? null : new Colliders(data.solidTris, onGround, def.solidGrid);
       data.stats.solidTriangles = solids ? solids.count : 0;
       data.stats.solidMs = Math.round(performance.now() - t1);
       built = { data, solids, buildMs };
@@ -210,7 +210,7 @@ function applyMode() {
   // keyboard entries name one key per word; touch entries are whole phrases
   const caps = touchMode ? (k) => k.split(' / ').map((x) => `<kbd>${x}</kbd>`).join(' / ') : keyCaps;
   // (a description that names speeds is a function: see hud.js)
-  const about = { mark: (k) => roundSpeed(UNITS[units], k * player.C) };
+  const about = { mark: (k) => roundSpeed(unitsFor(units, player.C), k * player.C) };
   $('controls').innerHTML = table[player.mode].map(([k, d]) => `<tr><td>${caps(k)}</td><td>${typeof d === 'function' ? d(about) : d}</td></tr>`).join('');
   $('controls-common').innerHTML = table.common.map(([k, d]) => `<span>${caps(k)} ${d}</span>`).join('');
   $('how-to-enter').innerHTML = touchMode
@@ -224,14 +224,16 @@ function applyMode() {
 // chosen: the HUD, the scene cards, the introduction and the list of controls.
 function showUnits() {
   const u = UNITS[units];
-  hud.setUnits(u);
+  // (a scene of small things that move slowly is shown in centimetres or inches)
+  const own = current ? unitsFor(units, player.C) : u;
+  hud.setUnits(own);
   for (const s of SCENES) {
     const el = document.querySelector(`.scene-card[data-id="${s.id}"] span`);
     if (el) el.textContent = withUnits(u, s.blurb);
   }
   if (current) {
     // how far to the side the view is a second on (or back) at a tilt of 45 degrees: every scene has its own scale
-    $('about-length').textContent = roundLength(u, player.C);
+    $('about-length').textContent = roundLength(own, player.C);
     $('about-scene').textContent = ` (in “${current.entry.name}”, the scene loaded now: each has its own scale)`;
     applyMode();
   }
@@ -661,6 +663,7 @@ async function start() {
   }
   renderer.onError = (msg) => { console.error(msg); setStatus(msg, true); };
   if (params.has('cull')) renderer.cull = num('cull', 31) | 0; // (0: draw everything in every pass, to compare with; see renderer.js)
+  if (params.has('slack')) renderer.slackScale = num('slack', 1); // (the margin by which moving geometry is taken in beyond the slice, times this: see _dynDraws)
   if (params.get('order') === '0') renderer.nearFirst = false; // (draw static geometry in the order it is stored, to compare with)
   // Browsers take the graphics device away now and then (a phone that had
   // the page in the background, a driver that was restarted).

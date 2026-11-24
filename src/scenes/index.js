@@ -88,4 +88,15 @@ export const SCENES = [
     work: 17.3e6,
     load: () => import('./pier.js'),
   },
+  {
+    id: 'workshop',
+    name: 'Clockmaker\'s Workshop',
+    mode: 'walk',
+    blurb: 'One small room on a late afternoon: a sunbeam across the bench, and hundreds of wheels, pendulums, hands and small creatures moving at a few centimetres a second. Built to be looked at from close by, for desktop graphics cards.',
+    hint: 'Roll the mouse wheel forward (or hold X): the view tilts into time. The clocks along the bench now disagree by several seconds, the metronomes on the shelf beat one after another, pendulums bend into S-shapes and every wheel twists like a screw. Press M to fly, go close to a clockwork, and tilt again.',
+    touchHint: 'Hold + at the lower right: the view tilts into time. The clocks along the bench now disagree by several seconds, the metronomes on the shelf beat one after another, pendulums bend into S-shapes and every wheel twists like a screw. Switch to flying, go close to a clockwork, and tilt again.',
+    weight: 5,
+    work: 31.7e6,
+    load: () => import('./workshop.js'),
+  },
 ];

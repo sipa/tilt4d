@@ -41,7 +41,7 @@ const data = builder.finalize();
 const buildMs = performance.now() - t0;
 t0 = performance.now();
 const onGround = def.ground || (MODES[def.mode || 'walk'].ground ? () => 0 : null);
-const solids = def.solid === false ? null : new Colliders(data.solidTris, onGround);
+const solids = def.solid === false ? null : new Colliders(data.solidTris, onGround, def.solidGrid);
 const solidMs = performance.now() - t0;
 console.log(`${id}: built in ${buildMs.toFixed(0)} ms: ${JSON.stringify(data.stats)}`);
 if (!solids) {

@@ -74,7 +74,7 @@ node tools/bundle.mjs       # or: npm run bundle
 ```
 
 writes `dist/index.html`: the page with its stylesheet and all its scripts,
-every scene included, minified into one file of about 710 kB (260 kB as a web
+every scene included, minified into one file of about 800 kB (290 kB as a web
 server sends it compressed). The shaders are minified too: they are the
 template strings marked `/* wgsl */` in the scripts, and an unmarked one is
 left as it is (the tool points out any it finds). It needs nothing beside it, so it can be uploaded
@@ -153,7 +153,8 @@ towards the future's side, it heads into the future. The readouts show it:
 * **to the right** and **looking at** say how much later or earlier the view
   shows things, for every 10 m further to your right and further along your
   line of sight; **upwards**, which is only there while the view is tilted up
-  or down, says the same for every 10 m higher up.
+  or down, says the same for every 10 m higher up. (In a scene of small, slow
+  things these are per 10 cm, and the speeds in cm/s.)
 
 ### Settings
 
@@ -164,7 +165,7 @@ The **Settings** button at the top of the menu opens a small panel:
 | Mode | the control modes the scene offers | `M` |
 | Time colouring | off, slight, full (see below) | `T` |
 | Music | off, soft, full (see below) | `N` |
-| Units | m/s, km/h or mph, for the readouts and for the speeds the menu names | |
+| Units | m/s, km/h or mph, for the readouts and for the speeds the menu names (cm/s, or in/s with mph, in a scene where things move that slowly) | |
 | Readouts | shown or hidden | `H` |
 | Pace | everything at ⅛ to 8 times its speed | `[` `]` |
 | Field of view | 50° to 90° (`?fov=70` in the address sets any) | |
@@ -456,16 +457,19 @@ In the menu's order, from the lightest to draw to the heaviest:
 | **Coral Reef** | swim | 4 m | columns of bubbles all rising at the same pace, vents puffing together, lanes of fish, caustics |
 | **Winter Valley** | walk | 12 m | a detailed scene, for desktop GPUs: a ridge's shadow and the alpenglow sweeping over the mountains, lanterns that come on in a wave at dusk with a pulse running up the path, a chairlift, an aerial tram, skaters, skiers, walkers, chimney smoke and clocks that follow the sky |
 | **Pleasure Pier** | walk | 5 m | the most intricate scene, for desktop GPUs: a Victorian pier at dusk on a day of ten minutes, where everything runs in cycles. Pier trains at 9 m/s that stretch along the whole track at a tilt of 29°, a big wheel and a swing ride that wind into spirals, firework shells that become cones, lighthouse beams, lamps coming on in a wave out along the pier, chasing bulbs, a tide every three minutes, clocks, and walkers, cyclists, cars and boats at speeds from 1 to 17 m/s |
+| **Clockmaker's Workshop** | walk | 30 cm | one small room, for desktop GPUs, where nothing is far away and everything is slow: some 350 moving parts made of about 200,000 small triangles, so that a tilted close-up stays smooth. Wheel trains that mesh, escapements that tick, a wave of pendulums and its shadow, a row of metronomes, an orrery, two steam engines, a music box that plays the scene's tune, a shelf railway, candles, a fire, a cat. Tilted, pendulums bend into S-shapes and wheels twist like screws; fly up close (`M`) and tilt again |
 
 Scenes live in `src/scenes/` and are listed in `src/scenes/index.js`.
 [docs/SCENES.md](docs/SCENES.md) explains how to write one;
 `src/scenes/lab.js` is a commented example, and `src/scenes/enginetest.js`
 (not in the menu: open it with `?scene=enginetest`) shows the engine's newer
-features side by side. The six larger scenes were each written by a separate
+features side by side. The seven larger scenes were each written by a separate
 Claude Opus agent against that guide, and later given their close-up detail
 (faces, wheels, lettering, door handles) the same way. Winter Valley and the
 Pleasure Pier are the heavy ones, with about a million static triangles each
-and costlier shaders, where the others stay within what a phone can draw.
+and costlier shaders, where the others stay within what a phone can draw. The
+Clockmaker's Workshop is as heavy to draw as those two, but the other way
+round: a third of their static triangles, and most of its cost in what moves.
 
 `tools/check-solids.mjs <scene>` builds a scene without a browser and checks
 its collisions: that the spawn point is clear and that roaming about never

@@ -1,5 +1,5 @@
 // WebGPU renderer.  Per frame:
-//   1. two or three shadow cascades (depth only)
+//   1. one to three shadow cascades (depth only)
 //   2. for scenes that ask for reflections: one side of a picture of the
 //      scene all round the player (a cube map), which glossy surfaces mirror
 //   3. the scene into a multisampled HDR target: static geometry, sliced
@@ -22,7 +22,7 @@ const DEPTH = 'depth32float';
 const SAMPLES = 4;
 const SHADOW_SIZE = 2048;
 const PROBE_SIZE = 256;
-const GLOBALS = 60; // floats in the Globals uniform (see wgsl.js)
+const GLOBALS = 64; // floats in the Globals uniform (see wgsl.js)
 const MAX_COPIES = 24;
 const SUN_SAMPLES = 256, SUN_STEP = 0.25; // the light's direction is read back for this many moments, this far apart (s)
 const SLOT = 256;
@@ -752,8 +752,20 @@ export class Renderer {
     this.device.queue.writeBuffer(this.drawBuf, 0, this.drawData, 0, (k1 - k0 + 1) * SLOT / 4);
 
     const ax = Math.abs(O[0]), ay = Math.abs(O[1]), az = Math.abs(O[2]), at = Math.abs(O[3]) * C;
+    // The shader works in single precision, so where it finds the slice can
+    // be off by a few units in the last place of the coordinates and times
+    // that go into it.  That much, in metres of (x, y, z, C t), is taken in
+    // beyond what the slice exactly touches (five such units, where the
+    // arithmetic can be off by one and a half).  It is no fixed length: a
+    // length is a stretch of time that grows as C shrinks, and 2 cm at
+    // C = 0.2 m/s would be a tenth of a second either way, twenty poses of a
+    // balance wheel in a level view.  this.slackScale is for trying out how
+    // much of it is needed.
+    const reachT = Math.max(Math.abs(now), Math.abs(sc.tMin), Math.abs(sc.tMax));
+    const slack = Math.min(0.02, (1e-5 + 6e-7 * (Math.abs(P[0]) + Math.abs(P[1]) + Math.abs(P[2]) + 2 * viewDist + C * reachT)) * (this.slackScale ?? 1));
     const step = O[3] * C * period; // how far one repeat moves a chunk along O
-    const reach = [viewDist, 3 * radii[0], 1.5 * radii[1], sc.cascades > 2 ? 1.5 * radii[2] : 0];
+    const reach = [viewDist, 3 * radii[0], sc.cascades > 1 ? 1.5 * radii[1] : 0, sc.cascades > 2 ? 1.5 * radii[2] : 0];
+    if (def.shadowCentre) for (let c = 1; c <= sc.cascades; c++) reach[c] = Infinity; // (maps that do not follow the player)
     const B = ch.box, R = ch.range;
     // The view's pyramid, as planes over (x, y, z, C t) measured from the
     // player: [a.x, a.y, a.z, a.t, d], inside where a . delta + d >= 0.  A
@@ -797,7 +809,7 @@ export class Renderer {
       const centre = Math.hypot(dx, dy, dz), dist = centre - B[o + 8];
       if (dist > viewDist || dist > ch.near[i] * this.detail) continue; // (near: detail that is drawn only from close by)
       const d0 = O[0] * dx + O[1] * dy + O[2] * dz + O[3] * C * ((B[o] + B[o + 1]) / 2 - now);
-      const ext = ax * B[o + 5] + ay * B[o + 6] + az * B[o + 7] + at * (B[o + 1] - B[o]) / 2 + 0.02;
+      const ext = ax * B[o + 5] + ay * B[o + 6] + az * B[o + 7] + at * (B[o + 1] - B[o]) / 2 + slack;
       let ka = k0, kb = k1;
       if (Math.abs(step) > 1e-9) {
         const a = (-ext - d0) / step, b = (ext - d0) / step;
@@ -842,7 +854,7 @@ export class Renderer {
             // which the slice can touch the thing: while the middle of it is
             // no further from the slice than it is big that way.
             const S = ch.steps, e = i * 6;
-            const rr = ax * S[e + 3] + ay * S[e + 4] + az * S[e + 5] + 0.02;
+            const rr = ax * S[e + 3] + ay * S[e + 4] + az * S[e + 5] + slack;
             let u0 = 0, u1 = 1;
             if (da !== db) {
               const a = (-rr - da) / (db - da), b = (rr - da) / (db - da);
@@ -927,12 +939,15 @@ export class Renderer {
     g[27] = def.exposure ?? 1;
     const shadows = sc.cascades > 0;
     const radii = def.shadowRadii ?? [35, 260];
-    g[28] = shadows ? 1 : 0; g[29] = radii[0]; g[30] = radii[1]; g[31] = def.shadowDepth ?? 800;
+    g[28] = shadows ? 1 : 0; g[29] = radii[0]; g[30] = radii[1] ?? radii[0]; g[31] = def.shadowDepth ?? 800;
     g[32] = w; g[33] = h; g[34] = 1 / w; g[35] = 1 / h;
     g[36] = cam.time; g[37] = def.period || 0; g[38] = SHADOW_SIZE;
     g[39] = cam.timeTint === 2 ? -1 : cam.timeTint === 1 ? Math.max(0, cam.timeCast ?? 1) : 0;
     g[40] = radii[2] ?? 0; g[41] = sc.cascades; g[42] = 0; g[43] = 0;
     g[44] = sc.reflections ? 1 : 0; g[45] = 0; g[46] = 0; g[47] = 0;
+    // the shadow maps follow the player, unless the scene pins them (a room: one map over all of it)
+    const shadowAt = def.shadowCentre ?? cam.P;
+    g[60] = shadowAt[0]; g[61] = shadowAt[1]; g[62] = shadowAt[2]; g[63] = 0;
     let axes = null;
     if (sc.reflections) {
       axes = this._probeAxes(cam.O);
@@ -945,7 +960,7 @@ export class Renderer {
     // draws everything in every pass, for comparison).
     const cull = this.cull;
     const sun = (cull & 10) && sc.cascades ? this._sunDir(sc, cam.P[3]) : null;
-    const cascadePlanes = [0, 1, 2].map((c) => (c < sc.cascades ? (sun ? this._cascadePlanes(sun, cam.P, radii[c], g[31]) : null) : [[0, 0, 0, -1]]));
+    const cascadePlanes = [0, 1, 2].map((c) => (c < sc.cascades ? (sun ? this._cascadePlanes(sun, shadowAt, radii[c], g[31]) : null) : [[0, 0, 0, -1]]));
     const { lists: [draws, s1, s2, s3, allDyn], blend: blendDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22], cull & 8 ? cascadePlanes : [null, null, null]);
     const shadowDraws = [s1, s2, s3];
     const set = this._staticSet(cam, sc, g[24]);

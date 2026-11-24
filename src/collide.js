@@ -11,7 +11,7 @@
 // player from either side, and it is the shortness of the steps the player is
 // moved in (see Player.update) that keeps the player from getting across one.
 
-const LEVELS = 6;      // grids over x and y with cells of 4, 32, 256, ... metres
+const LEVELS = 6;      // grids over x and y with cells of 4, 32, 256, ... metres (or from a finer start, see the constructor)
 const CELL0 = 4, GROW = 8;
 const MAX_CELLS = 64;  // a triangle goes into the finest grid in which it covers no more cells than this
 const LIE = 0.35;      // triangles that stay this close to the ground are part of it
@@ -32,8 +32,11 @@ export class Colliders {
 
   // tris: 9 numbers per triangle.  ground: (x, y, t) -> z or null; triangles
   // lying on it (terrain, paving, road markings) are left out, because the
-  // ground is followed rather than run into.
-  constructor(tris, ground = null) {
+  // ground is followed rather than run into.  cell: the size of the finest
+  // grid's cells, for a scene so small that 4 m would put all of it in a
+  // few of them (the scene's solidGrid).
+  constructor(tris, ground = null, cell = CELL0) {
+    this.cell = cell > 0 ? cell : CELL0;
     const total = Math.floor(tris.length / 9);
     const keep = [];
     const onGround = (o) => Math.abs(tris[o + 2] - ground(tris[o], tris[o + 1], 0)) < LIE;
@@ -63,7 +66,7 @@ export class Colliders {
       this.zr[j * 2 + 1] = Math.max(t[2], t[5], t[8]);
       const x0 = Math.min(t[0], t[3], t[6]), x1 = Math.max(t[0], t[3], t[6]);
       const y0 = Math.min(t[1], t[4], t[7]), y1 = Math.max(t[1], t[4], t[7]);
-      for (let l = 0, s = CELL0; l < LEVELS; l++, s *= GROW) {
+      for (let l = 0, s = this.cell; l < LEVELS; l++, s *= GROW) {
         const ix0 = cellOf(x0, s), ix1 = cellOf(x1, s), iy0 = cellOf(y0, s), iy1 = cellOf(y1, s);
         if ((ix1 - ix0 + 1) * (iy1 - iy0 + 1) > MAX_CELLS && l < LEVELS - 1) continue;
         for (let ix = ix0; ix <= ix1; ix++) {
@@ -81,7 +84,7 @@ export class Colliders {
   // Collects the triangles near (x, y) into this.cand; returns how many.
   _gather(x, y, r) {
     let n = 0;
-    for (let l = 0, s = CELL0; l < LEVELS; l++, s *= GROW) {
+    for (let l = 0, s = this.cell; l < LEVELS; l++, s *= GROW) {
       if (!this.levels[l]) continue;
       const ix0 = cellOf(x - r, s), ix1 = cellOf(x + r, s), iy0 = cellOf(y - r, s), iy1 = cellOf(y + r, s);
       for (let ix = ix0; ix <= ix1; ix++) {

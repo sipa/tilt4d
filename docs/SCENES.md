@@ -83,7 +83,11 @@ export default {
   shadows: true,             // optional; shadowRadii: [35, 260] metres covered by the two
                              // shadow cascades, shadowDepth: 800 their reach towards the sun.
                              // A third radius, as in [40, 320, 2400], adds a third cascade
-                             // for far shadows (every cascade draws the static geometry once more)
+                             // for far shadows (every cascade draws the static geometry once more).
+                             // A single radius, as in [5], is one map and one pass less: for a
+                             // scene no bigger than a room (see "A small world")
+  shadowCentre: [0, 0, 1.4], // optional: lay the shadow maps out about this point instead of
+                             // about the player
   reflections: false,        // optional: true makes glossy surfaces mirror the scene around
                              // the player instead of only the sky (see "Shader hooks")
   near: 0.1,                 // optional: near clipping distance
@@ -95,6 +99,11 @@ export default {
   alignToGround: true,       // optional: lean a car with the terrain's slope (a walker always stands upright)
   walkSpeed: 3, runSpeed: 8, // optional, metres per second
   eyeHeight: { walk: 1.7, drive: 1.25 },                  // optional
+  body: { walk: { r: 0.35, lo: 0.45, hi: 1.8 }, fly: { r: 0.45 } },   // optional: the player's size
+                             // for collisions (see "Solid things"); any of the numbers, also for
+                             // drive and swim. jumpSpeed: 5 is the speed a jump starts at, m/s
+  solidGrid: 4,              // optional: the cell size of the finest grid that solid triangles
+                             // are sorted into, metres (see "A small world")
   accel: 1,                  // optional: how quickly drive, fly and swim change speed (times 0.25 C per second per second for a car, whose friction goes by it too, and 0.5 C for thrust)
   music: { seconds, build(m) { ... } },                    // optional: the scene's music, see "Music" below
 
@@ -379,6 +388,48 @@ sphere of 0.45 m radius when flying or swimming. So:
 
 `solid: false` in the scene definition switches collisions off altogether.
 
+### A small world
+
+The defaults suit streets and landscapes. A scene the size of a room, with
+things on tables that are centimetres across, sets a few of them itself
+(`src/scenes/workshop.js` is one):
+
+* `near: 0.01`, so that the player can look at something from a few
+  centimetres away.
+* `body`: the player's size. The default flyer is a sphere of 0.45 m radius
+  that is kept 0.6 m above the ground and 0.4 m under a `ceiling`;
+  `body: { fly: { r: 0.05 } }` makes all three a ninth of that. A walker's
+  cylinder (`r`, and `lo` to `hi` above the feet) can be made slimmer the same
+  way; the steps a walker takes up and down (0.25 m and 0.3 m) and the search
+  for a place to stand after landing go by it too.
+* `solidGrid: 0.25` or so. Solid triangles are sorted into grids over x and y
+  whose cells are 4 m at the finest; in a room that is one cell for
+  everything, and every solid triangle is then tested each time the player
+  moves. Take a cell a few times the size of the player's body. Even so,
+  keep small detail `solid: false`: a player cannot get into a clockwork.
+* Shadows. `shadowRadii: [r]` with `shadowCentre` at the middle of the room is
+  one map that covers all of it, whichever corner the player stands in: 2048
+  pixels across `2 r`, so 5 mm a pixel for `r = 5`. A single map fades out
+  between 0.8 r and r from its centre, so take `r` a quarter more than the
+  distance from the centre to the furthest corner. (Two cascades, the first
+  a metre or two about the player, give sharper shadows close by for one pass
+  more.) `shadowDepth` is how far the maps reach along the light either side
+  of the centre: a little more than the room is long. Sunlight comes in
+  through whatever the walls leave open, and only through that if walls,
+  floor and ceiling have thickness and overlap where they meet: sheets that
+  merely touch let a line of light through along the join.
+* `adaptiveTimes` has tolerances in metres for traffic (0.08 m): pass
+  `tolerance`, `minStep` and `size` of your own.
+* Triangles within 0.35 m of the ground count as ground (see above), so low
+  things on the floor are not obstacles; that is a fixed figure.
+* A scene whose `C` is under 1 m/s has its readouts in cm/s and cm (in/s and
+  inches for a player who chose mph). In texts for the player, write a speed
+  as `{0.08 m/s}` all the same: one under 0.5 m/s is shown as "8 cm/s".
+* With a small `C` a tilted slice reaches far in time (5 m at 0.1 m/s is 50 s
+  at 90°), and every repeat of the scene's `period` within that reach is
+  drawn again: take a long period. Cycles cost nothing for how long they run,
+  so an hour is as cheap as a minute.
+
 ### `b.dynamic(geo, options)`
 
 Geometry that moves or changes. The mesh is sampled at a list of key times;
@@ -517,7 +568,13 @@ b.dynamic(limbs, {
 
 What it costs to keep: the poses, 32 bytes a vertex and pose, once (meshes
 with the same poses share them), and 64 bytes for each of the journey's keys.
-The length of the journey does not come into it.
+The length of the journey does not come into it. A stiff mesh that its round
+only moves (a fixed `Geo` with `cycle.transform` and no `cycle.paint`: a
+gear, a clock hand, a pendulum, a wheel) costs less still: the mesh once, and
+64 bytes a pose for the matrix, however many vertices it has. So build what
+is stiff out of stiff parts, give them as many poses as the movement wants,
+and keep meshes that change shape for what does change shape. (Identical
+meshes are stored once here too, and so are identical rounds.)
 
 What it costs to draw is what the mesh costs at any one moment: its
 triangles, three tetrahedra each, where the slice finds it, in the picture and
@@ -602,7 +659,9 @@ that over all the passes of a frame, which is what `tools/cost.mjs` counts).
 `ground` is called for every static triangle when the scene loads (to tell
 terrain from obstacles), so keep it cheap. These limits are estimates: nothing
 here has been timed on a real graphics card. `src/scenes/valley.js` and
-`src/scenes/pier.js` are the scenes built to this tier.
+`src/scenes/pier.js` are the scenes built to this tier, and
+`src/scenes/workshop.js` is at the same cost with far less that stands still
+and far more that moves (see "A small world").
 
 A frame is drawn in several passes: the picture, two or three shadow maps, and
 one side of the reflection picture if the scene has `reflections`. Static

@@ -28,7 +28,7 @@ self.onmessage = async (e) => {
     const buildMs = Math.round(performance.now() - t0);
     const t1 = performance.now();
     const onGround = def.ground || (flat ? () => 0 : null);
-    const solids = def.solid === false ? null : new Colliders(data.solidTris, onGround);
+    const solids = def.solid === false ? null : new Colliders(data.solidTris, onGround, def.solidGrid);
     data.stats.solidTriangles = solids ? solids.count : 0;
     data.stats.solidMs = Math.round(performance.now() - t1);
     data.solidTris = null; // (only the structure made from them is needed now)
