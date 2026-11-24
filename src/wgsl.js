@@ -554,36 +554,64 @@ fn cutTet(ii: u32, vi: u32) -> TetCut {
   return o;
 }
 
+// The colouring by time (see timeTint): the time between at which it is as
+// strong as it gets, how strong that is, and how wide the passage from the
+// warm side to the cool one is.  First for the slight colouring, then for the
+// outright one, which has a narrower passage and gets further, and sooner.
 const TINT_FULL = 30.0;
 const TINT_GAIN = 1.2;
+const TINT_SOFT = 0.15;
+const TINT_FULL_OUT = 8.0;
+const TINT_GAIN_OUT = 1.4;
+const TINT_SOFT_OUT = 0.05;
+// How much colouring a time dt between gets:  x / cbrt(x^2 + a^2), over
+// cbrt(full), and no more than 1.  Far from x = 0 that is the cube root of x,
+// so that the colouring shows on things a second away and still grows a long
+// way off: twice as strong for every eight times as long, up to the given
+// number of seconds (full).  Near x = 0 it is a straight line through nothing, so that the warm
+// side of a tilted view goes over into the cool one gradually.  The width of
+// that passage is a.
+fn tintAmount(dt: f32, a: f32, full: f32) -> f32 {
+  return min(1.0, abs(dt) / pow(max((dt * dt + a * a) * full, 1e-12), 1.0 / 3.0));
+}
 // The colouring by time: what lies in the player's past (dt < 0) turns
 // towards amber, what lies in their future towards blue.  G.timeInfo.w says
 // how:
 //   above 0   slightly: a warm or a cool cast, stronger the more time lies
 //             between, as strong as it gets times the value given (1 is usual)
 //   below 0   outright, as a teaching aid, with a contour line at every whole second
-// strength is how much of it the caller's kind of thing takes (the sky less).
-fn timeTint(c: vec3f, dt: f32, dtWidth: f32, strength: f32) -> vec3f {
+// away is how far off the thing seen is, as a time (its distance over C): no
+// more time than that can lie between.  strength is how much of the
+// colouring the caller's kind of thing takes (the sky less).
+// The passage from the warm side to the cool one (the a of tintAmount) is a
+// share of that time away: TINT_SOFT of it, or TINT_SOFT_OUT.  Then it is as wide in
+// the picture for the ground at the player's feet (which is nowhere more than
+// a moment off) as for the sky (minutes).  A line of sight leans into time by
+// dt / away, between 0 and the sine of the tilt, and the passage is where
+// that is less than the share: for the slight colouring about the middle
+// third of the view's width at a tilt of 30 degrees, for the outright one a
+// tenth of it, and less the steeper the tilt.
+fn timeTint(c: vec3f, dt: f32, away: f32, dtWidth: f32, strength: f32) -> vec3f {
   let k = G.timeInfo.w;
   if (k == 0.0) { return c; }
   let tint = select(vec3f(0.30, 0.78, 1.0), vec3f(1.0, 0.64, 0.22), dt < 0.0);
   if (k > 0.0) {
     // A colour filter of the tint's hue, which leaves a grey as bright as it
-    // was.  It goes as the cube root of the time between, so that it shows
-    // on things a fraction of a second away and still grows a long way off:
-    // twice as strong for every eight times as long, up to TINT_FULL seconds.
-    // (Right at no time between it fades in smoothly, so that a level view,
-    // where everything is now, is left alone.)
+    // was.
     let hue = tint / dot(tint, vec3f(0.2126, 0.7152, 0.0722));
-    let x = abs(dt);
-    let amount = min(1.0, pow(x / TINT_FULL, 1.0 / 3.0)) * smoothstep(0.0, 0.02, x);
+    let amount = tintAmount(dt, TINT_SOFT * away, TINT_FULL);
     return c * mix(vec3f(1.0), hue, min(1.0, amount * strength * TINT_GAIN * k));
   }
+  // Outright: the colours give way to the tint's own, as bright as they were.
+  let a = TINT_SOFT_OUT * away;
+  let amount = min(1.0, tintAmount(dt, a, TINT_FULL_OUT) * strength * TINT_GAIN_OUT);
   let lum = dot(c, vec3f(0.3, 0.6, 0.1));
-  let amount = (1.0 - exp(-abs(dt) * 0.7)) * strength;
   var o = mix(c, tint * (lum * 1.1 + 0.03), amount);
+  // The contour lines.  (Where whole seconds lie closer together than the
+  // pixels, as in the sky, they run into one.)  They come in over the same
+  // passage, and there is none at no time between.
   let line = 1.0 - smoothstep(0.6, 1.6, abs(fract(dt + 0.5) - 0.5) / max(dtWidth, 1e-6));
-  o = mix(o, tint * 1.2, line * 0.55 * step(0.5, abs(dt)));
+  o = mix(o, tint * 1.2, line * 0.55 * dt * dt / max(dt * dt + a * a, 1e-12));
   return o;
 }
 
@@ -719,7 +747,8 @@ fn shade(f: Frag, dtWidth: f32) -> vec3f {
   }
   let fog = envFog(s.view, f.tSky, s.dist);
   c = mix(c, fog.rgb, saturate(fog.a));
-  c = timeTint(c, mix(s.t, f.tSky, saturate(fog.a)) - G.P.w, dtWidth, 0.7);
+  // (what the fog has taken over is coloured as the sky behind it is)
+  c = timeTint(c, mix(s.t, f.tSky, saturate(fog.a)) - G.P.w, mix(s.dist, G.misc.z, saturate(fog.a)) / G.proj.w, dtWidth, 0.7);
   return min(c, vec3f(64.0));
 }
 
@@ -778,7 +807,7 @@ struct SkyOut { @builtin(position) clip: vec4f, @location(0) ndc: vec2f };
   var c: vec3f;
   // (the picture that glossy surfaces mirror takes the sky as they should see it)
   if (G.probe.y > 0.5) { c = envReflect(dir, t, 1.0); } else { c = envSky(dir, t); }
-  return vec4f(min(timeTint(c, t - G.P.w, 1e9, 0.45), vec3f(64.0)), 1.0);
+  return vec4f(min(timeTint(c, t - G.P.w, G.misc.z / G.proj.w, 1e9, 0.45), vec3f(64.0)), 1.0);
 }
 `;
 

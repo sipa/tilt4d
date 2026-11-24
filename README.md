@@ -3,7 +3,7 @@
 *What would you see if you could not just turn left, right, up, and down, but
 also before and after?*
 
-[![A town street with the view tilted into time: the side in amber is seen as it was a little earlier, the side in blue as it will be a little later.](preview.jpg)](https://wuille.net/tilt4d)
+[![A town street with the view tilted into time: the left side, in amber, is seen as it was a little earlier, the right side, in blue, as it will be a little later.](preview.jpg)](https://wuille.net/tilt4d)
 
 See it [live](https://wuille.net/tilt4d).
 
@@ -186,12 +186,18 @@ A jump stops under a ceiling.
 
 The view is always coloured a little by time: what lies in your past has a
 slight warm cast and what lies in your future a cool one, stronger the more
-time lies between: it goes as the cube root of that time, so that it already
-shows on things a fraction of a second away and keeps growing up to half a
-minute. (A level view is not changed: everything in it is now.)
+time lies between: far from the present it goes as the cube root of that time,
+so that it shows on things a second away and keeps growing up to half a
+minute. Where a tilted view passes through the present, the warm side goes
+over into the cool one gradually, over the same width of the picture for the
+ground at your feet as for the sky: about the middle third of the view at a
+tilt of 30°, and less of it the steeper the tilt. (A level view is not
+changed: everything in it is now.)
 `T` goes round three settings: this slight colouring, the full one (amber and
 blue outright, with a contour line for every whole second, which makes the
-tilt of the slice directly visible), and none. Adding `?cast=2` to the address
+tilt of the slice directly visible), and none. The full one goes by the same
+rule, but gets to its full strength within eight seconds, and the passage
+between its two sides is a third as wide. Adding `?cast=2` to the address
 makes the slight colouring twice as strong.
 
 Every scene has **music** of its own, and the music belongs to the scene's
