@@ -144,11 +144,14 @@ side that shows the future or the past, which is how a car gets there: steered
 towards the future's side, it heads into the future.
 
 With the view tilted up or down, height is such a direction too. Rising in
-flight or in the water takes you on in time, and so does whatever takes you up
-on foot: a hill, a step, a jump. Coming down takes you back. A jump therefore
-leaves the view as it is, and it is your own clock that runs ahead and back
-again. (Close to 90° that would have no end. From 84° on, less and less of it
-is taken, and the view shifts a little with your height instead.)
+flight or in the water takes you on in time, and so does a jump: it goes
+straight up the view, so the more the view is tilted, the less of it is height
+and the more of it is time. At 60° you get half as high, and at 90° a jump
+takes you a moment into the future and back without leaving the floor. A fall
+goes the same way, down the view. A hill or a step is a height the ground
+sets: it takes you on in time by what keeps the view as it is, and coming down
+takes you back. (Close to 90° that would have no end. From 84° on, less and
+less of it is taken, and the view shifts a little with your height instead.)
 
 The readouts show it:
 
@@ -203,7 +206,8 @@ and neither are things that come and go, such as blinking lights.
 
 On foot you can jump about 1.3 m high: over a fence at a run, or onto a low
 wall or a bench, where you can stand and walk on until you step off the edge.
-A jump stops under a ceiling.
+A jump stops under a ceiling. (With the view tilted up or down it is less
+high, as said above.)
 
 The view is always coloured a little by time: what lies in your past has a
 slight warm cast and what lies in your future a cool one, stronger the more
@@ -330,9 +334,10 @@ only there to rotate against. Turning rotates `F` and `R` in their plane,
 looking up rotates `F` and `U`, and tilting rotates `R` and `O` in exactly the
 same way; the tilt up and down rotates `U` and `O`. (On foot and in a car the
 frame has to stay upright to walk and steer by, so there that last rotation is
-kept apart from it and applied to the slice at the end. A change of height
-there, which is straight up and not along the frame, is given the step through
-time that keeps the eye in the slice.) See `src/player.js`.
+kept apart from it and applied to the slice at the end. A jump there goes
+along the slice's own up, and a height that the ground sets, which is straight
+up and not along the frame, is given the step through time that keeps the eye
+in the slice.) See `src/player.js`.
 
 The velocity is not part of the frame, and has two parts.
 

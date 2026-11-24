@@ -28,11 +28,15 @@
 // rotation of the frame like the others.
 //
 // One thing on the ground is not along the upright frame's F and R, and so
-// not in such a slice by itself: a change of height.  The ground, a step, a
-// jump or a fall move the eye straight up or down.  So that takes the player
-// through time as well, by what keeps them in the slice they were in (see
-// _riseTime): going up into what the view shows later arrives later, as it
-// does in flight.
+// not in such a slice by itself: a change of height.  It is made to stay in
+// the slice all the same, as rising does in flight:
+//   a jump or a fall   goes along the slice's own up (see _hopAxis): the more
+//                      that leans into time, the less of the jump is height
+//                      and the more of it is time, and at 90 degrees it only
+//                      goes forward in time and back
+//   the ground, a step are heights the world sets, straight up or down: those
+//                      take the player through time by what keeps them in the
+//                      slice they were in (see _riseTime)
 //
 // The velocity is not tied to the frame.  It has two parts:
 //
@@ -88,11 +92,18 @@ const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, w
 // and in a car (see _climb), and the time in which a slope that holds a car
 // altogether wears its own speed down.
 const MAX_CLIMB = Math.PI / 3, MAX_CLIMB_CAR = Math.PI / 4, HILL_TIME = 1;
-// On the ground, in a slice tilted up or down, a change of height goes
-// through time as well (see _riseTime): by the tangent of the tilt, which has
-// no end.  It is the tangent up to a tilt of 84 degrees (where the tilting
-// itself has slowed to a crawl) and falls away from there, to nothing at 90.
+// On the ground, in a slice tilted up or down, a change of height that the
+// world sets (a slope, a step) goes through time as well (see _riseTime): by
+// the tangent of the tilt, which has no end.  It is the tangent up to a tilt
+// of 84 degrees (where the tilting itself has slowed to a crawl) and falls
+// away from there, to nothing at 90.
 const RISE_COS = Math.cos(84 * Math.PI / 180);
+// A jump goes along the slice's own up, of which at least this much counts as
+// height: at 90 degrees, where none of it is, a jump still leaves the floor
+// (by a millimetre) and comes back to it, and a fall off something gets to
+// the ground in the end (off a table, in a quarter of a minute: until then,
+// or until the view is tilted back, it is a fall into the past).
+const HOP_MIN = 1e-3;
 
 // The player's body for collisions: an upright cylinder from `lo` to `hi`
 // above the feet on the ground, a sphere about the eye otherwise.  Things
@@ -120,6 +131,7 @@ export class Player {
     this.rate = 1; // seconds of scene time per second that pass for a player left alone
     this.vel = [0, 0, 0, 0]; // what the controls add to that, in m/s (the 4th: C * seconds per second)
     this.rising = 0; // and what going up or down adds on the ground, in a slice tilted that way: seconds per second (for the readouts)
+    this.hopZ = 0; this.hopT = 0; // (see update)
     this.speed = 0; // drive mode: the car's speed along F
     this.viewPitch = 0; // the ground modes: looking up or down, which leaves the frame as it is
     this.lift = 0; // the ground modes: the slice tilted up (or down), by turning U and O, which leaves the frame as it is too
@@ -200,12 +212,12 @@ export class Player {
   }
 
   // On the ground: how far through time (in metres) every metre straight up
-  // goes.  Height is not steered there: it is what the ground, a step, a jump
-  // or a fall make it, and straight up is not a direction of a slice that is
-  // tilted up or down.  This is what puts the eye back in the slice it was
-  // in: with normal O', dz * O'.z + dw * O'.t = 0.  For a walker that is
-  // tan(lift), over the cosine of the sideways tilt if there is one: what
-  // rising costs in flight, where "up" is the frame's own U and leans.
+  // goes, where it is the world that sets the height: the ground under a
+  // walker, a step, coming down from flight.  Straight up is not a direction
+  // of a slice that is tilted up or down.  This is what puts the eye back in
+  // the slice it was in: with normal O', dz * O'.z + dw * O'.t = 0.  For a
+  // walker that is tan(lift), over the cosine of the sideways tilt if there
+  // is one.
   //
   // At 90 degrees there is nothing to go by: the slice has no height in it,
   // and no step through time makes up for one.  So the tangent is followed up
@@ -222,6 +234,21 @@ export class Player {
     if (!this.lift) return 0;
     const M = this._slice(), oz = M[O * 4 + 2], ot = M[O * 4 + 3];
     return -oz * ot / Math.max(ot * ot, RISE_COS * RISE_COS);
+  }
+
+  // The way a jump goes, and a fall comes down: the slice's own up, which is
+  // straight up on the screen.  With a lift that leans into time, and the
+  // jump with it: the same reach (and the same time in the air), of which
+  // cos(lift) is height and sin(lift) / C seconds.  Nothing has to be made up
+  // for, and nothing runs away at 90 degrees: there it is a way forward in
+  // time and back.  With a sideways tilt as well it leans a little to the
+  // side in space too, and comes back the same way.  (Beyond a quarter turn
+  // the view is upside down: the way that leads off the floor is then down on
+  // the screen.)  null without a lift: straight up.
+  _hopAxis() {
+    if (!this.lift) return null;
+    const u = f4.col(this._slice(), U), s = u[2] < 0 ? -1 : 1;
+    return [s * u[0], s * u[1], Math.max(s * u[2], HOP_MIN), s * u[3]];
   }
 
   // Take the tilt out, keeping the way you face as far as possible: the
@@ -566,9 +593,12 @@ export class Player {
     const stride = this.solids && this.solids.count ? this.body[this.mode].r * 0.5 : Infinity;
     const P = this.P;
     let jump = this.mode === 'walk' && !!input.jump;
+    this.hopZ = 0; this.hopT = 0; // what a jump or a fall has added this frame within the slice: height, and seconds
+    const lean = this.mode === 'walk' && this.lift ? this._hopAxis() : null;
+    const aside = lean ? Math.hypot(lean[0], lean[1]) : 0; // (how much of a jump goes sideways in space)
     for (let i = 0; left > 0; i++) {
       const v = this.vel;
-      const speed = Math.hypot(v[0], v[1], v[2]);
+      const speed = Math.hypot(v[0], v[1], v[2]) + (aside && this.air ? Math.abs(this.vz) * aside : 0);
       const h = i === 255 || speed * left <= stride ? left : stride / speed;
       const x = P[0], y = P[1], z = P[2];
       P[0] += v[0] * h;
@@ -595,14 +625,15 @@ export class Player {
       const z = P[2];
       this._stickToGround(Math.min(1, 8 * dt), false);
       f4.orthonormalize(M, [U, O, F, R]);
-      // What the ground, a step, a jump or a fall has changed of the height
-      // goes through time too in a slice tilted up or down (see _riseTime).
-      // The readouts get it as a rate, evened out over a few frames: a step
-      // up a stair is all in one.
+      // What the ground or a step has changed of the height (all of the
+      // change but a jump's or a fall's own, which is in the slice already)
+      // goes through time too in a slice tilted up or down: see _riseTime.
+      // The readouts get both as a rate, evened out over a few frames: a
+      // step up a stair is all in one.
       const span = this.paused ? 0 : dt * this.timeScale;
-      const dw = this._riseTime() * (P[2] - z);
-      P[3] += dw / C;
-      this.rising += ((span > 0 ? dw / (C * span) : 0) - this.rising) * (1 - Math.exp(-dt / 0.08));
+      const set = this._riseTime() * (P[2] - z - this.hopZ) / C;
+      P[3] += set;
+      this.rising += ((span > 0 ? (set + this.hopT) / span : 0) - this.rising) * (1 - Math.exp(-dt / 0.08));
       if (Math.abs(this.rising) < 1e-6) this.rising = 0;
     } else {
       this.rising = 0;
@@ -696,20 +727,34 @@ export class Player {
       // (the average of the speed before and after: the same arc at any frame rate)
       const before = this.vz;
       this.vz = Math.max(-50, before - GRAVITY * h);
-      let z = this.feet + (before + this.vz) / 2 * h;
+      // That far along the slice's own up, which in a slice tilted up or down
+      // is only partly height (see _hopAxis).
+      const up = this._hopAxis();
+      let along = (before + this.vz) / 2 * h;
+      let z = this.feet + (up ? along * up[2] : along);
       if (z > this.feet) {
         // the head: stop under anything solid
         if (s && !s.clearColumn(P[0], P[1], this.feet + body.hi, z + body.hi + 0.05)) {
           z = this.feet;
           this.vz = 0;
+          along = 0;
         }
       } else {
         const f = floor(this.feet + 0.02);
         if (z <= f) {
+          // (no further along than it takes to get there)
+          along *= z < this.feet ? clamp((this.feet - f) / (this.feet - z), 0, 1) : 0;
           z = f;
           this.vz = 0;
           this.air = false;
         }
+      }
+      if (up && along) {
+        P[0] += along * up[0];
+        P[1] += along * up[1];
+        P[3] += along * up[3] / this.C;
+        this.hopZ += along * up[2];
+        this.hopT += along * up[3] / this.C;
       }
       this.feet = Math.max(z, g);
     }

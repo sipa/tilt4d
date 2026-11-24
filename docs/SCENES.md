@@ -40,14 +40,17 @@ a tower of clocks, things that rise or fall steadily, floors one above
 another. The two tilts add up.
 
 Moving follows the slice in every mode. Flying or swimming upwards in a slice
-lifted by λ goes `tan λ / C` seconds on for every metre of height. On foot the
-height is not steered, but the same holds: whatever raises the walker by `h`
-(a slope, a step, a jump, standing on something) takes them `h·tan λ / C`
-seconds on, and coming down takes them back: the walker stays in the slice,
-and arrives up there at the moment the view shows there. (The tangent has no
-end: beyond 84° the share falls away, to nothing at 90°.) A car that leans
-with the ground has the ground's normal for its "up": driving up a slope is
-along its own frame and takes no time of this kind.
+lifted by λ goes `tan λ / C` seconds on for every metre of height. A walker's
+jump goes along the slice's own up as well: it has the reach it always has,
+1.27 m, of which `cos λ` is height and `sin λ / C` seconds, and at 90° it is a
+way forward in time and back. A fall comes down the same way. Where the world
+sets the height (a slope, a step, standing on something), being `h` higher
+takes the walker `h·tan λ / C` seconds on, and coming down takes them back:
+they stay in the slice, and arrive up there at the moment the view shows
+there. (The tangent has no end: beyond 84° that share falls away, to nothing
+at 90°.) A car that leans with the ground has the ground's normal for its
+"up": driving up a slope is along its own frame and takes no time of this
+kind.
 
 The player's motion is a separate matter. Standing still, scene time passes at
 `cos θ` seconds per second on the ground and in water (so not at all at 90°,
@@ -385,8 +388,9 @@ sphere of 0.45 m radius when flying or swimming. So:
 
 * a walker steps over anything lower than 0.45 m and passes under anything
   higher than 1.8 m; make a doorway or a gap at least 1 m wide (2.2 m for cars);
-* a walker can jump: the feet rise 1.27 m, enough to clear a fence of that
-  height at a run or to get on top of a wall. They come down on the ground or
+* a walker can jump: the feet rise 1.27 m (in a level slice: tilted up or
+  down, less), enough to clear a fence of that height at a run or to get on
+  top of a wall. They come down on the ground or
   on whatever solid surface is under them, slopes included, and can walk on
   from there (up or down steps of about 0.25 m) until they step off the edge.
   Only what stands at least 0.45 m above the ground can be stood on; a jump
