@@ -11,6 +11,12 @@
 // plus a ridge to the west whose shadow comes from a horizon map (and a mast
 // in that shadow whose top is high enough to be in the sun), and a tower 300 m
 // to the south-west that needs the third shadow cascade.
+// Behind the row of moving things at y = 12 there is a second one at y = 24,
+// of things with a movement of their own that repeats (`cycle`): a walker, a
+// rolling wheel, a flag, a bird, a pulsing ball that is only there for a
+// while, and a see-through panel that turns, placed by a mirroring matrix.
+// With ?cyclebrute=1 in the address the same things are built the long way
+// round, every pose stored at every key: the two must give the same picture.
 
 import { Geo } from '../geom.js';
 import { m4 } from '../math.js';
@@ -18,6 +24,46 @@ import { dayNightEnv } from '../env.js';
 import { rng } from '../util.js';
 
 const MAT_GROUND = 1, MAT_SPARE = 2, MAT_HOLES = 3, MAT_CHECK = 4, MAT_FLOAT = 5, MAT_POST = 6, MAT_CHROME = 7, MAT_MAST = 8;
+
+// (a page's address has parameters; a worker's and node have none)
+const BRUTE = new URLSearchParams(globalThis.location?.search ?? '').get('cyclebrute') === '1';
+// b.dynamic(geo, o) for a mesh with a cycle, or the same thing without the
+// engine's help: a key at every pose and at every key of `times`, the mesh
+// worked out at each as the engine would have it there.
+function cyclic(b, geo, o) {
+  if (!BRUTE) return b.dynamic(geo, o);
+  const { cycle, transform, from, to, step, ...rest } = o;
+  const times = o.times || Array.from({ length: Math.round((to - from) / step) + 1 }, (_, i) => from + i * step);
+  delete rest.times;
+  const n = cycle.keys ?? 4, dt = cycle.period / n, start = cycle.start ?? 0;
+  const mod = (m) => ((m % n) + n) % n;
+  const pose = (i) => {
+    let g = typeof geo === 'function' ? geo(i / n) : geo;
+    if (cycle.transform) g = g.clone().transform(cycle.transform(i / n));
+    if (cycle.paint) { g = g.clone(); const pt = cycle.paint(i / n); if (pt.color !== undefined) g.color(pt.color); if (pt.emissive !== undefined) g.emissive(pt.emissive); }
+    return g;
+  };
+  const poses = Array.from({ length: n }, (_, i) => pose(i));
+  const t0 = times[0], t1 = times[times.length - 1];
+  const all = [...times];
+  for (let m = Math.ceil((t0 - start) / dt); start + m * dt < t1; m++) all.push(start + m * dt);
+  const keys = all.sort((x, y) => x - y).filter((t, i, a) => i === 0 || t - a[i - 1] > 1e-6);
+  const mats = times.map((t) => (transform ? transform(t) : m4.identity()));
+  const placed = (t) => {
+    let k = 0;
+    while (k < times.length - 2 && times[k + 1] <= t) k++;
+    const w = Math.min(1, Math.max(0, (t - times[k]) / (times[k + 1] - times[k])));
+    return mats[k].map((v, i) => v + (mats[k + 1][i] - v) * w);
+  };
+  const at = (t) => {
+    const x = (t - start) / dt, m = Math.floor(x + 1e-9), u = Math.min(1, Math.max(0, x - m));
+    const a = poses[mod(m)], c = poses[mod(m + 1)], g = a.clone();
+    for (let i = 0; i < g.p.length; i++) { g.p[i] += (c.p[i] - a.p[i]) * u; g.n[i] += (c.n[i] - a.n[i]) * u; g.c[i] += (c.c[i] - a.c[i]) * u; }
+    for (let i = 0; i < g.a.length; i += 4) g.a[i] += (c.a[i] - a.a[i]) * u;
+    return g;
+  };
+  return b.dynamic(at, { ...rest, times: keys, transform: placed });
+}
 const ridge = (x, y) => 60 * Math.exp(-((x + 220) * (x + 220)) / (2 * 40 * 40)) * (0.75 + 0.25 * Math.cos(y / 90));
 
 const wgsl = dayNightEnv({ dayLength: 240, startHour: 15.5, fog: 0.0012, clouds: 0.3 }) + /* wgsl */ `
@@ -170,6 +216,69 @@ export default {
       b.dynamic(arrow, { from: 0, to: 20, step: 0.5, transform: spin(36), paint: (t) => ({ color: [0.9, 0.5 + 0.4 * Math.sin(t * Math.PI / 5), 0.2] }) });
       // and one that is only there for a while, with its ends in time sealed
       b.dynamic(arrow, { from: 4, to: 9, step: 0.5, transform: spin(40) });
+    }
+    // Things with a movement of their own that repeats, at y = 24.
+    {
+      const TAU = 2 * Math.PI;
+      // a walker: a body, and two legs that swing between two ends (so two
+      // poses are all of it), going up and down a line and turning round at
+      // its ends, a key every tenth of a second while it turns.  (This is the
+      // least a cycle can be, for testing: straight legs on two poses cross
+      // like an X at mid-stride.  A walker to look at wants four poses and
+      // knees: see docs/SCENES.md.)
+      const walker = (u) => {
+        const a = 0.5 * Math.cos(TAU * u);
+        const leg = (x, ang) => Geo.box(0.16, 0.16, 0.8).translate(0, 0, -0.4).rotateX(ang).translate(x, 0, 0.8);
+        return Geo.merge(Geo.box(0.5, 0.3, 0.7).translate(0, 0, 1.15).color('#8e44ad'), Geo.sphere(0.16, 8, 6).translate(0, 0, 1.68).color('#f0c9a0'), leg(-0.13, a).color('#2c3e50'), leg(0.13, -a).color('#2c3e50'));
+      };
+      const walk = (t) => {
+        const s = ((t % 20) + 20) % 20;
+        if (s < 9) return m4.translation(24, 21 + s * 2 / 3, 0);
+        if (s < 10) return m4.mul(m4.translation(24, 27, 0), m4.rotationZ((s - 9) * Math.PI));
+        if (s < 19) return m4.mul(m4.translation(24, 27 - (s - 10) * 2 / 3, 0), m4.rotationZ(Math.PI));
+        return m4.mul(m4.translation(24, 21, 0), m4.rotationZ(Math.PI + (s - 19) * Math.PI));
+      };
+      const turn = (from) => Array.from({ length: 11 }, (_, i) => from + i / 10);
+      cyclic(b, walker, { times: [0, ...turn(9), ...turn(19)], transform: walk, caps: 'none', cycle: { period: 1, keys: 2 } });
+      // a wheel that rolls: turned within its own frame by the cycle, a pose
+      // every 22.5 degrees, and taken there and back by three keys (which
+      // start before the scene's own time does)
+      const wheel = Geo.merge(Geo.cylinder(0.6, 0.2, 16).translate(0, 0, -0.1).rotateY(Math.PI / 2).color('#34495e'), Geo.box(0.26, 1.0, 0.12).color('#ecf0f1'), Geo.box(0.26, 0.12, 1.0).color('#e74c3c'));
+      cyclic(b, wheel, {
+        times: [-2, 8, 18], caps: 'none', transform: (t) => m4.translation(28, 21 + 6 * (1 - Math.abs((((t + 2) % 20) + 20) % 20 - 10) / 10), 0.6),
+        cycle: { period: 2, keys: 16, start: 0.25, transform: (u) => m4.rotationX(-TAU * u) },
+      });
+      // a flag: it stays where it is and changes shape, eight poses to a wave
+      const flag = (u) => {
+        const g = Geo.plane(2, 1.2, 8, 3).rotateX(Math.PI / 2).translate(1, 0, 3).doubleSided().color('#e67e22');
+        for (let i = 0; i < g.vertexCount; i++) g.p[i * 3 + 1] += 0.18 * (g.p[i * 3] / 2) * Math.sin(TAU * (u - g.p[i * 3] / 2));
+        return g;
+      };
+      b.static(Geo.cylinder(0.05, 3.7, 8).color('#bdc3c7'), { transform: m4.translation(32, 24, 0) });
+      cyclic(b, flag, { times: [0, 20], caps: 'none', transform: () => m4.translation(32, 24, 0), cycle: { period: 2, keys: 8 } });
+      // a bird: round in a circle, a key every half second, beating its wings
+      // 25 times on the way (up, level, down, level), out of step with those keys
+      const bird = (u) => {
+        const lift = 0.5 * (1 - 4 * Math.abs(u - 0.5)) * 0.9;
+        const wing = (side) => Geo.quad([0, 0.25, 0], [0, -0.25, 0], [side * 0.9, -0.2, lift], [side * 0.9, 0.2, lift]).doubleSided();
+        return Geo.merge(Geo.box(0.2, 0.7, 0.16), wing(1), wing(-1)).color('#ecf0f1');
+      };
+      const round = (t) => m4.mul(m4.translation(36, 24, 2.6), m4.rotationZ(TAU * t / 10), m4.translation(2, 0, 0));
+      cyclic(b, bird, { from: 0, to: 20, step: 0.5, caps: 'none', transform: round, cycle: { period: 0.8, keys: 4, start: 0.13 } });
+      // ... with something on its back that is only drawn from near by
+      cyclic(b, Geo.box(0.1, 0.1, 0.1).translate(0, 0, 0.2).color('#c0392b').emissive(2), { from: 0, to: 20, step: 0.5, caps: 'none', within: 12, transform: round, cycle: { period: 0.8, keys: 4, start: 0.13, transform: (u) => m4.translation(0, 0, 0.1 * Math.sin(TAU * u)) } });
+      // a ball that is only there for a while (its ends in time sealed), and
+      // meanwhile bobs up and down and glows and fades
+      cyclic(b, Geo.sphere(0.5, 12, 8).color('#16a085'), {
+        times: [4.3, 9.1], transform: (t) => m4.translation(40, 22 + (t - 4.3) * 0.8, 1.2),
+        cycle: { period: 1.2, keys: 6, transform: (u) => m4.translation(0, 0, 0.4 * Math.sin(TAU * u)), paint: (u) => ({ color: [0.1 + 0.8 * u, 0.6, 0.5], emissive: 1.5 * (1 - Math.cos(TAU * u)) }) },
+      });
+      // a see-through panel that turns, placed by a matrix that mirrors it;
+      // it stands still before and after its run
+      cyclic(b, Geo.merge(Geo.plane(1.6, 1.2).rotateX(Math.PI / 2).translate(0.5, 0, 1.4).doubleSided().color('#2980b9').blend(0.5), Geo.box(0.1, 0.1, 2.2).translate(0, 0, 1.1).color('#7f8c8d')), {
+        times: [6, 14], holdBefore: true, holdAfter: true, transform: (t) => m4.mul(m4.translation(44, 21 + (t - 6) * 0.75, 0), m4.scaling(-1, 1, 1)),
+        cycle: { period: 4, keys: 12, start: 6, transform: (u) => m4.rotationZ(TAU * u) },
+      });
     }
     // a distant tower for the third shadow cascade
     b.static(Geo.box(12, 12, 90).translate(0, 0, 45).color('#b9b2a4'), { transform: m4.translation(120, -330, 0) });

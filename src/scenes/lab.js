@@ -360,18 +360,18 @@ export default {
       b.static(rails.color('#8d9299').gloss(0.8));
     }
 
-    // bouncing balls: keys land exactly on the bounces, where the motion kinks
+    // bouncing balls: the bounces land exactly on keys or poses, where the motion kinks.  The two
+    // quicker ones bounce as a `cycle`: one bounce, twelve poses, stored once.  The slower two
+    // stay on plain keys, which then come to less than the twelve poses of a ball would.
     for (let i = 0; i < 4; i++) {
-      const bounce = [2, 3, 4, 5][i], height = [3, 5, 8, 12][i];
+      const bounce = [2, 3, 4, 5][i], height = [3, 5, 8, 12][i], x = -14 - i * 3;
       const ball = Geo.sphere(0.6, 8, 5).color(['#e4572e', '#17bebb', '#ffc914', '#76b041'][i]).gloss(0.6).mat(MAT_STRIPES);
-      b.dynamic(ball, {
-        times: timeRange(0, PERIOD, bounce / 12),
-        transform: (t) => {
-          const u = (t / bounce) % 1;
-          return m4.translation(-14 - i * 3, 20, 0.6 + height * 4 * u * (1 - u));
-        },
-        caps: 'none',
-      });
+      const hop = (u) => m4.translation(0, 0, height * 4 * u * (1 - u)); // u: how much of the bounce is done
+      if (bounce <= 3) {
+        b.dynamic(ball, { times: [0, PERIOD], transform: () => m4.translation(x, 20, 0.6), caps: 'none', cycle: { period: bounce, keys: 12, transform: hop } });
+      } else {
+        b.dynamic(ball, { times: timeRange(0, PERIOD, bounce / 12), transform: (t) => m4.mul(m4.translation(x, 20, 0.6), hop((t / bounce) % 1)), caps: 'none' });
+      }
     }
 
     // windmill
@@ -379,14 +379,27 @@ export default {
       const [wx, wy] = [-40, 150];
       b.static(Geo.cylinder(1.6, 22, 12, { r2: 0.9 }).translate(wx, wy, 0).color('#e8e4da'));
       b.static(Geo.box(1.6, 2.2, 1.6).translate(wx, wy - 0.4, 22).color('#e8e4da')); // the nacelle
-      const rotor = new Geo();
-      for (let k = 0; k < 3; k++) rotor.add(Geo.box(0.9, 0.2, 13).translate(0, 0, 6.5).rotateY(k * 2 * Math.PI / 3).color('#f4f1ea'));
-      rotor.add(Geo.sphere(1.0, 8, 4).color('#c44536'));
-      b.dynamic(rotor, {
-        times: timeRange(0, PERIOD, 0.15),
-        transform: (t) => m4.mul(m4.translation(wx, wy - 1.9, 22), m4.rotationY(t / 6 * 2 * Math.PI)),
-        caps: 'none',
-      });
+      b.static(Geo.sphere(1.0, 8, 4).translate(wx, wy - 1.9, 22).color('#c44536'));  // the hub (a ball: it need not turn)
+      // A blade: a board 0.9 x 0.2 m and 13 m long (its inner end is in the hub), with its long
+      // faces in three lengths: a long triangle that turns comes out bent between poses, more so
+      // the more its ends move from one to the next.  The blades turn once every 6 s.  One
+      // blade's turn is a `cycle` of 36 poses (one every 10 degrees), stored once; the three
+      // blades are three copies of it, each a third of a turn (2 s) further on.  (A round of a
+      // third of a turn would not do: after its last pose comes its first, and each blade would
+      // go back to where it started.)
+      const blade = new Geo();
+      for (const [sx, half, turn] of [[0.9, 0.1, 0], [0.9, 0.1, Math.PI], [0.2, 0.45, Math.PI / 2], [0.2, 0.45, -Math.PI / 2]]) {
+        blade.add(Geo.plane(sx, 13, 1, 3).rotateX(Math.PI / 2).translate(0, -half, 6.5).rotateZ(turn));
+      }
+      blade.add(Geo.plane(0.9, 0.2).translate(0, 0, 13)).color('#f4f1ea');
+      for (let k = 0; k < 3; k++) {
+        b.dynamic(blade, {
+          times: [0, PERIOD],
+          transform: () => m4.translation(wx, wy - 1.9, 22),
+          caps: 'none',
+          cycle: { period: 6, keys: 36, start: -2 * k, transform: (u) => m4.rotationY(2 * Math.PI * u) },
+        });
+      }
     }
 
     // pendulum under a gantry, hanging from a pin in a bracket, with a scale under its arc
@@ -406,13 +419,42 @@ export default {
       }
       b.static(g.color('#59606a').add(scale.color('#e9e6dc').mat(MAT_SCALE)).translate(px, py, 0));
       const bob = new Geo();
-      bob.add(Geo.box(0.06, 0.06, 7).translate(0, 0, -3.5).color('#c9ccd1'));
+      // the rod in three lengths: a long triangle that turns comes out bent between keys, more so
+      // the more its ends move from one key to the next
+      bob.add(Geo.tube([[0, 0, 0], [0, 0, -7 / 3], [0, 0, -14 / 3], [0, 0, -7]], 0.042, 4, { caps: false }).rotateZ(Math.PI / 4).color('#c9ccd1'));
       bob.add(Geo.sphere(0.7, 8, 5).translate(0, 0, -7).color('#d4a017').gloss(0.9).mat(MAT_STRIPES).tag(1));
       b.dynamic(bob, {
         times: timeRange(0, PERIOD, 0.2),
         transform: (t) => m4.mul(m4.translation(px, py, pivot), m4.rotationY(0.7 * Math.sin(t / 4 * 2 * Math.PI))),
         caps: 'none',
       });
+    }
+
+    // A row of seven smaller pendulums, swinging in step with that one (once every 4 s) until
+    // a tilt puts them out of step: the ones further to the right are then seen later.  The
+    // swing is a `cycle`: one round of it, eight poses, is stored once, and as the seven are the
+    // same mesh with the same poses they share it; each adds only where it hangs.  (The big
+    // pendulum stays on plain keys: for one thing that stays where it is, a matrix a key costs
+    // less than its whole mesh at every pose.)  The rod is in two lengths, as the big one's is
+    // in three.
+    {
+      const L = 9.81 * (4 / (2 * Math.PI)) ** 2, pivot = 4.7, swing = 0.26; // 3.97 m swings in 4 s
+      const [x0, y0, gap, n] = [10.5, 2, 2.2, 7];
+      const bob = Geo.tube([[0, 0, 0], [0, 0, -L / 2], [0, 0, -L]], 0.025, 3, { caps: false }).color('#c9ccd1');
+      bob.add(Geo.sphere(0.28, 8, 5).translate(0, 0, -L).color('#d4a017').gloss(0.9).mat(MAT_STRIPES).tag(1));
+      const frame = new Geo();
+      for (const x of [x0 - 1.2, x0 + (n - 1) * gap + 1.2]) frame.add(Geo.box(0.25, 0.25, pivot + 0.3).translate(x, y0, (pivot + 0.3) / 2));
+      frame.add(Geo.box((n - 1) * gap + 2.65, 0.25, 0.25).translate(x0 + (n - 1) * gap / 2, y0, pivot + 0.125));
+      b.static(frame.color('#59606a'));
+      for (let i = 0; i < n; i++) {
+        b.dynamic(bob, {
+          times: [0, PERIOD],
+          transform: () => m4.translation(x0 + i * gap, y0, pivot),
+          caps: 'none',
+          // in time with the big pendulum, 0.26 rad either way: a pose every eighth of a swing
+          cycle: { period: 4, keys: 8, transform: (u) => m4.rotationY(swing * Math.sin(2 * Math.PI * u)) },
+        });
+      }
     }
 
     // monoliths that exist for only part of the time: a tilted slice cuts them open

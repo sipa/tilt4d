@@ -29,14 +29,13 @@ const SLOT = 256;
 const BLOOM_LEVELS = 5;
 const ENV_HOOKS = ['envSun', 'envSky', 'envAmbient', 'envFog'];
 
-// A list of instance ranges to draw, one list per time-repeat slot.  Chunks
-// are visited in buffer order; ones that are neighbours, or separated only by
-// a small gap, merge into a single draw call.  (Most tetrahedra in a gap do
-// not meet the slice, and the vertex shader throws those away; the few that
-// do are things out of sight or too far off, drawn after all.)  The gap is
-// what a draw call is worth: bridging more than this costs more in wasted
-// vertex work than the call it saves.
-const BRIDGE = 192;
+// Lists of the tetrahedra to draw, one list per time-repeat slot: for each
+// chunk wanted, its number and which of its tetrahedra (from which one, how
+// many).  They are not drawn chunk by chunk: a frame's lists are written out
+// as a table, BLOCK tetrahedra to an entry (see `visible` in render), and each
+// list is then a single draw call, whose instances the vertex shader looks up
+// in that table.  So moving geometry costs a few draw calls a pass however
+// scattered what is drawn of it.
 // a 16-bit float, as the GPU stores them, as a number
 function fromHalf(h) {
   const e = (h >> 10) & 31, f = h & 1023;
@@ -45,19 +44,9 @@ function fromHalf(h) {
 
 class DrawList {
   constructor() { this.slots = []; this.tets = 0; }
-  // bridge: how many tetrahedra that were not asked for may be drawn along
-  // with these to save a draw call (none for detail that is only drawn from
-  // near by: what lies between two pieces of it is other things' detail)
-  add(slot, first, count, bridge = BRIDGE) {
-    const list = this.slots[slot] || (this.slots[slot] = []);
-    const last = list[list.length - 1];
-    if (last && first - (last.first + last.count) <= bridge) {
-      this.tets += first + count - (last.first + last.count);
-      last.count = first + count - last.first;
-    } else {
-      list.push({ first, count });
-      this.tets += count;
-    }
+  add(slot, chunk, first, count) {
+    (this.slots[slot] || (this.slots[slot] = [])).push(chunk, first, count);
+    this.tets += count;
   }
 }
 
@@ -109,6 +98,10 @@ export class Renderer {
     });
     this.drawData = new Float32Array(MAX_COPIES * SLOT / 4);
     this.drawBuf = d.createBuffer({ size: MAX_COPIES * SLOT, usage: U.UNIFORM | U.COPY_DST });
+    // what a frame draws of the moving geometry, list after list: for every BLOCK
+    // tetrahedra a chunk's number and where in the chunk they start (it grows as needed)
+    this.visData = new Uint32Array(1 << 16);
+    this.visBuf = d.createBuffer({ size: this.visData.byteLength, usage: U.STORAGE | U.COPY_DST });
 
     // the scene's own textures (up to four) and their samplers: bindings 6.. and 10..
     const sceneTextures = [];
@@ -332,7 +325,6 @@ export class Renderer {
       dynVerts: buffer(data.dynVerts, U.STORAGE),
       dynTmpl: buffer(data.dynTmpl, U.STORAGE),
       dynRuns: buffer(data.dynRuns, U.STORAGE),
-      dynBlocks: buffer(data.dynBlocks, U.STORAGE),
       dynKeys: buffer(data.dynKeys, U.STORAGE),
       staticCells: data.staticCells,
       staticTimed: data.staticTimed,
@@ -349,17 +341,7 @@ export class Renderer {
       tMax = Math.max(tMax, data.chunks.box[i * 9 + 1]);
     }
     next.tMin = tMin; next.tMax = tMax;
-    next.bgDyn = d.createBindGroup({
-      layout: this.bglDyn,
-      entries: [
-        { binding: 0, resource: { buffer: next.dynVerts } },
-        { binding: 1, resource: { buffer: next.dynTmpl } },
-        { binding: 3, resource: { buffer: next.dynRuns } },
-        { binding: 4, resource: { buffer: next.dynBlocks } },
-        { binding: 5, resource: { buffer: next.dynKeys } },
-        { binding: 2, resource: { buffer: this.drawBuf, size: 16 } },
-      ],
-    });
+    this._bindDyn(next);
 
     // the scene's textures, and the bind groups that carry them
     const sceneTextures = [];
@@ -503,7 +485,7 @@ export class Renderer {
 
     const old = this.scene;
     this.scene = next;
-    if (old) for (const b of [old.vbuf, old.ibuf, old.instBuf, old.dynVerts, old.dynTmpl, old.dynRuns, old.dynBlocks, old.dynKeys, ...old.textures, old.sun?.tex, old.sun?.globals, old.sun?.pending ? null : old.sun?.read]) b?.destroy();
+    if (old) for (const b of [old.vbuf, old.ibuf, old.instBuf, old.dynVerts, old.dynTmpl, old.dynRuns, old.dynKeys, ...old.textures, old.sun?.tex, old.sun?.globals, old.sun?.pending ? null : old.sun?.read]) b?.destroy();
   }
 
   // Static geometry, in two steps.  First what there is to draw at all this
@@ -725,6 +707,23 @@ export class Renderer {
   // shadowPlanes: for each shadow map, the planes that bound what can cast a
   // shadow into it (see _cascadePlanes), or null where that is not known and
   // distance has to do instead.
+  // A scene's tables of moving geometry, with the renderer's own table of
+  // what a frame draws of them (made anew when that one has had to grow).
+  _bindDyn(sc) {
+    sc.visBuf = this.visBuf;
+    sc.bgDyn = this.device.createBindGroup({
+      layout: this.bglDyn,
+      entries: [
+        { binding: 0, resource: { buffer: sc.dynVerts } },
+        { binding: 1, resource: { buffer: sc.dynTmpl } },
+        { binding: 3, resource: { buffer: sc.dynRuns } },
+        { binding: 5, resource: { buffer: sc.dynKeys } },
+        { binding: 2, resource: { buffer: this.drawBuf, size: 16 } },
+        { binding: 4, resource: { buffer: this.visBuf } },
+      ],
+    });
+  }
+
   _dynDraws(cam, sc, radii, fx, fy, near, shadowPlanes) {
     // the view, the three shadow maps, and everything (for the reflection picture, which looks all ways)
     const out = [0, 1, 2, 3, 4].map(() => [new DrawList(), new DrawList()]);
@@ -776,6 +775,21 @@ export class Renderer {
       }
       return true;
     };
+    // the same for a ball of radius rad and a stretch of time ht either way, and for the shadow maps
+    const seenBall = (x, y, z, t, rad, ht) => {
+      for (const p of planes) {
+        if (p[0] * x + p[1] * y + p[2] * z + p[3] * t + Math.hypot(p[0], p[1], p[2]) * rad + Math.abs(p[3]) * ht + p[4] < 0) return false;
+      }
+      return true;
+    };
+    const castsBall = (c, b) => {
+      const pl = shadowPlanes[c - 1];
+      if (!pl) return Math.hypot(b[0] - P[0], b[1] - P[1], b[2] - P[2]) - b[3] < reach[c];
+      for (const p of pl) {
+        if (p[0] * b[0] + p[1] * b[1] + p[2] * b[2] + Math.hypot(p[0], p[1], p[2]) * b[3] + p[3] < 0) return false;
+      }
+      return true;
+    };
     let blendTets = 0;
     for (let i = 0; i < ch.count; i++) {
       const o = i * 9;
@@ -792,12 +806,11 @@ export class Renderer {
       } else if (Math.abs(d0) > ext) {
         continue;
       }
-      const layer = ch.layer[i], first = R[i * 2], count = R[i * 2 + 1];
-      // (a chunk's run of numbers is rounded up to whole blocks: that much lies between neighbours anyway)
-      const bridge = ch.near[i] < Infinity ? BLOCK - 1 : BRIDGE;
+      const layer = ch.layer[i], per = R[i * 2], count = R[i * 2 + 1], steps = ch.steps[i * 6];
       // which shadow maps it can cast into: wherever the slice finds it, that is inside its box
-      const casts = [false, false, false, false];
-      if (layer === 0) {
+      // (none, if nothing of it casts a shadow)
+      const casts = [false, false, false, false], lit = layer === 0 && !ch.dark[i];
+      if (lit) {
         for (let c = 1; c <= 3; c++) {
           const pl = shadowPlanes[c - 1];
           if (!pl) { casts[c] = dist < reach[c]; continue; }
@@ -809,29 +822,58 @@ export class Renderer {
         }
       }
       for (let k = ka; k <= kb; k++) {
-        if (ch.near[i] < Infinity) {
-          // Detail that is drawn only from near by: near to where the slice
-          // finds the thing, that is, somewhere along this chunk's stretch of
-          // its path (all but straight within a chunk).
+        let first = 0, n = count, inView, ball = null;
+        if (ch.near[i] < Infinity || steps) {
+          // Where the slice finds the thing: somewhere along this chunk's
+          // stretch of its path (all but straight within a chunk), where the
+          // middle of it is da and db away from the slice at the two ends.
           const Q = ch.path, q = i * 7, shift = (k * period - now) * C * O[3];
           const da = O[0] * (Q[q] - P[0]) + O[1] * (Q[q + 1] - P[1]) + O[2] * (Q[q + 2] - P[2]) + B[o] * C * O[3] + shift;
           const db = O[0] * (Q[q + 3] - P[0]) + O[1] * (Q[q + 4] - P[1]) + O[2] * (Q[q + 5] - P[2]) + B[o + 1] * C * O[3] + shift;
-          const u = da === db ? 0.5 : Math.min(1, Math.max(0, da / (da - db)));
-          const far = Math.hypot(Q[q] + (Q[q + 3] - Q[q]) * u - P[0], Q[q + 1] + (Q[q + 4] - Q[q + 1]) * u - P[1], Q[q + 2] + (Q[q + 5] - Q[q + 2]) * u - P[2]) - Q[q + 6];
-          if (far > ch.near[i] * this.detail) continue;
+          if (ch.near[i] < Infinity) {
+            // detail that is drawn only from near by: near to where that is
+            const u = da === db ? 0.5 : Math.min(1, Math.max(0, da / (da - db)));
+            const far = Math.hypot(Q[q] + (Q[q + 3] - Q[q]) * u - P[0], Q[q + 1] + (Q[q + 4] - Q[q + 1]) * u - P[1], Q[q + 2] + (Q[q + 5] - Q[q + 2]) * u - P[2]) - Q[q + 6];
+            if (far > ch.near[i] * this.detail) continue;
+          }
+          if (steps) {
+            // A mesh with a cycle: the chunk stands for all the steps from
+            // pose to pose between two keys, and only those are drawn in
+            // which the slice can touch the thing: while the middle of it is
+            // no further from the slice than it is big that way.
+            const S = ch.steps, e = i * 6;
+            const rr = ax * S[e + 3] + ay * S[e + 4] + az * S[e + 5] + 0.02;
+            let u0 = 0, u1 = 1;
+            if (da !== db) {
+              const a = (-rr - da) / (db - da), b = (rr - da) / (db - da);
+              u0 = Math.max(0, Math.min(a, b)); u1 = Math.min(1, Math.max(a, b));
+              if (u0 > u1) continue;
+            } else if (Math.abs(da) > rr) {
+              continue;
+            }
+            const T0 = B[o], T1 = B[o + 1], g0 = S[e + 1], dts = S[e + 2];
+            const s0 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u0 - g0) / dts - 1e-3)));
+            const s1 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u1 - g0) / dts + 1e-3)));
+            first = s0 * per; n = (s1 - s0 + 1) * per;
+            // and where it is meanwhile says what can see it, more closely than the whole stretch's bounds
+            const um = (u0 + u1) / 2, hu = (u1 - u0) / 2;
+            ball = [Q[q] + (Q[q + 3] - Q[q]) * um, Q[q + 1] + (Q[q + 4] - Q[q + 1]) * um, Q[q + 2] + (Q[q + 5] - Q[q + 2]) * um,
+              Q[q + 6] + hu * Math.hypot(Q[q + 3] - Q[q], Q[q + 4] - Q[q + 1], Q[q + 5] - Q[q + 2]), T0 + (T1 - T0) * um, (T1 - T0) * hu];
+          }
         }
-        const inView = seen(o, dx, dy, dz, (tm(o) + k * period - now) * C);
+        if (ball) inView = seenBall(ball[0] - P[0], ball[1] - P[1], ball[2] - P[2], (ball[4] + k * period - now) * C, ball[3], ball[5] * C);
+        else inView = seen(o, dx, dy, dz, (tm(o) + k * period - now) * C);
         if (layer === 2) {
           if (inView) {
-            blend.push({ slot: k - k0, first, count, dist: centre });
-            blendTets += count;
+            blend.push({ slot: k - k0, chunk: i, first, count: n, dist: centre });
+            blendTets += n;
           }
           continue;
         }
-        if (inView) out[0][layer].add(k - k0, first, count, bridge);
-        if (wantAll) out[4][layer].add(k - k0, first, count, bridge);
-        if (layer === 0) {
-          for (let c = 1; c <= 3; c++) if (casts[c]) out[c][0].add(k - k0, first, count, bridge);
+        if (inView) out[0][layer].add(k - k0, i, first, n);
+        if (wantAll) out[4][layer].add(k - k0, i, first, n);
+        if (lit) {
+          for (let c = 1; c <= 3; c++) if (ball ? castsBall(c, ball) : casts[c]) out[c][0].add(k - k0, i, first, n);
         }
       }
     }
@@ -933,17 +975,52 @@ export class Renderer {
         }
       }
     };
+    // The table of what is drawn of the moving geometry: every list's runs
+    // as blocks of tetrahedron numbers, one list after another.  A list is
+    // then drawn in one call per slot: so many instances, from where its
+    // blocks start in the table.
+    let visible = 0;
+    const put = (chunk, first, count) => {
+      const b0 = Math.floor(first / BLOCK), b1 = Math.ceil((first + count) / BLOCK), at = visible;
+      if ((visible + b1 - b0) * 2 > this.visData.length) {
+        const more = new Uint32Array(Math.max(this.visData.length * 2, (visible + b1 - b0) * 2));
+        more.set(this.visData.subarray(0, visible * 2));
+        this.visData = more;
+      }
+      for (let b = b0; b < b1; b++) {
+        this.visData[visible * 2] = chunk;
+        this.visData[visible * 2 + 1] = b * BLOCK;
+        visible++;
+      }
+      return { at, blocks: b1 - b0 };
+    };
+    const used = [draws, ...shadowDraws.slice(0, sc.cascades), ...(sc.reflections ? [allDyn] : [])];
+    for (const lists of used) {
+      for (const list of lists) {
+        list.calls = [];
+        list.slots.forEach((runs, slot) => {
+          const at = visible;
+          for (let j = 0; j < runs.length; j += 3) put(runs[j], runs[j + 1], runs[j + 2]);
+          if (visible > at) list.calls.push({ slot, at, blocks: visible - at });
+        });
+      }
+    }
+    for (const r of blendDyn) Object.assign(r, put(r.chunk, r.first, r.count));
+    if (this.visData.byteLength > this.visBuf.size) {
+      this.visBuf.destroy();
+      this.visBuf = d.createBuffer({ size: this.visData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    }
+    if (sc.visBuf !== this.visBuf) this._bindDyn(sc);
+    if (visible) d.queue.writeBuffer(this.visBuf, 0, this.visData, 0, visible * 2);
     const drawDyn = (pass, pipe, bg, list) => {
-      if (!list.tets) return;
+      if (!list.calls || !list.calls.length) return;
       pass.setPipeline(pipe);
       pass.setBindGroup(0, bg);
-      list.slots.forEach((ranges, slot) => {
-        pass.setBindGroup(1, sc.bgDyn, [slot * SLOT]);
-        for (const r of ranges) {
-          pass.draw(4, r.count, 0, r.first);
-          nDraws++; nTets += r.count;
-        }
-      });
+      for (const c of list.calls) {
+        pass.setBindGroup(1, sc.bgDyn, [c.slot * SLOT]);
+        pass.draw(4, c.blocks * BLOCK, 0, c.at * BLOCK);
+        nDraws++; nTets += c.blocks * BLOCK;
+      }
     };
 
     for (let c = 0; c < sc.cascades; c++) {
@@ -1028,8 +1105,8 @@ export class Renderer {
         }
         if (kind === 'dyn') {
           pass.setBindGroup(1, sc.bgDyn, [r.slot * SLOT]);
-          pass.draw(4, r.count, 0, r.first);
-          nTets += r.count;
+          pass.draw(4, r.blocks * BLOCK, 0, r.at * BLOCK);
+          nTets += r.blocks * BLOCK;
         } else if (kind === 'inst') {
           pass.drawIndexed(r.group.count, r.group.instances, r.group.first, 0, r.group.firstInstance);
           nTris += r.group.count / 3 * r.group.instances;

@@ -134,28 +134,29 @@ const SECOND_WGSL = SECOND.map((c) => `vec3f(${hex(c).map((v) => v.toFixed(5)).j
 // lengths, along the fish (the snout at +0.5, the tail stalk at -0.3) and up:
 // the dorsal and anal fins run from one place along the body to another and
 // stand so high; the eye is at (along, up) with a radius.  `tag` picks the
-// pattern painted in `surface`.
+// pattern painted in `surface`.  `beat` is the seconds a beat of the tail takes
+// (see fishSwim).
 const FISH = {
   fusilier: { tag: 1, L: 0.48, h: 0.15, w: 0.08, back: '#ffcf3a', flank: '#3f8ff0', belly: '#eef4f8', fins: '#a9c9ec', tail: '#ffd23f',
-    fork: 1.0, tailH: 1.0, dorsal: [0.26, -0.2, 0.07], anal: [0.0, -0.22, 0.05], eye: [0.345, 0.014, 0.032], iris: '#d8d0b0', gloss: 0.35 },
+    fork: 1.0, tailH: 1.0, dorsal: [0.26, -0.2, 0.07], anal: [0.0, -0.22, 0.05], eye: [0.345, 0.014, 0.032], iris: '#d8d0b0', gloss: 0.35, beat: 0.5 },
   snapper: { tag: 2, L: 0.34, h: 0.13, w: 0.06, back: '#e8b812', flank: '#ffd84a', belly: '#f6f0d0', fins: '#f7d34a', tail: '#f0c419',
-    fork: 0.45, tailH: 0.95, dorsal: [0.27, -0.2, 0.09], anal: [0.0, -0.21, 0.07], eye: [0.34, 0.03, 0.037], iris: '#f0d890', gloss: 0.4 },
+    fork: 0.45, tailH: 0.95, dorsal: [0.27, -0.2, 0.09], anal: [0.0, -0.21, 0.07], eye: [0.34, 0.03, 0.037], iris: '#f0d890', gloss: 0.4, beat: 0.5 },
   chromis: { tag: 3, L: 0.2, h: 0.085, w: 0.045, back: '#2a74d8', flank: '#5cc4ff', belly: '#b2e6ff', fins: '#7ccfff', tail: '#3a8cf0',
-    fork: 0.9, tailH: 1.05, dorsal: [0.26, -0.21, 0.11], anal: [0.02, -0.22, 0.09], eye: [0.335, 0.03, 0.05], iris: '#2a3a50', gloss: 0.5 },
+    fork: 0.9, tailH: 1.05, dorsal: [0.26, -0.21, 0.11], anal: [0.02, -0.22, 0.09], eye: [0.335, 0.03, 0.05], iris: '#2a3a50', gloss: 0.5, beat: 0.4 },
   jack: { tag: 4, L: 0.6, h: 0.2, w: 0.08, back: '#4a5c6a', flank: '#c4d0d8', belly: '#eef2f4', fins: '#8d9ba6', tail: '#b8b58a',
-    fork: 1.25, tailH: 1.1, dorsal: [0.2, -0.22, 0.08], anal: [0.0, -0.23, 0.06], eye: [0.345, 0.015, 0.04], iris: '#e8eef0', gloss: 0.85 },
+    fork: 1.25, tailH: 1.1, dorsal: [0.2, -0.22, 0.08], anal: [0.0, -0.23, 0.06], eye: [0.345, 0.015, 0.04], iris: '#e8eef0', gloss: 0.85, beat: 0.6 },
   tang: { tag: 5, L: 0.26, h: 0.2, w: 0.04, back: '#f2c30f', flank: '#ffd52a', belly: '#ffe680', fins: '#ffd21c', tail: '#ffe14a',
     fork: 0.05, tailH: 1.05, dorsal: [0.24, -0.24, 0.16], anal: [0.04, -0.24, 0.14], tall: true, head: 0.74, mouth: 0.02,
-    eye: [0.33, 0.08, 0.045], iris: '#20180a', gloss: 0.4 },
+    eye: [0.33, 0.08, 0.045], iris: '#20180a', gloss: 0.4, beat: 0.6 },
   parrot: { tag: 6, L: 0.7, h: 0.24, w: 0.13, back: '#23877c', flank: '#45c4a0', belly: '#a8e6cf', fins: '#e86fae', tail: '#e86fae',
     fork: 0.2, tailH: 0.95, dorsal: [0.24, -0.22, 0.06], anal: [0.0, -0.22, 0.05], head: 0.85, mouth: 0.0,
-    eye: [0.35, 0.035, 0.03], iris: '#f0a040', gloss: 0.4 },
+    eye: [0.35, 0.035, 0.03], iris: '#f0a040', gloss: 0.4, beat: 1.2 },
   clown: { tag: 7, L: 0.11, h: 0.05, w: 0.026, back: '#f06a10', flank: '#ff8a1e', belly: '#ffa040', fins: '#ff8a1e', tail: '#ff8a1e',
     fork: 0.0, tailH: 0.9, dorsal: [0.22, -0.24, 0.14], anal: [0.02, -0.22, 0.11], tall: true, head: 0.78, mouth: -0.01,
-    eye: [0.35, 0.04, 0.05], iris: '#e07010', gloss: 0.5 },
+    eye: [0.35, 0.04, 0.05], iris: '#e07010', gloss: 0.5, beat: 0.75 },
   humbug: { tag: 8, L: 0.09, h: 0.055, w: 0.022, back: '#f4f4f0', flank: '#f4f4f0', belly: '#ffffff', fins: '#202020', tail: '#e8e8e8',
     fork: 0.35, tailH: 1.0, dorsal: [0.24, -0.2, 0.16], anal: [0.04, -0.22, 0.12], tall: true, head: 0.8,
-    eye: [0.35, 0.05, 0.05], iris: '#303030', gloss: 0.4 },
+    eye: [0.35, 0.05, 0.05], iris: '#303030', gloss: 0.4, beat: 0.6 },
 };
 // for the shader, per kind (by tag; 0 is unused): back, belly, eye (along, up, radius), iris, (mouth height, 0, 0)
 const FISH_WGSL = (() => {
@@ -1357,6 +1358,62 @@ function fishGeo(f) {
   return g.tag(f.tag);
 }
 
+// The triangles of g for which keep(i) holds, with their vertices.
+function part(g, keep) {
+  const out = new Geo(), map = new Map();
+  for (let i = 0; i < g.idx.length / 3; i++) {
+    if (!keep(i)) continue;
+    for (let k = 0; k < 3; k++) {
+      const v = g.idx[i * 3 + k];
+      if (!map.has(v)) {
+        map.set(v, out.vertexCount);
+        out.p.push(...g.p.slice(v * 3, v * 3 + 3)); out.n.push(...g.n.slice(v * 3, v * 3 + 3)); out.c.push(...g.c.slice(v * 3, v * 3 + 3));
+        out.uv.push(...g.uv.slice(v * 2, v * 2 + 2)); out.a.push(...g.a.slice(v * 4, v * 4 + 4)); out.x.push(...g.x.slice(v * 2, v * 2 + 2));
+      }
+      out.idx.push(map.get(v));
+    }
+  }
+  return out;
+}
+
+// A fish of the kind f beating its tail: fishGeo in two parts, the front,
+// which stays as it is, and the rest, which swings from side to side once
+// every f.beat seconds.  The swing is a cycle of two poses, its two ends (in
+// between every vertex goes straight across, through the straight fish): the
+// body bends from its widest point back, more and more towards the tail, and
+// the dorsal and anal fins and the tail go with it, the tips of the tail `amp`
+// body lengths out either way.  Everything at one place along the fish moves
+// alike, so nothing comes off the body.  (Two parts, because a tilted view
+// draws the moving part once for every step from pose to pose it passes
+// through, and the stiff front only once for every stretch between the keys
+// of the fish's path, which are far longer.)
+function fishSwim(f, amp = 0.11) {
+  const g0 = fishGeo(f), L = f.L, y0 = 0.03 * L, yt = -0.52 * L;
+  const off = (y) => (y < y0 ? amp * L * ((y0 - y) / (y0 - yt)) ** 2 : 0);
+  const slope = (y) => (y < y0 ? -2 * amp * L * (y0 - y) / (y0 - yt) ** 2 : 0);
+  const moves = (i) => [0, 1, 2].some((k) => g0.p[g0.idx[i * 3 + k] * 3 + 1] < y0 - 1e-9);
+  const rest = part(g0, moves);
+  const pose = (side) => {
+    const g = rest.clone();
+    for (let i = 0; i < g.vertexCount; i++) {
+      const y = g.p[i * 3 + 1];
+      g.p[i * 3] += side * off(y);
+      // (the normals of a mesh sheared sideways along it)
+      const nx = g.n[i * 3], ny = g.n[i * 3 + 1] - side * slope(y) * nx, nz = g.n[i * 3 + 2], l = Math.hypot(nx, ny, nz) || 1;
+      g.n[i * 3] = nx / l; g.n[i * 3 + 1] = ny / l; g.n[i * 3 + 2] = nz / l;
+    }
+    return g;
+  };
+  const poses = [pose(1), pose(-1)];
+  return { f, front: part(g0, (i) => !moves(i)), rest: (u) => poses[Math.round(u * 2) % 2] };
+}
+// Adds a fish (from fishSwim) that tf takes along: both parts on the same keys
+// (which they then share), the beat starting at a random time of its own.
+function addFish(b, swim, tf, times, rand, extra = {}) {
+  b.dynamic(swim.front, { times, transform: tf, caps: 'none', ...extra });
+  b.dynamic(swim.rest, { times, transform: tf, caps: 'none', ...extra, cycle: { period: swim.f.beat, keys: 2, start: rand() * swim.f.beat } });
+}
+
 // Moves a model along a closed path (either way round, by the sign of `speed`)
 // with a fixed sideways and vertical offset.
 function laneTf(path, { speed, offset = 0, dx = 0, dz = 0, span = 3 }) {
@@ -1379,12 +1436,8 @@ function nearestOn(path, [x, y]) {
   return best;
 }
 
-function addFollower(b, geo, tf, dur, size, extra = {}) {
-  b.dynamic(geo, {
-    times: adaptiveTimes(tf, 0, dur, { tolerance: 0.1, maxStep: 8, size }),
-    transform: tf, caps: 'none', ...extra,
-  });
-}
+// keys for something that tf takes along a path for dur seconds (size: about its radius)
+const followTimes = (tf, dur, size) => adaptiveTimes(tf, 0, dur, { tolerance: 0.1, maxStep: 8, size });
 
 function turtleGeo(t) {
   const g = new Geo();
@@ -1522,12 +1575,14 @@ function subGeo() {
     .rotateX(-Math.PI / 2).translate(0, -1.6, 0).color('#f2c12e').gloss(0.6).mat(MAT.SUB);
   // (uv.y: along the hull in metres, for the portholes painted in `surface`)
   for (let i = 0; i < g.vertexCount; i++) g.uv[i * 2 + 1] = g.p[i * 3 + 1];
-  // a three-bladed propeller behind the tail fins
+  // a three-bladed propeller behind the tail fins: its hub, and its blades as
+  // a mesh of their own, which turns (about the hull's axis, y)
   g.add(Geo.cylinder(0.07, 0.25, 6, { caps: false }).rotateX(Math.PI / 2).translate(0, -1.6, 0).color('#2b3440'));
+  const prop = new Geo();
   for (let i = 0; i < 3; i++) {
     const a = i / 3 * TAU, c = Math.cos(a), sn = Math.sin(a);
     const P = (r, dy, t) => [c * r - sn * t, -1.75 + dy, sn * r + c * t];
-    g.add(Geo.quad(P(0.05, 0.05, -0.06), P(0.42, 0.03, -0.09), P(0.42, -0.03, 0.09), P(0.05, -0.05, 0.06)).color('#c8a040').gloss(0.5).mat(MAT.THIN));
+    prop.add(Geo.quad(P(0.05, 0.05, -0.06), P(0.42, 0.03, -0.09), P(0.42, -0.03, 0.09), P(0.05, -0.05, 0.06)).color('#c8a040').gloss(0.5).mat(MAT.THIN));
   }
   g.add(Geo.box(0.5, 0.95, 0.55).translate(0, 0.25, 0.75).color('#f2c12e').gloss(0.6));
   g.add(Geo.box(1.3, 0.3, 0.05).translate(0, -1.35, 0).color('#2b3440'));
@@ -1536,7 +1591,7 @@ function subGeo() {
   g.add(Geo.sphere(0.09, 4, 2).translate(0, 0.35, 1.1).color('#ff3b2a').mat(MAT.BEACON));
   g.add(Geo.cylinder(0.3, 9, 6, { r2: 2.2, caps: false }).rotateX(-Math.PI / 2).translate(0, 1.6, 0)
     .color('#fff1c8').emissive(0.6).mat(MAT.BEAM).additive());
-  return g;
+  return { hull: g, prop };
 }
 
 // ---------------------------------------------------------------------------
@@ -1976,6 +2031,27 @@ export default {
       // (painted in `surface`: dark spots down the body, eyes on the head)
       const eel = Geo.tube([[0, 0, -0.85], [0, 0, 0.1], [0.04, 0, 0.45], [0.12, 0, 0.6]], 0.035, 4, { caps: false }).color('#efe6cc').mat(MAT.EEL).tag(1);
       eel.add(Geo.sphere(0.04, 4, 2).translate(0.12, 0, 0.6).color('#efe6cc').mat(MAT.EEL).tag(2));
+      // They lean with the current, which runs east-north-east, and back
+      // against it, a wave of that passing over them at 2 m/s: the part of an
+      // eel above the sand bends, its head 7 cm out at either end.  A round of
+      // 4 s as four poses: leaning with the current, still leaning (a moment's
+      // hold), leaning against it, still leaning.  (An eel is turned by `rot`:
+      // the current in its own frame.)
+      const cur = [Math.cos(0.4), Math.sin(0.4)];
+      const lean = [1, 1, -1, -1];
+      const swayed = (rot, k) => {
+        const g = eel.clone(), dx = Math.cos(rot) * cur[0] + Math.sin(rot) * cur[1], dy = Math.cos(rot) * cur[1] - Math.sin(rot) * cur[0];
+        for (let v = 0; v < g.vertexCount; v++) {
+          const z = g.p[v * 3 + 2];
+          if (z <= 0) continue;
+          const o = 0.07 * lean[k] * (z / 0.6) ** 2, d = 0.07 * lean[k] * 2 * z / 0.36;
+          g.p[v * 3] += dx * o; g.p[v * 3 + 1] += dy * o;
+          // (the normals of a mesh sheared that way, by an amount that grows with z)
+          const nx = g.n[v * 3], ny = g.n[v * 3 + 1], nz = g.n[v * 3 + 2] - d * (dx * nx + dy * ny), l = Math.hypot(nx, ny, nz);
+          g.n[v * 3] = nx / l; g.n[v * 3 + 1] = ny / l; g.n[v * 3 + 2] = nz / l;
+        }
+        return g;
+      };
       for (let i = 0; i < 46; i++) {
         const y = rand.range(-44, -20), x = chanX(y) + rand.range(-4.5, 4.5);
         if (Math.abs(x - chanX(y)) < 0.8) continue;
@@ -1997,7 +2073,11 @@ export default {
         const times = new Set([0, P]);
         for (let c = -2; c < 7; c++) for (const [kt] of kinks) { const tt = phase + c * 12 + kt; if (tt > 0 && tt < P) times.add(+tt.toFixed(6)); }
         const tl = [...times].sort((a, c) => a - c);
-        b.dynamic(eel, { times: tl, transform: (t) => m4.mul(m4.translation(x, y, z + hAt(t)), m4.rotationZ(rot)), caps: 'none' });
+        const poses = [0, 1, 2, 3].map((k) => swayed(rot, k));
+        b.dynamic((u) => poses[Math.round(u * 4) % 4], {
+          times: tl, transform: (t) => m4.mul(m4.translation(x, y, z + hAt(t)), m4.rotationZ(rot)), caps: 'none',
+          cycle: { period: 4, keys: 4, start: (((x * cur[0] + y * cur[1]) / 2 + 0.29 * i) % 4 + 4) % 4 },
+        });
       }
     }
 
@@ -2013,30 +2093,33 @@ export default {
           place(rock(rand, 0.35, 0.25), x, y, { r: 0.3, sink: 0.1 });
         }
         const segs = 5;
-        const geoAt = (t) => {
+        // one strand at the share u of its 7.5 s sway
+        const strandAt = (s) => (u) => {
           const g = new Geo();
-          for (const s of strands) {
-            // two crossed fronds per stalk, so that it never looks edge-on
-            for (const o of [s.o, s.o + Math.PI / 2]) {
-              const cw = Math.cos(o), sw = Math.sin(o);
-              const base = g.vertexCount;
-              for (let k = 0; k <= segs; k++) {
-                const f = k / segs, a = TAU * t / 7.5 - s.ph - f * 0.6;
-                const sway = 1.3 * Math.pow(f, 1.4) * (s.h / 8);
-                const ox = sway * Math.sin(a), oy = sway * 0.35 * Math.cos(a);
-                const w = s.w * (0.25 + 0.9 * Math.sin(Math.PI * Math.min(1, f * 0.85 + 0.12)));
-                const px = s.x + ox, py = s.y + oy, pz = s.z + f * s.h;
-                g.vert(px - cw * w / 2, py - sw * w / 2, pz, -sw, cw, 0.2, 0, f);
-                g.vert(px + cw * w / 2, py + sw * w / 2, pz, -sw, cw, 0.2, 1, f);
-              }
-              for (let k = 0; k < segs; k++) g.quadIdx(base + k * 2, base + k * 2 + 1, base + k * 2 + 3, base + k * 2 + 2);
+          // two crossed fronds per stalk, so that it never looks edge-on
+          for (const o of [s.o, s.o + Math.PI / 2]) {
+            const cw = Math.cos(o), sw = Math.sin(o);
+            const base = g.vertexCount;
+            for (let k = 0; k <= segs; k++) {
+              const f = k / segs, a = TAU * u - s.ph - f * 0.6;
+              const sway = 1.3 * Math.pow(f, 1.4) * (s.h / 8);
+              const ox = sway * Math.sin(a), oy = sway * 0.35 * Math.cos(a);
+              const w = s.w * (0.25 + 0.9 * Math.sin(Math.PI * Math.min(1, f * 0.85 + 0.12)));
+              const px = s.x + ox, py = s.y + oy, pz = s.z + f * s.h;
+              g.vert(px - cw * w / 2, py - sw * w / 2, pz, -sw, cw, 0.2, 0, f);
+              g.vert(px + cw * w / 2, py + sw * w / 2, pz, -sw, cw, 0.2, 1, f);
             }
+            for (let k = 0; k < segs; k++) g.quadIdx(base + k * 2, base + k * 2 + 1, base + k * 2 + 3, base + k * 2 + 2);
           }
           g.color('#b0a046');
           // a stipe with blades along it, cut out of each frond (see `cutout`)
           return g.mat(MAT.FROND).cutout();
         };
-        b.dynamic(geoAt, { times: timeRange(0, P, 7.5 / 8), caps: 'none' });
+        // The sway, eight rounds a period, is stored as the eight poses of one
+        // round.  Each strand is a thing of its own, so that a tilted view only
+        // draws the stretches of time it finds at each strand, not every one
+        // it finds anywhere in the patch.
+        for (const s of strands) b.dynamic(strandAt(s), { times: [0, P], caps: 'none', cycle: { period: 7.5, keys: 8 } });
       }
     }
     // more growth on the wreck: sponges, soft corals, fans and tube sponges on
@@ -2129,6 +2212,9 @@ export default {
     }
 
     // ---- fish ----------------------------------------------------------------
+    // (each beats its tail in a time of its own: random numbers for that, of
+    // their own, so that nothing else changes)
+    const beatRand = rng(2024);
     // A lane of fusiliers up the west half of the channel and back down the
     // east half, in ranks of three.  Each fish is authored over four periods
     // (one lap), so its repeats every period are three more fish in the lane.
@@ -2148,11 +2234,12 @@ export default {
       const lane = new Path(pts, { closed: true, smooth: 10 });
       const mult = 4, ranks = 28, dur = mult * P;
       const speed = lane.length / dur;
-      const geo = fishGeo(FISH.fusilier);
+      const swim = fishSwim(FISH.fusilier);
       for (let rk = 0; rk < ranks; rk++) {
         for (let j = 0; j < 3; j++) {
           const offset = (rk + rand.range(-0.08, 0.08)) * lane.length / (ranks * mult);
-          addFollower(b, geo, laneTf(lane, { speed, offset, dx: (j - 1) * 0.6 + rand.range(-0.1, 0.1), dz: rand.range(-0.3, 0.3) }), dur, 0.3);
+          const tf = laneTf(lane, { speed, offset, dx: (j - 1) * 0.6 + rand.range(-0.1, 0.1), dz: rand.range(-0.3, 0.3) });
+          addFish(b, swim, tf, followTimes(tf, dur, 0.3), beatRand);
         }
       }
     }
@@ -2166,10 +2253,11 @@ export default {
         return [x, y, Math.max(H(x, y), 0) + 2.6 + 0.8 * Math.sin(a)];
       });
       const loop = new Path(pts, { closed: true, smooth: 5 });
-      const geo = fishGeo(FISH.snapper);
+      const swim = fishSwim(FISH.snapper);
       for (let i = 0; i < 40; i++) {
         const offset = (Math.floor(i / 2) / 20 + rand.range(-0.006, 0.006)) * loop.length;
-        addFollower(b, geo, laneTf(loop, { speed: loop.length / P, offset, dx: (i % 2) * 0.5 - 0.25, dz: rand.range(-0.25, 0.25) }), P, 0.2);
+        const tf = laneTf(loop, { speed: loop.length / P, offset, dx: (i % 2) * 0.5 - 0.25, dz: rand.range(-0.25, 0.25) });
+        addFish(b, swim, tf, followTimes(tf, P, 0.2), beatRand);
       }
     }
 
@@ -2177,23 +2265,25 @@ export default {
     {
       const [u, y] = bommies[0];
       const x = chanX(y) + u, z = H(x, y) + 3.0;
-      const geo = fishGeo(FISH.chromis);
+      const swim = fishSwim(FISH.chromis);
       for (let i = 0; i < 24; i++) {
         const ring = i % 3, rr = 1.4 + ring * 0.7, h = z + ring * 0.5 + rand.range(-0.2, 0.2);
         const loop = new Path(Array.from({ length: 16 }, (_, k) => [x + Math.cos(k / 16 * TAU) * rr, y + Math.sin(k / 16 * TAU) * rr, h]), { closed: true, smooth: 3 });
         const laps = ring === 1 ? 2 : 3;
-        addFollower(b, geo, laneTf(loop, { speed: laps * loop.length / P, offset: rand() * loop.length, dz: rand.range(-0.15, 0.15) }), P, 0.12);
+        const tf = laneTf(loop, { speed: laps * loop.length / P, offset: rand() * loop.length, dz: rand.range(-0.15, 0.15) });
+        addFish(b, swim, tf, followTimes(tf, P, 0.12), beatRand);
       }
     }
 
     // a ring of silver jacks off the drop-off
     {
       const cx = dropX(28) + 6, cy = 28;
-      const geo = fishGeo(FISH.jack);
+      const swim = fishSwim(FISH.jack);
       for (let i = 0; i < 36; i++) {
         const layer = i % 3, rr = 5 + layer * 0.8, h = 5 + layer * 1.6;
         const loop = new Path(Array.from({ length: 20 }, (_, k) => [cx + Math.cos(k / 20 * TAU) * rr, cy + Math.sin(k / 20 * TAU) * rr, h + Math.sin(k / 20 * TAU * 2) * 0.6]), { closed: true, smooth: 3 });
-        addFollower(b, geo, laneTf(loop, { speed: 2 * loop.length / P, offset: (Math.floor(i / 3) / 12 + layer * 0.03) * loop.length, dz: rand.range(-0.2, 0.2) }), P, 0.3);
+        const tf = laneTf(loop, { speed: 2 * loop.length / P, offset: (Math.floor(i / 3) / 12 + layer * 0.03) * loop.length, dz: rand.range(-0.2, 0.2) });
+        addFish(b, swim, tf, followTimes(tf, P, 0.3), beatRand);
       }
     }
 
@@ -2202,15 +2292,16 @@ export default {
       const cx = chanX(0) - 26;
       const pts = [[cx - 8, -14], [cx + 4, -10], [cx + 8, 2], [cx + 2, 12], [cx - 9, 8], [cx - 12, -4]].map(([x, y]) => [x, y, H(x, y) + 1.8]);
       const loop = new Path(pts, { closed: true, smooth: 6 });
-      const geo = fishGeo(FISH.tang);
+      const swim = fishSwim(FISH.tang);
       for (let i = 0; i < 16; i++) {
-        addFollower(b, geo, laneTf(loop, { speed: loop.length / P, offset: rand.range(0, 5), dx: rand.range(-1.2, 1.2), dz: rand.range(-0.5, 0.6) }), P, 0.15);
+        const tf = laneTf(loop, { speed: loop.length / P, offset: rand.range(0, 5), dx: rand.range(-1.2, 1.2), dz: rand.range(-0.5, 0.6) });
+        addFish(b, swim, tf, followTimes(tf, P, 0.15), beatRand);
       }
     }
 
     // parrotfish grazing along the ridges
     {
-      const geo = fishGeo(FISH.parrot);
+      const swim = fishSwim(FISH.parrot);
       const loops = [[-17, -38, 5], [16, -26, 6], [-20, 10, 5], [18, 30, 6]];
       for (const [u, y0, r] of loops) {
         const cx = chanX(y0) + u;
@@ -2219,7 +2310,8 @@ export default {
           return [x, y, H(x, y) + 1.3];
         });
         const loop = new Path(pts, { closed: true, smooth: 5 });
-        addFollower(b, geo, laneTf(loop, { speed: loop.length / P, offset: rand() * loop.length }), P, 0.35);
+        const tf = laneTf(loop, { speed: loop.length / P, offset: rand() * loop.length });
+        addFish(b, swim, tf, followTimes(tf, P, 0.35), beatRand);
       }
     }
 
@@ -2240,7 +2332,7 @@ export default {
       }
       const fr = rng(777);
       for (const h of homes) {
-        const geo = fishGeo(h.kind);
+        const swim = fishSwim(h.kind);
         const [cx, cy, cz] = h.at ?? [chanX(h.y) + h.u, h.y, floorUnder(chanX(h.y) + h.u, h.y, h.r) - 0.13 + h.top];
         for (let i = 0; i < h.n; i++) {
           const a0 = fr() * TAU, d = fr() * h.size * 0.25, rr = fr.range(0.1, 0.2) * (h.size / 0.4) ** 0.5;
@@ -2252,7 +2344,7 @@ export default {
           });
           const loop = new Path(pts, { closed: true, smooth: 3 });
           const tf = laneTf(loop, { speed: turns * loop.length / P, offset: fr() * loop.length });
-          b.dynamic(geo, { times: adaptiveTimes(tf, 0, P, { tolerance: 0.04, maxStep: 4, size: 0.06 }), transform: tf, caps: 'none', within: 16 });
+          addFish(b, swim, tf, adaptiveTimes(tf, 0, P, { tolerance: 0.04, maxStep: 4, size: 0.06 }), beatRand, { within: 16 });
         }
       }
     }
@@ -2264,7 +2356,11 @@ export default {
         .map(([u, y, h]) => [c + u, y, h > 6 ? h : H(c + u, y) + h]);
       const loop = new Path(pts, { closed: true, smooth: 8 });
       const tf = laneTf(loop, { speed: loop.length / P, offset: loop.length * 0.55, span: 4 });
-      b.dynamic(turtleGeo, { times: timeRange(0, P, 0.4), transform: tf, caps: 'none' });
+      // (one stroke of the flippers, 4 s, as ten poses; a key at every pose,
+      // exactly where the builder puts it, so that no sliver of a step is left
+      // between the two)
+      const f = Math.fround, times = Array.from({ length: 151 }, (_, k) => f(k * f(4 / 10)));
+      b.dynamic((u) => turtleGeo(u * 4), { times, transform: tf, caps: 'none', cycle: { period: 4, keys: 10 } });
     }
 
     // ---- manta rays gliding laps over the channel ----------------------------
@@ -2275,7 +2371,8 @@ export default {
       const loop = new Path(pts, { closed: true, smooth: 6 });
       const dur = 2 * P;
       const tf = laneTf(loop, { speed: loop.length / dur, offset: nearestOn(loop, [chanX(-31) - 5, -31]), span: 6 });
-      b.dynamic(mantaGeo, { times: timeRange(0, dur, 0.5), transform: tf, caps: 'none' });
+      // (one wing beat of 6 s as twelve poses)
+      b.dynamic((u) => mantaGeo(u * 6), { times: timeRange(0, dur, 0.5), transform: tf, caps: 'none', cycle: { period: 6, keys: 12 } });
     }
 
     // ---- whale sharks: a long loop along the drop-off and back over the east ridge
@@ -2289,23 +2386,35 @@ export default {
       const dur = 3 * P;
       const base = sharkBase();
       const tf = laneTf(loop, { speed: loop.length / dur, offset: nearestOn(loop, [chanX(-4) + 17, -4]), span: 10 });
-      b.dynamic((t) => sharkAt(base, t), { times: timeRange(0, dur, 7.5 / 8), transform: tf, caps: 'none' });
+      // (the sweep of the tail as a round of eight poses, stored once; the keys
+      // only follow the loop, on the poses' own beat)
+      b.dynamic((u) => sharkAt(base, u * 7.5), { times: timeRange(0, dur, 7.5 / 8), transform: tf, caps: 'none', cycle: { period: 7.5, keys: 8 } });
     }
 
     // ---- jellyfish pulsing over the drop-off: one beat every 3 s ------------
     {
       const geo = jellyGeo('#d8c8f4');
+      // how far through its beat (u: the share of the 3 s round done) the bell
+      // is squeezed: quickly in a fifth of the round, then slowly open again
+      const beat = (u) => (u < 0.2 ? u / 0.2 : 1 - (u - 0.2) / 0.8);
+      // the beat squeezes the bell, lifts it and makes it glow: five poses, one
+      // at each fifth of the round, follow that exactly
+      const cycle = (start) => ({
+        period: 3, keys: 5, start,
+        transform: (u) => { const c = beat(u); return m4.mul(m4.translation(0, 0, 0.35 * c), m4.scaling(1 - 0.22 * c, 1 - 0.22 * c, 1 + 0.12 * c)); },
+        paint: (u) => ({ emissive: 0.35 + 1.3 * beat(u) }),
+      });
+      const f = Math.fround;
       for (let i = 0; i < 7; i++) {
         const y = -40 + i * 7 + rand.range(-2, 2), x = dropX(y) + rand.range(6, 16), z = rand.range(-1, 12);
         const phase = rand(), rad = rand.range(1.5, 3.5), a0 = rand() * TAU;
-        const beat = (t) => { const u = ((t / 3 + phase) % 1 + 1) % 1; return u < 0.2 ? u / 0.2 : 1 - (u - 0.2) / 0.8; };
-        const tf = (t) => {
-          const c = beat(t), a = a0 + TAU * t / P;
-          return m4.mul(m4.translation(x + Math.cos(a) * rad, y + Math.sin(a) * rad, z + 0.35 * c), m4.scaling(1 - 0.22 * c, 1 - 0.22 * c, 1 + 0.12 * c));
-        };
-        const times = new Set([0, P]);
-        for (let k = -1; k <= 21; k++) for (const f of [0, 0.2, 0.6]) { const tt = (k + f - phase) * 3; if (tt > 0 && tt < P) times.add(+tt.toFixed(6)); }
-        b.dynamic(geo, { times: [...times].sort((a, c) => a - c), transform: tf, paint: (t) => ({ emissive: 0.35 + 1.3 * beat(t) }), caps: 'none' });
+        // (a round begins where t / 3 + phase is whole)
+        const start = f(3 * (1 - phase));
+        const tf = (t) => { const a = a0 + TAU * t / P; return m4.translation(x + Math.cos(a) * rad, y + Math.sin(a) * rad, z); };
+        // one lap a period, a key at every other pose (exactly where the builder
+        // puts the poses, so that no sliver of a step is left between the two)
+        const times = Array.from({ length: 51 }, (_, k) => f(start + f((k * 2 - 5) * f(3 / 5))));
+        b.dynamic(geo, { times, transform: tf, caps: 'none', cycle: cycle(start) });
       }
     }
 
@@ -2316,7 +2425,10 @@ export default {
         return [x, y, Math.max(H(x, y), -4) + 5 + 1.5 * Math.sin(a * 2)];
       });
       const loop = new Path(pts, { closed: true, smooth: 6 });
-      addFollower(b, subGeo(), laneTf(loop, { speed: -loop.length / P, span: 4 }), P, 1.6);
+      const sub = subGeo(), tf = laneTf(loop, { speed: -loop.length / P, span: 4 }), times = followTimes(tf, P, 1.6);
+      b.dynamic(sub.hull, { times, transform: tf, caps: 'none' });
+      // the propeller turns once every 1.5 s, a pose every 20 degrees
+      b.dynamic(sub.prop, { times, transform: tf, caps: 'none', cycle: { period: 1.5, keys: 18, transform: (u) => m4.rotationY(TAU * u) } });
     }
   },
 };

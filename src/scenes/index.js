@@ -30,7 +30,7 @@ export const SCENES = [
     hint: 'Turn until a lane of beacons runs across your view and roll the mouse wheel (or hold Z or X): tilting the view one way makes their running pulses speed up, light all at once at 45° and then run backwards. W thrusts, B brakes.',
     touchHint: 'Turn until a lane of beacons runs across your view and hold − or + at the lower right: tilting the view one way makes their running pulses speed up, light all at once at 45° and then run backwards. The left stick thrusts.',
     weight: 2,
-    work: 4.9e6,
+    work: 5.0e6,
     load: () => import('./orbit.js'),
   },
   {
@@ -41,7 +41,7 @@ export const SCENES = [
     hint: 'Roll the mouse wheel forward (or hold X) to tilt the view into time: the timing boards on your right now show a later time than those on your left. Then drive (W): steer to the right and the car heads into the future as well, to the left and it heads into the past.',
     touchHint: 'Hold + at the lower right to tilt the view into time: the timing boards on your right now show a later time than those on your left. Then push the left stick up to drive: steer to the right and the car heads into the future as well, to the left and it heads into the past.',
     weight: 2,
-    work: 8.6e6,
+    work: 7.9e6,
     load: () => import('./circuit.js'),
   },
   {
@@ -52,7 +52,7 @@ export const SCENES = [
     hint: 'Roll the mouse wheel forward (or hold X): the view tilts into time. The right-hand side of the avenue is now seen later than the left, further the further off it is, and the town slows down until, at 90°, it stands still. R makes everything level again.',
     touchHint: 'Hold + at the lower right: the view tilts into time. The right-hand side of the avenue is now seen later than the left, further the further off it is, and the town slows down until, at 90°, it stands still. The level button undoes it.',
     weight: 3,
-    work: 12.3e6,
+    work: 7.5e6,
     load: () => import('./plaza.js'),
   },
   {
@@ -63,7 +63,7 @@ export const SCENES = [
     hint: 'Roll the mouse wheel (or hold Z or X) to tilt the view into time: the vents, which all puff together, now go off one after another across the reef, and whatever swims across your view is stretched out or bunched up. At 90° the reef stands still. W swims.',
     touchHint: 'Hold − or + at the lower right to tilt the view into time: the vents, which all puff together, now go off one after another across the reef, and whatever swims across your view is stretched out or bunched up. At 90° the reef stands still.',
     weight: 4,
-    work: 11.5e6,
+    work: 6.2e6,
     load: () => import('./reef.js'),
   },
   {
@@ -74,7 +74,7 @@ export const SCENES = [
     hint: 'Roll the mouse wheel forward (or hold X) to tilt the view into time: on your left the slopes are still in the afternoon sun, while on your right night is falling. Roll it back past level, and night comes from the left. R makes it level again.',
     touchHint: 'Hold + at the lower right to tilt the view into time: on your left the slopes are still in the afternoon sun, while on your right night is falling. Hold − past level, and night comes from the left. The level button undoes it.',
     weight: 5,
-    work: 20e6,
+    work: 20.5e6,
     load: () => import('./valley.js'),
   },
   {
@@ -85,7 +85,7 @@ export const SCENES = [
     hint: 'Roll the mouse wheel forward (or hold X): on your left the sun climbs back into the sky, and on your right night falls, with fireworks. Roll it back past level (Z) and the two change sides. R makes the view level again.',
     touchHint: 'Hold + at the lower right: on your left the sun climbs back into the sky, and on your right night falls, with fireworks. Hold − and the two change sides. The level button undoes it.',
     weight: 5,
-    work: 16e6,
+    work: 17.3e6,
     load: () => import('./pier.js'),
   },
 ];

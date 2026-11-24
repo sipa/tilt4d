@@ -989,13 +989,29 @@ function shuttle(accent, id) {
 // addShuttle can change them with the shuttle's speed: the plume is scaled,
 // and the bright discs slide out of the engine block when it is under way and
 // back into it, behind the dim discs that are part of the hull, when it stops.
-// All three are moved by matrices only, so each is stored once.
+// All three are stored once for all the shuttles: the discs as they are, the
+// plume as the six poses of its flicker (see FLICKER).
 const SHUTTLE_TAIL = [0, -11.6, 0.2];
 const engineDiscs = (y, e) => Geo.merge(...[-1.15, 1.15].map((x) => Geo.disc(0.78, 6).rotateX(Math.PI / 2).translate(x, y, 0.2))).color('#bfe6ff').emissive(e);
 const shuttleFires = () => engineDiscs(-11.6, 16);
 const shuttlePlume = () => Geo.cylinder(1.6, 9, 6, { r2: 0.2, caps: false }).rotateX(Math.PI / 2).translate(...SHUTTLE_TAIL)
   .color([0.3, 0.55, 1.0]).emissive(4).additive().mat(MAT.GLOW);
 const SHUTTLE_PLUME = shuttlePlume(), SHUTTLE_FIRES = shuttleFires(); // one of each for all the shuttles
+
+// The exhaust plumes of the shuttles and the tugs flicker: a round of a
+// quarter of a second in six poses, in each of which the plume is a little
+// brighter or dimmer (by the first number) and longer or shorter (by the
+// second) than it is.  The glow in the engines stays steady.  Every engine
+// has its own start, so no two flicker together.
+const FLICKER = [[1, 1], [0.8, 0.93], [1.15, 1.05], [0.88, 0.96], [1.08, 1.02], [0.74, 0.91]];
+const flicker = (tail, emissive, start) => {
+  const at = (u) => FLICKER[Math.round(u * FLICKER.length) % FLICKER.length];
+  return {
+    period: 0.24, keys: FLICKER.length, start,
+    transform: (u) => m4.mul(m4.translation(...tail), m4.scaling(1, at(u)[1], 1), m4.translation(...tail.map((v) => -v))),
+    paint: (u) => ({ emissive: emissive * at(u)[0] }),
+  };
+};
 
 // Small parts seen only from near by: the engine bells, two aerials, the
 // hatch collar and the thruster blocks by the nose.
@@ -1025,8 +1041,9 @@ const SHUTTLE_DETAIL = shuttleDetail(); // (one mesh for all of them)
 // belongs), and it is added as runs of keys no more than `span` apart, each a
 // call of its own: `within` is measured to the box of a run, and a run that
 // went a long way would be drawn from far away.  (This costs a few keys more
-// than one call with the object's own keys would.)
-function addRiding(b, geo, times, tf, within, span) {
+// than one call with the object's own keys would.)  `more`: further options
+// for every call, such as a cycle.
+function addRiding(b, geo, times, tf, within, span, more = {}) {
   const mats = new Map(times.map((t) => [t, tf(t)]));
   const pos = (t) => { const m = mats.get(t); return [m[12], m[13], m[14]]; };
   const keys = [times[0]];
@@ -1044,7 +1061,7 @@ function addRiding(b, geo, times, tf, within, span) {
   for (let start = 0; start < keys.length - 1;) {
     let end = start + 1;
     while (end + 1 < keys.length && v3.dist(pos(keys[start]), pos(keys[end + 1])) <= span) end++;
-    b.dynamic(geo, { times: keys.slice(start, end + 1), transform, caps: 'none', within });
+    b.dynamic(geo, { times: keys.slice(start, end + 1), transform, caps: 'none', within, ...more });
     start = end;
   }
 }
@@ -1060,7 +1077,7 @@ function addShuttle(b, accent, id, tf, distAt) {
     const k = thrust(t);
     return m4.mul(tf(t), m4.translation(...SHUTTLE_TAIL), m4.scaling(0.25 + 0.75 * k, 0.04 + 0.96 * k, 0.25 + 0.75 * k), m4.translation(...SHUTTLE_TAIL.map((v) => -v)));
   };
-  b.dynamic(SHUTTLE_PLUME, { times, transform: plume, caps: 'none' });
+  b.dynamic(SHUTTLE_PLUME, { times, transform: plume, caps: 'none', cycle: flicker(SHUTTLE_TAIL, 4, id * 0.093) });
   // (from a third of full thrust up the bright discs are out in front of the
   // dim ones; below that they are behind them or inside the engine block)
   const fires = (t) => m4.mul(tf(t), m4.translation(0, 0.12 * (1 - thrust(t)), 0));
@@ -1069,13 +1086,16 @@ function addShuttle(b, accent, id, tf, distAt) {
 }
 
 // The tug's engine bell, radar mast and grapples, seen only from near by.
+const RADAR_AT = [4.0, 24.2, 10.5]; // the top of the mast
 function freighterDetail() {
   const g = new Geo();
   g.add(Geo.cylinder(3.35, 3.2, 8, { r2: 4.3, caps: false }).rotateX(Math.PI / 2).translate(0, -32.9, 0).color('#2c2f34').gloss(0.5));
   g.add(Geo.merge(
-    Geo.triangle([3.9, 25.2, 5.3], [4.1, 25.2, 5.3], [4.0, 24.2, 10.5]),
-    Geo.triangle([4.0, 25.1, 5.3], [4.0, 25.3, 5.3], [4.0, 24.2, 10.5]),
+    Geo.triangle([3.9, 25.2, 5.3], [4.1, 25.2, 5.3], RADAR_AT),
+    Geo.triangle([4.0, 25.1, 5.3], [4.0, 25.3, 5.3], RADAR_AT),
   ).doubleSided().color('#33373d'));
+  g.add(Geo.box(0.36, 0.36, 0.4).translate(RADAR_AT[0], RADAR_AT[1], RADAR_AT[2] + 0.1).color('#33373d'));
+  g.add(Geo.box(0.5, 0.5, 0.2).translate(RADAR_AT[0], RADAR_AT[1], RADAR_AT[2] + 0.4).color('#4a4f57'));
   // the grapples: a band over the middle of each container and down both
   // sides, standing a hand's breadth off it (over the painted strap)
   for (let i = 0; i < 4; i++) {
@@ -1091,6 +1111,19 @@ function freighterDetail() {
 
 const FREIGHTER_DETAIL = freighterDetail();
 
+// The radar on top of the mast: a bar on the turntable, turning once every
+// three seconds (clockwise seen from above), a pose every 20 degrees.  It
+// rides with the rest of the detail, on the very same keys.
+const TUG_RADAR = Geo.box(5, 0.28, 0.55).translate(0, 0.08, 0.8).color('#e4e4de').gloss(0.3);
+const tugRadar = (start) => ({
+  cycle: { period: 3, keys: 18, start, transform: (u) => m4.mul(m4.translation(...RADAR_AT), m4.rotationZ(-TAU * u)) },
+});
+
+// The tug's exhaust, apart from the rest so that it can flicker (see FLICKER).
+const TUG_TAIL = [0, -33.1, 0];
+const TUG_PLUME = Geo.cylinder(4.5, 22, 6, { r2: 0.6, caps: false }).rotateX(Math.PI / 2).translate(...TUG_TAIL)
+  .color([0.3, 0.55, 1.0]).emissive(3).additive().mat(MAT.GLOW);
+
 function freighter(colors, id) {
   const g = new Geo();
   const tug = (geo, part) => hullUV(geo, TUG_SCALE, part, id).mat(MAT.TUG);
@@ -1103,8 +1136,6 @@ function freighter(colors, id) {
   g.add(tug(Geo.box(18, 5, 0.4).translate(0, -24, 0), 2).color('#a9adb3'));
   g.add(tug(Geo.box(11, 8, 9).translate(0, -29, 0), 3).color('#474c54'));
   g.add(Geo.disc(3.2, 8).rotateX(Math.PI / 2).translate(0, -33.05, 0).color('#c2e4ff').emissive(14));
-  g.add(Geo.cylinder(4.5, 22, 6, { r2: 0.6, caps: false }).rotateX(Math.PI / 2).translate(0, -33.1, 0)
-    .color([0.3, 0.55, 1.0]).emissive(3).additive().mat(MAT.GLOW));
   g.add(navLight(0.6, '#ff2a1a').translate(-9, -24, 0));
   g.add(navLight(0.6, '#22ff66').translate(9, -24, 0));
   g.add(navLight(0.5, '#ffffff', 1).mat(MAT.BLINK).translate(0, 26, 6.2));
@@ -1315,19 +1346,41 @@ function stationDetail(b) {
   }
 }
 
-// An astronaut in a white suit (+Y forward, +Z up, feet at the origin).
+// An astronaut in a white suit (+Y forward, +Z up, feet at the origin): the
+// body, which is only moved, and the legs and arms, which go through a stride.
+const SUIT = '#e9e7e1';
 function astronaut() {
   const g = new Geo();
-  const suit = '#e9e7e1';
-  g.add(Geo.box(0.55, 0.36, 0.7).translate(0, 0, 1.38).color(suit));
+  g.add(Geo.box(0.55, 0.36, 0.7).translate(0, 0, 1.38).color(SUIT));
   g.add(Geo.box(0.5, 0.26, 0.62).translate(0, -0.3, 1.42).color('#9aa0a8'));
-  g.add(Geo.sphere(0.2, 6, 4).translate(0, 0.02, 1.92).color(suit));
+  g.add(Geo.sphere(0.2, 6, 4).translate(0, 0.02, 1.92).color(SUIT));
   g.add(Geo.box(0.26, 0.06, 0.16).translate(0, 0.19, 1.93).color('#d9a640').gloss(0.95));
-  for (const x of [-0.14, 0.14]) g.add(Geo.box(0.18, 0.2, 0.95).translate(x, 0.04, 0.5).color(suit));
-  for (const x of [-0.36, 0.36]) g.add(Geo.box(0.14, 0.14, 0.62).rotateX(-0.9).translate(x, 0.22, 1.48).color(suit));
   g.add(navLight(0.045, '#fff3dc', 12).translate(0.2, 0.12, 2.0));
   return g;
 }
+
+// The legs and arms at the share u of a stride (two steps): each leg swung
+// forward by up to `a` about the hip, the one going forward drawn up by up to
+// `lift` metres at the foot, the arms swung against the legs by up to `b`
+// about the shoulders.  The four poses of a round are the two ends of the
+// stride (u = 0, 0.5) and the two moments when the feet pass each other, one
+// of them raised (u = 0.25, 0.75); between them the foot on the hull goes
+// back in a straight line at a steady pace, so a stride of period P carries
+// the astronaut 2 * 0.95 * sin(a) metres every P / 2 seconds without its
+// boots sliding.  With a = b = 0 it steps on the spot (for turning round),
+// and it is the same as a walking stride where the feet pass.
+const LEG = 0.95, HIP = 0.975;
+const astronautLimbs = (a, b, lift) => (u) => {
+  const c = Math.cos(TAU * u), s = Math.sin(TAU * u);
+  const g = new Geo();
+  for (const [x, ang, up] of [[-0.14, a * c, lift * Math.max(0, -s)], [0.14, -a * c, lift * Math.max(0, s)]]) {
+    g.add(Geo.box(0.18, 0.2, LEG).translate(0, 0, -LEG / 2).scale(1, 1, (LEG - up) / LEG).rotateX(ang).translate(x, 0.04, HIP));
+  }
+  for (const [x, ang] of [[-0.36, -b * c], [0.36, b * c]]) {
+    g.add(Geo.box(0.14, 0.14, 0.62).rotateX(-0.9).translate(0, 0.24, -0.14).rotateX(ang).translate(x, -0.02, 1.62));
+  }
+  return g.color(SUIT);
+};
 
 // A small service pod (+Y forward): a round cab with a window, thruster
 // blocks, two manipulator arms, navigation lights and a floodlight.
@@ -1351,21 +1404,39 @@ function servicePod() {
 // People and small craft at work round the hub: an astronaut working along
 // the handrail of a docking arm, and a service pod going round the modules.
 function stationWorkers(b) {
-  // Two astronauts, each going over and back along a handrail once a period,
-  // with a pause and a turn at each end.  frame(d) places one at distance d
-  // along its way (+Y forward, +Z away from the hull).
-  const patrol = (frame, d0, d1) => {
-    const keys = [[0, d0, 0], [50, d1, 0], [52, d1, 1], [54, d1, 2], [56, d1, 3], [58, d1, 4],
-      [110, d0, 4], [112, d0, 5], [114, d0, 6], [116, d0, 7], [118, d0, 8], [120, d0, 8]];
-    const at = new Map(keys.map(([t, d, turn]) => [t, m4.mul(frame(d), m4.rotationZ(turn * Math.PI / 4))]));
-    b.dynamic(astronaut(), { times: keys.map((k) => k[0]), transform: (t) => at.get(t), caps: 'none', within: 300 });
+  // Two astronauts in magnetic boots, each walking over and back along a
+  // handrail once a period and turning round on the spot at each end (in
+  // eight seconds, a key every half second).  frame(d) places one at distance
+  // d along its way (+Y forward, +Z away from the hull).  A stride of P
+  // seconds carries one v * P / 2 metres a step, which sets the swing of the
+  // legs.  The legs go through their stride while it walks and step on the
+  // spot while it turns: two meshes that are the same where the feet pass,
+  // and it walks off and stops there (u = 0.25 or 0.75 at t = 0, 50, 58 and
+  // 110, which P = 1, 4/3 or 2 with the given start sees to).
+  const patrol = (frame, d0, d1, P, start, lift, arms) => {
+    const pose = (t) => {
+      if (t <= 50) return [d0 + (d1 - d0) * t / 50, 0];
+      if (t <= 58) return [d1, (t - 50) / 2];
+      if (t <= 110) return [d1 + (d0 - d1) * (t - 58) / 52, 4];
+      return [d0, Math.min(8, 4 + (t - 110) / 2)];
+    };
+    const tf = (t) => { const [d, turn] = pose(t); return m4.mul(frame(d), m4.rotationZ(turn * Math.PI / 4)); };
+    const turning = (t0) => timeRange(t0, t0 + 8, 0.5);
+    const o = { transform: tf, caps: 'none', within: 300 };
+    b.dynamic(astronaut(), { ...o, times: [0, 50, ...turning(50).slice(1), 110, ...turning(110).slice(1), 120] });
+    const step = Math.abs(d1 - d0) / 50 * P / 2;
+    const cycle = { period: P, keys: 4, start };
+    for (const times of [[0, 50], [58, 110]]) b.dynamic(astronautLimbs(Math.asin(step / (2 * LEG)), arms, lift), { ...o, times, cycle });
+    for (const times of [turning(50), [...turning(110), 120]]) b.dynamic(astronautLimbs(0, 0, lift), { ...o, times, cycle });
   };
-  // on top of the first docking arm (station-local +x, its top towards +z)
-  patrol((x) => m4.mul(STATION, m4.translation(x, -0.9, 142.55), m4.fromBasis([0, -1, 0], [1, 0, 0], [0, 0, 1], [0, 0, 0])), 28, 60);
-  // along the docking tube on the nose, beside one of its handrails
+  // on top of the first docking arm (station-local +x, its top towards +z):
+  // 32 m in 50 s, three steps of 43 cm every two seconds
+  patrol((x) => m4.mul(STATION, m4.translation(x, -0.9, 142.55), m4.fromBasis([0, -1, 0], [1, 0, 0], [0, 0, 1], [0, 0, 0])), 28, 60, 4 / 3, -1 / 3, 0.09, 0.2);
+  // along the docking tube on the nose, beside one of its handrails: 10 m in
+  // 50 s, a step of 20 cm a second
   {
     const a = Math.PI / 4 + 0.28, c = Math.cos(a), sn = Math.sin(a);
-    patrol((z) => m4.mul(STATION, m4.fromBasis([-sn, c, 0], [0, 0, 1], [c, sn, 0], [3.2 * c, 3.2 * sn, z])), 209, 219);
+    patrol((z) => m4.mul(STATION, m4.fromBasis([-sn, c, 0], [0, 0, 1], [c, sn, 0], [3.2 * c, 3.2 * sn, z])), 209, 219, 2, 0.5, 0.06, 0.1);
   }
   {
     // round the forward spindle at 32 m, stopping at each of six corners to
@@ -1534,7 +1605,9 @@ export default {
           const tf = along(conv.path, (t) => off + speed * t, 40);
           const times = adaptiveTimes(tf, 0, PERIOD, { size: 30, tolerance: 0.5, maxStep: 10 });
           b.dynamic(freighter(palettes[i], (base > L / 2 ? 4 : 0) + i), { times, transform: tf, caps: 'none' });
+          b.dynamic(TUG_PLUME, { times, transform: tf, caps: 'none', cycle: flicker(TUG_TAIL, 3, (base > L / 2 ? 0.11 : 0.02) + i * 0.057) });
           addRiding(b, FREIGHTER_DETAIL, times, tf, 150, 900);
+          addRiding(b, TUG_RADAR, times, tf, 150, 900, tugRadar((base > L / 2 ? 1.9 : 0.3) + i * 0.71));
         }
       }
       // beacon chains along both straights, flashing in the direction of travel

@@ -243,17 +243,23 @@ struct PassU { cascade: u32, p0: u32, p1: u32, p2: u32 };
 struct DynVert { pos: vec4f, nrm: u32, col: u32, prm: u32, uv: u32 };
 struct DrawU { tRel: f32, p0: f32, p1: f32, p2: f32 };
 // Moving geometry (see SceneBuilder in builder.js): vertices; the lists of
-// tetrahedra of one step of a mesh; the chunks, each a run of tetrahedron
-// numbers that stands for some steps of one mesh; which chunk each block of
-// numbers belongs to; and the placing matrices of meshes that only move.
-struct DynRun { first: u32, count: u32, tmpl: u32, per: u32, vert: u32, nv: u32, key: u32, rigid: u32 };
+// tetrahedra of one step of a mesh; the chunks, each of which stands for some
+// steps of one mesh; and the placing matrices of meshes that only move.
+// A chunk's kind: 0 a mesh stored vertex by vertex at every key, 1 one mesh
+// placed by a key's matrix, 2 the same with a movement of its own that
+// repeats (a cycle: see cutTet).
+struct DynRun { first: u32, count: u32, tmpl: u32, per: u32, vert: u32, nv: u32, key: u32, kind: u32 };
 struct DynKey { r0: vec4f, r1: vec4f, r2: vec4f, t: vec4f };   // the matrix by rows; t.x the key's time, t.y the sign of its determinant
 @group(1) @binding(0) var<storage, read> dynVerts: array<DynVert>;
 @group(1) @binding(1) var<storage, read> dynTmpl: array<vec4u>;
 @group(1) @binding(2) var<uniform> drawU: DrawU;
 @group(1) @binding(3) var<storage, read> dynRuns: array<DynRun>;
-@group(1) @binding(4) var<storage, read> dynBlocks: array<u32>;
 @group(1) @binding(5) var<storage, read> dynKeys: array<DynKey>;
+// What a frame draws of all that, list after list: an entry for every
+// ${BLOCK} tetrahedra, which says of which chunk they are and from which of
+// its tetrahedra on.  A draw call's instances are numbered from where its
+// list starts.
+@group(1) @binding(4) var<storage, read> dynVisible: array<vec2u>;
 
 struct VOut {
   @builtin(position) clip: vec4f,
@@ -428,9 +434,11 @@ fn staticShadowOut(in: SIn, pos: vec3f, inst: vec4f, win: vec3f) -> ShadowOut {
 // What a tetrahedron's cut gives for one corner of its quad: the two vertices
 // it lies between (and, for a mesh that only moves, the keys that place them),
 // how far along, and where that is.
-// na, nb: for a mesh that only moves, what turns its normals as the keys of
+// na, nb: for a mesh placed by keys, what turns its normals as the keys of
 // those two vertices place them (see placedNormal).
-struct TetCut { ok: bool, a: u32, b: u32, rigid: bool, s: f32, d: vec4f, n4: vec4f, na: mat3x3f, nb: mat3x3f };
+// a2, b2, fa, fb: for a mesh with a cycle, each of the two vertices lies
+// between two poses of it: the same vertex in the later pose, and how far on.
+struct TetCut { ok: bool, a: u32, b: u32, kind: u32, s: f32, d: vec4f, n4: vec4f, na: mat3x3f, nb: mat3x3f, a2: u32, b2: u32, fa: f32, fb: f32 };
 // What a key's matrix does to normals: the cross products of its rows, with
 // the sign of its determinant, so that a mirroring key does not turn them
 // inside out.  (The result still has to be brought to unit length.)
@@ -441,25 +449,68 @@ fn placedNormal(m: mat3x3f, n: vec4f) -> vec4f {
   let v = n.xyz * m;
   return vec4f(v / max(length(v), 1e-20), n.w);
 }
-fn cutTet(ii: u32, vi: u32) -> TetCut {
+// What places a mesh at the time t, between its keys A and B: the matrix goes
+// evenly from one to the other (and is exactly theirs at their times).
+fn keyBetween(A: DynKey, B: DynKey, t: f32) -> DynKey {
+  if (t <= A.t.x) { return A; }
+  if (t >= B.t.x) { return B; }
+  let w = (t - A.t.x) / (B.t.x - A.t.x);
+  var K: DynKey;
+  K.r0 = mix(A.r0, B.r0, w); K.r1 = mix(A.r1, B.r1, w); K.r2 = mix(A.r2, B.r2, w);
+  K.t = vec4f(t, A.t.y, 0.0, 0.0);
+  return K;
+}
+fn cutTet(instance: u32, vi: u32) -> TetCut {
   var r: TetCut;
   r.ok = false;
-  // Which chunk the number belongs to, and which tetrahedron of which step
-  // of it this is.  (A chunk's run of numbers is rounded up to whole blocks:
-  // the numbers past its end stand for nothing.)
-  let run = dynRuns[dynBlocks[ii / ${BLOCK}u]];
-  let n = ii - run.first;
+  // The instance's place in the frame's table says which chunk it is of and
+  // which tetrahedron of that.  (An entry stands for a whole block of them:
+  // the numbers past the chunk's end stand for nothing.)
+  let entry = dynVisible[instance / ${BLOCK}u];
+  let run = dynRuns[entry.x];
+  let n = entry.y + instance % ${BLOCK}u;
   if (n >= run.count) { return r; }
   let step = n / run.per;
   // its corners: vertex numbers within the mesh, bit 30 for "at the later
   // key"; the top bit of the first records the tetrahedron's orientation
   let raw = dynTmpl[run.tmpl + n % run.per];
-  r.rigid = run.rigid != 0u;
+  let kind = run.kind;
+  r.kind = kind;
   // (a mesh that only moves: the two keys this step runs between)
   var K0: DynKey;
   var K1: DynKey;
-  if (r.rigid) { K0 = dynKeys[run.key + step]; K1 = dynKeys[run.key + step + 1u]; }
+  // A mesh with a cycle is stored as the poses of one round of its own
+  // movement, pose after pose, and the row of them is gone through again and
+  // again, a pose every dt seconds.  A chunk covers some of the stretches
+  // from pose to pose that fall between two keys of where the mesh is taken;
+  // a step is one such stretch, or as much of it as lies between those keys.
+  // p0, p1: where its two poses are; u0, u1: how far from the one to the
+  // other the step starts and ends.
+  var p0 = 0u; var p1 = 0u; var u0 = 0.0; var u1 = 0.0;
+  if (kind == 1u) {
+    K0 = dynKeys[run.key + step]; K1 = dynKeys[run.key + step + 1u];
+  } else if (kind == 2u) {
+    // the cycle's record: where the poses are, the vertices of each, how
+    // many there are, the time from pose to pose and when a round starts
+    let cy = dynRuns[run.vert];
+    let dt = bitcast<f32>(cy.per);
+    let start = bitcast<f32>(cy.vert);
+    let m = bitcast<i32>(run.nv) + i32(step);
+    let g0 = start + f32(m) * dt;
+    let g1 = start + f32(m + 1) * dt;
+    let A = dynKeys[run.key]; let B = dynKeys[run.key + 1u];
+    let te = max(A.t.x, g0);
+    let tl = max(te, min(B.t.x, g1));
+    K0 = keyBetween(A, B, te); K1 = keyBetween(A, B, tl);
+    let np = i32(cy.tmpl);
+    let i0 = u32(((m % np) + np) % np);
+    p0 = cy.first + i0 * cy.count;
+    p1 = cy.first + ((i0 + 1u) % cy.tmpl) * cy.count;
+    u0 = select((te - g0) / dt, 0.0, te <= g0);
+    u1 = select((tl - g0) / dt, 1.0, tl >= g1);
+  }
   var tet: vec4u;
+  var tet2: vec4u;
   var later = vec4<bool>(false);
   var q: array<vec4f, 4>;
   var dd: array<f32, 4>;
@@ -468,10 +519,24 @@ fn cutTet(ii: u32, vi: u32) -> TetCut {
     later[k] = (raw[k] & 0x40000000u) != 0u;
     let v = raw[k] & 0x0fffffffu;
     var p: vec4f;
-    if (r.rigid) {
-      // the mesh as it is, placed by the key
-      tet[k] = run.vert + v;
-      let m = dynVerts[tet[k]].pos.xyz;
+    if (kind != 0u) {
+      var m: vec3f;
+      if (kind == 2u) {
+        // the mesh between two poses of its round (exactly a pose at either end) ...
+        let u = select(u0, u1, later[k]);
+        tet[k] = p0 + v;
+        tet2[k] = p1 + v;
+        m = dynVerts[tet[k]].pos.xyz;
+        if (u > 0.0) {
+          let m1 = dynVerts[tet2[k]].pos.xyz;
+          m = select(mix(m, m1, u), m1, u >= 1.0);
+        }
+      } else {
+        // the mesh as it is ...
+        tet[k] = run.vert + v;
+        m = dynVerts[tet[k]].pos.xyz;
+      }
+      // ... placed by the key
       if (later[k]) {
         p = vec4f(dot(K1.r0.xyz, m) + K1.r0.w, dot(K1.r1.xyz, m) + K1.r1.w, dot(K1.r2.xyz, m) + K1.r2.w, K1.t.x);
       } else {
@@ -494,10 +559,14 @@ fn cutTet(ii: u32, vi: u32) -> TetCut {
   let i = e & 3u; let j = e >> 2u;
   r.ok = true;
   r.a = tet[i]; r.b = tet[j];
-  if (r.rigid) {
+  if (kind != 0u) {
     let n0 = normalRows(K0); let n1 = normalRows(K1);
     if (later[i]) { r.na = n1; } else { r.na = n0; }
     if (later[j]) { r.nb = n1; } else { r.nb = n0; }
+  }
+  if (kind == 2u) {
+    r.a2 = tet2[i]; r.b2 = tet2[j];
+    r.fa = select(u0, u1, later[i]); r.fb = select(u0, u1, later[j]);
   }
   r.s = dd[i] / (dd[i] - dd[j]);
   r.d = mix(q[i], q[j], r.s);
@@ -524,10 +593,21 @@ fn cutTet(ii: u32, vi: u32) -> TetCut {
   o.t = G.P.w + c.d.w / G.proj.w;
   var na = unpack4x8snorm(va.nrm);
   var nb = unpack4x8snorm(vb.nrm);
-  if (c.rigid) { na = placedNormal(c.na, na); nb = placedNormal(c.nb, nb); }
+  var ca = unpack4x8unorm(va.col);
+  var cb = unpack4x8unorm(vb.col);
+  if (c.kind == 2u) {
+    // between two poses of a round, the normals and the colours go from the
+    // one to the other as the vertices do (the rest is the first pose's)
+    let va2 = dynVerts[c.a2]; let vb2 = dynVerts[c.b2];
+    na = mix(na, unpack4x8snorm(va2.nrm), c.fa);
+    nb = mix(nb, unpack4x8snorm(vb2.nrm), c.fb);
+    ca = mix(ca, unpack4x8unorm(va2.col), c.fa);
+    cb = mix(cb, unpack4x8unorm(vb2.col), c.fb);
+  }
+  if (c.kind != 0u) { na = placedNormal(c.na, na); nb = placedNormal(c.nb, nb); }
   o.nrm = mix(na, nb, c.s);
   o.n4 = c.n4;
-  o.col = mix(unpack4x8unorm(va.col), unpack4x8unorm(vb.col), c.s);
+  o.col = mix(ca, cb, c.s);
   o.uv = mix(unpack2x16float(va.uv), unpack2x16float(vb.uv), c.s);
   o.prm = vec4u(va.prm & 255u, (va.prm >> 8u) & 255u, (va.prm >> 16u) & 255u, va.prm >> 24u);
   o.win = vec3f(-1e30, 1e30, 0.0);

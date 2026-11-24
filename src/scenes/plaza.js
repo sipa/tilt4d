@@ -31,6 +31,10 @@ const BIKE_Y = 5.2;       // cycle lanes
 const FOUNTAIN = [-17, 17];
 const WHEEL_R = 0.34;     // bicycle wheels
 const CAROUSEL = [17, -17];
+// how many times a second the sixteen spokes of a rolling wheel pass a point,
+// and how blurred that makes them (see the shader's cutout)
+const SPOKE_PASSES = 16 * 4.6 / WHEEL_R / (2 * Math.PI);
+const SPOKE_BLUR = ((x) => x * x * (3 - 2 * x))(Math.min(1, Math.max(0, (SPOKE_PASSES - 3) / 17)));
 
 // window rectangle inside one bay x storey cell of a facade (cell units); the
 // shader draws the windows, the builder adds sills that line up with them
@@ -686,16 +690,25 @@ fn cutout(s: Surface) -> f32 {
   let fw2 = fwidth(s.uv.y);
   if (s.mat == ${MAT.WHEEL}u) {
     // a bicycle wheel (uv: metres from the hub, plus 1): tyre and rim, a
-    // hub, and sixteen spokes, turning as the wheel rolls along at 4.6 m/s
+    // hub, and sixteen spokes, turning as the wheel rolls along at 4.6 m/s.
+    // The page shows a frame at one instant, 60 or so a second, so spokes
+    // that pass more than about 20 times a second seem to stand, flicker or
+    // turn backwards; the eye sees a blur.  So the spokes thin away as they
+    // come round faster (all there at 3 passes a second, gone at 20; a
+    // rolling wheel's pass ${SPOKE_PASSES.toFixed(0)}): their blur, an even tone of a few per cent,
+    // is less than a cut-out can show, which leaves the open wheel, its tyre,
+    // rim and hub sharp.  A parked bicycle (tag 1) keeps its spokes.
     let q = s.uv - vec2f(1.0);
     let r = length(q);
     let px = max(max(fw, fw2), 1e-4);
     let outer = saturate((WHEEL_R - r) / px + 0.5);
     let rim = saturate((r - 0.283) / px + 0.5);
     let hub = saturate((0.032 - r) / px + 0.5);
-    let ang = atan2(q.y, q.x) + select(s.t * ${(4.6 / WHEEL_R).toFixed(3)}, 0.0, s.tag == 1u) + s.aux * 3.0;
+    let parked = s.tag == 1u;
+    let ang = atan2(q.y, q.x) + select(s.t * ${(4.6 / WHEEL_R).toFixed(3)}, 0.0, parked) + s.aux * 3.0;
     let d = abs(fract(ang * 16.0 / TAU + 0.5) - 0.5) * TAU / 16.0 * r;
-    let spoke = saturate((0.0017 - d) / px + 0.5);
+    let blur = select(${SPOKE_BLUR.toFixed(3)}, 0.0, parked);
+    let spoke = saturate((0.0017 * (1.0 - blur) - d) / px + 0.5 - blur);
     return outer * max(max(rim, hub), spoke);
   }
   if (s.tag == 0u || s.tag > 2u || s.mat == ${MAT.PERSON}u) { return 1.0; }
@@ -1543,8 +1556,10 @@ const COATS = ['#3b4a6b', '#8a2f2f', '#2f5a45', '#c28a3a', '#5a3b5e', '#6b6b6b',
 const SKIN = ['#e8c4a8', '#d9a98a', '#b97f5f', '#8a5a40', '#f0d0b8'];
 const LEGS = ['#2a2a30', '#3a3f4a', '#4a3b30', '#22262e'];
 const HAIR = ['#2a1e14', '#5a3a20', '#b08850', '#1a1a1a', '#8a8a8a', '#7a3a20'];
-// a second stream of random numbers, for the looks of the figures
+// a second stream of random numbers, for the looks of the figures, and a
+// third for where the walkers are in their stride
 let STYLE = rng(29);
+let GAIT = rng(3);
 
 // A figure, feet at the origin, facing +y: a coat and legs turned on a lathe,
 // a head and perhaps a hat (about 70 to 95 triangles, with few vertices, since
@@ -1554,10 +1569,15 @@ let STYLE = rng(29);
 // 4 glasses, 8 beard, 16 and 32 the trousers, 64 a long coat).  The small
 // parts that only show from near by (arms and hands, shoes, nose, a bag, the
 // end of the scarf, a ponytail) are in `.detail`, in the same frame, for the
-// caller to add with `within`.
+// caller to add with `within` (a walker's arms, hands, shoes and a bag in its
+// hand move with its stride, and are in `.gait` instead: see walkingLimbs).
 //   sit     seated, on something about 0.45 m high
 //   scale   overall size; build: [width, depth] factors
-function person(rand, { sit = false, scale = 1, build = null } = {}) {
+//   walk    the speed, in metres a second, of a figure that walks: then the
+//           legs are not part of the column but real ones that stride, and the
+//           arms swing (see walkingLimbs); `fit`, if given, is a span of
+//           seconds that a whole number of strides must fill
+function person(rand, { sit = false, scale = 1, build = null, walk = 0, fit = 0 } = {}) {
   // (the scene's random numbers are drawn as they always were, so that
   // everything else in the town stays as it was; the rest come from STYLE)
   const R = STYLE;
@@ -1572,8 +1592,10 @@ function person(rand, { sit = false, scale = 1, build = null } = {}) {
   const id = (st.scarf ? 1 : 0) | (st.buttons ? 2 : 0) | (st.glasses ? 4 : 0) | (st.beard ? 8 : 0) | (st.trousers << 4) | (st.long ? 64 : 0);
   const aux = (id - 64) / 127;
   const [bw, bd] = build || [R.range(0.86, 1.18), R.range(0.88, 1.12)];
+  // (a walker's column stops at the hem of the coat, and its legs are its own)
   const prof = sit
     ? [[0.15, 0.45], [0.21, 0.6], [0.22, 0.95], [0.08, 1.13]]
+    : walk ? [st.long ? [0.19, 0.55] : [0.125, 0.74], [0.2, 0.92], [0.21, 1.3], [0.07, 1.48]]
     : [[0.085, 0.0], [0.13, 0.8], [0.2, 0.92], [0.21, 1.3], [0.07, 1.48]];
   // (u round the body from +x, so the front is at u = 0.25; v the height in metres)
   const body = uvFrom(Geo.lathe(prof, 6), (p) => [0, p[2]]);
@@ -1604,15 +1626,19 @@ function person(rand, { sit = false, scale = 1, build = null } = {}) {
     t.tri(ids[0], ids[1], ids[2]); t.tri(ids[0], ids[1], ids[3]); t.tri(ids[0], ids[2], ids[3]); t.tri(ids[1], ids[2], ids[3]);
     return t.orientByNormals().color(col);
   };
+  // (a walker's arms, hands, shoes and a bag carried in the hand move with
+  // its stride: they go to `arms`, `hands`, `shoes` and `inHand` instead)
+  const arms = [], hands = [], shoes = [];
+  let inHand = null;
   for (const s of [-1, 1]) {
     // an arm (its sleeve is also painted on the coat, for far off) and its hand
     const hx = s * (sit ? 0.17 : 0.23) * bw, hy = sit ? 0.28 : 0.012 * s, hz0 = sit ? 0.64 : 0.9;
     const arm = sit ? [[s * 0.2 * bw, 0, 1.0], [s * 0.23 * bw, 0.04, 0.78], [hx, 0.24, 0.68]] : [[s * 0.205 * bw, 0, 1.37], [hx, hy, hz0]];
-    d.add(limb(arm, sit ? [0.055, 0.05, 0.044] : [0.055, 0.044], 4).color(mixHex(coat, '#000000', 0.1)));
+    const armG = (walk ? limb(arm, [0.057, 0.046], 3) : limb(arm, sit ? [0.055, 0.05, 0.044] : [0.055, 0.044], 4)).color(mixHex(coat, '#000000', 0.1));
     const hand = sit
       ? [[hx - s * 0.03, hy - 0.06, hz0 + 0.03], [hx + s * 0.02, hy - 0.06, hz0 + 0.03], [hx, hy + 0.06, hz0], [hx, hy - 0.04, hz0 - 0.02]]
       : [[hx - s * 0.03, hy - 0.03, hz0 + 0.01], [hx + s * 0.03, hy - 0.025, hz0 + 0.01], [hx, hy + 0.035, hz0 + 0.01], [hx + s * 0.005, hy, hz0 - 0.12]];
-    d.add(tet(hand, skin));
+    if (walk) { arms.push(armG); hands.push(tet(hand, skin)); } else { d.add(armG); d.add(tet(hand, skin)); }
     // a shoe, its toe peeping out from under the front
     const fx = s * 0.06 * bw;
     if (sit) d.add(limb([[fx, 0.42, 0.47], [fx, 0.46, 0.06]], 0.05, 3).color(legs));
@@ -1621,7 +1647,7 @@ function person(rand, { sit = false, scale = 1, build = null } = {}) {
     const v = (x, y, z) => { const n = v3.norm([x * 5, y * 3, z * 6 + 0.3]); return sh2.vert(fx + x, fy + y, z, n[0], n[1], n[2]); };
     const a = v(-0.048, -0.04, 0.085), b = v(0.048, -0.04, 0.085), c = v(-0.05, 0.15, 0.005), e = v(0.05, 0.15, 0.005), f = v(0, 0.165, 0.045);
     sh2.tri(a, c, f); sh2.tri(a, f, b); sh2.tri(b, f, e); sh2.tri(c, e, f);
-    d.add(sh2.orientByNormals().color(shoe).gloss(0.45));
+    if (walk) shoes.push(sh2.orientByNormals().color(shoe).gloss(0.45)); else d.add(sh2.orientByNormals().color(shoe).gloss(0.45));
   }
   // the nose
   const fz = hz + 0.13 * (hs - 1) - 0.006 * hs, ny = 0.096 * hs;
@@ -1629,8 +1655,9 @@ function person(rand, { sit = false, scale = 1, build = null } = {}) {
   // a bag: in one hand, or on the back
   const bagCol = R.pick(['#5a3a24', '#2a2a2a', '#8a2f2f', '#c8b090', '#2f4a6a', '#6a6a3a']);
   if (bagKind === 1) {
-    d.add(sbox(0.08, 0.3, 0.24, bagSide * 0.25 * sx / 0.9, 0.0, 0.7).color(bagCol).gloss(0.3));
-    d.add(Geo.quad([bagSide * 0.2 * sx / 0.9, -0.06, 0.82], [bagSide * 0.2 * sx / 0.9, 0.06, 0.82], [bagSide * 0.235 * sx / 0.9, 0.08, 0.92], [bagSide * 0.235 * sx / 0.9, -0.08, 0.92]).color(mixHex(bagCol, '#000000', 0.4)).doubleSided());
+    const bag = Geo.merge(sbox(0.08, 0.3, 0.24, bagSide * 0.25 * sx / 0.9, 0.0, 0.7).color(bagCol).gloss(0.3),
+      Geo.quad([bagSide * 0.2 * sx / 0.9, -0.06, 0.82], [bagSide * 0.2 * sx / 0.9, 0.06, 0.82], [bagSide * 0.235 * sx / 0.9, 0.08, 0.92], [bagSide * 0.235 * sx / 0.9, -0.08, 0.92]).color(mixHex(bagCol, '#000000', 0.4)).doubleSided());
+    if (walk) inHand = bag; else d.add(bag);
   } else if (bagKind === 2) {
     d.add(sbox(0.3 * bw, 0.15, 0.4, 0, -0.165 * bd - 0.03, 1.12).color(bagCol));
   }
@@ -1641,7 +1668,72 @@ function person(rand, { sit = false, scale = 1, build = null } = {}) {
   if ((!hat || child) && R() < 0.3) d.add(limb([[0, -0.1 * hs, hc + 0.02 * hs]], 0.035 * hs, 3, { tip: [0, -0.13 * hs, hc - 0.12 * hs] }).mat(MAT.PERSON).tag(4 + 8 * hairI).aux(aux));
   g.scale(scale);
   g.detail = d.scale(scale);
+  if (walk) g.gait = walkingLimbs({ speed: walk, fit, scale, bw, legs, aux, arms, hands, shoes, inHand, bagSide, child });
   return g;
+}
+
+// The stride of a figure made by person() with `walk`, as movements that
+// repeat (see moving()): the share u of a stride (two steps) done, with the
+// right foot half a step ahead at u = 0 and the left at u = 0.5.  The feet go
+// in straight lines, so the one that is down stays where it was put (the
+// period is fitted to the speed for that) while the other goes forward to the
+// next step, lifted as it passes the first, the knee bent forward.  The arms
+// swing about the shoulders, against the legs; the arm that carries a bag,
+// little.
+//
+// What is drawn between two poses is not quite the mesh with every vertex
+// part of the way along: the slice through the tetrahedra that a triangle
+// sweeps out between them is folded, by up to a quarter of how far its
+// corners move relative to one another, towards where the corner listed first
+// in the mesh is going.  Two poses of a straight leg whose foot goes 0.7 m
+// while the hip stays put fold it by 17 cm at mid-stride (the two legs cross
+// like an X).  So the legs have four poses and a knee, which brings that down
+// to about 4 cm, and are listed from the foot up, so that the leg that swings
+// bends forwards, as a knee does.  The arms have four poses too, listed from
+// the shoulder down (the arm going forward bends at the elbow the right way).
+// The legs are drawn by the shader as the column's were (trousers, shoes),
+// with uv.y the height in the figure as it stands.  They are always drawn;
+// the arms, hands and a bag carried in the hand from `ARMS_WITHIN` metres,
+// and the shoes from `SHOES_WITHIN`.
+// Returns { period, phase, parts: [{ geo: u => Geo, keys, within }] }.
+const ARMS_WITHIN = 50, SHOES_WITHIN = 12;
+function walkingLimbs({ speed, fit, scale, bw, legs, aux, arms, hands, shoes, inHand, bagSide, child }) {
+  const H = 0.84 * scale, KNEE = 0.45 * scale;      // the hips and the knees
+  let step = scale * (0.5 + 0.18 * speed) * (child ? 1.1 : 1);   // metres from one foot to the other
+  let period = 2 * step / speed;
+  if (fit) period = fit / Math.max(1, Math.round(fit / period));
+  step = speed * period / 2;
+  const lift = 0.08 * scale, bend = 0.23 * step, rise = 0.04 * scale;   // of the swinging foot and knee
+  const swing = (0.15 + 0.08 * speed) * (child ? 1.2 : 1);   // of the arms, in radians either way
+  const A = (u) => Math.cos(2 * Math.PI * u);                // 1: the right leg ahead; -1: the left
+  const w = (s, u) => Math.max(0, -s * Math.sin(2 * Math.PI * u));   // 1 for the foot that is half way through its swing
+  const leg = (s, u) => {
+    const y = s * A(u) * step / 2, x = s * 0.06 * bw * scale;
+    const wu = w(s, u);
+    const g = tubeX([[x, y, lift * wu], [x, y * (H - KNEE) / H + bend * wu, KNEE + rise * wu], [x, 0, H]], [0.05 * scale, 0.058 * scale, 0.07 * scale], 3);
+    for (let i = 0; i < g.vertexCount; i++) { g.uv[i * 2] = 0.5; g.uv[i * 2 + 1] = [0, 0.45, 0.84][Math.floor(i / 3)]; }
+    return g.color(legs).mat(MAT.PERSON).tag(1).aux(aux);
+  };
+  const am = arms.map((a) => a.clone().scale(scale));
+  const hd = hands.map((a) => a.clone().scale(scale));
+  const sh = shoes.map((a) => a.clone().scale(scale));
+  const bag = inHand && inHand.clone().scale(scale);
+  const shoulder = 1.37 * scale;
+  const turn = (s, u) => {
+    const a = -s * A(u) * swing * (inHand && s === bagSide ? 0.25 : 1);
+    return m4.mul(m4.translation(0, 0, shoulder), m4.rotationX(a), m4.translation(0, 0, -shoulder));
+  };
+  const armsAt = (u) => {
+    const g = Geo.merge(am[0].clone().transform(turn(-1, u)), am[1].clone().transform(turn(1, u)),
+      hd[0].clone().transform(turn(-1, u)), hd[1].clone().transform(turn(1, u)));
+    if (bag) g.add(bag.clone().transform(turn(bagSide, u)));
+    return g;
+  };
+  const shoesAt = (u) => Geo.merge(...[-1, 1].map((s, i) => sh[i].clone().translate(0, s * A(u) * step / 2, lift * w(s, u))));
+  return {
+    period, phase: GAIT(),
+    parts: [{ geo: (u) => Geo.merge(leg(-1, u), leg(1, u)), keys: 4 }, { geo: armsAt, keys: 4, within: ARMS_WITHIN }, { geo: shoesAt, keys: 4, within: SHOES_WITHIN }],
+  };
 }
 
 // Moves a figure made by person() and its detail together.
@@ -1656,7 +1748,7 @@ function placePerson(p, m) {
 // (material WHEEL: uv is the position in metres from the hub, plus 1; aux
 // sets where the spokes start), turning as they roll.  Built from tubes with
 // shared vertices to stay light, since there are thirty of them about.
-function cyclist(rand) {
+function cyclist(rand, speed = 4.6) {
   const R = STYLE;
   // (the scene's random numbers drawn as they always were)
   const frame = rand.pick(['#b8342c', '#2b4f7c', '#2f6a4a', '#e0b030', '#222222', '#d8d8d8', '#6b2f5a']);
@@ -1664,10 +1756,13 @@ function cyclist(rand) {
   const helmeted = rand() < 0.5;
   const helmetI = helmeted ? ['#e03a2a', '#f0f0f0', '#2a6ad0', '#f0c020'].indexOf(rand.pick(['#e03a2a', '#f0f0f0', '#2a6ad0', '#f0c020'])) : HAIR.indexOf(rand.pick(['#2a1e14', '#5a3a20', '#b08850']));
   const skin = rand.pick(SKIN);
-  const g = bicycle(frame);
+  const g = bicycle(frame, false, false);
   const id = (R() < 0.3 ? 4 : 0) | (R() < 0.12 ? 8 : 0) | 2;
-  addRider(g, { shirt, trousers, skin, helmeted, helmetI, id });
-  // from near by: mudguards, chainring, pedals, a bell, the rider's nose, a basket for some
+  addRider(g, { shirt, trousers, skin, helmeted, helmetI, id, legs: false });
+  // the legs and the cranks go round, a turn of the pedals to every 2.2 of
+  // the wheels (as the shader turns those), in six poses
+  g.gait = { period: 2.2 * 2 * Math.PI * WHEEL_R / speed, phase: GAIT(), parts: [{ geo: (u) => pedalling(trousers, u), keys: PEDAL_KEYS }] };
+  // from near by: mudguards, chainring, a bell, the rider's nose, a basket for some
   const d = new Geo();
   const guard = mixHex(frame, '#000000', 0.25);
   for (const y of [-0.52, 0.52]) {
@@ -1679,8 +1774,6 @@ function cyclist(rand) {
   for (let i = 0; i < 8; i++) { const a = (i + 0.5) * Math.PI / 4; ring.vert(0.06, -0.05 + 0.1 * Math.cos(a), 0.3 + 0.1 * Math.sin(a), 1, 0, 0); }
   for (let i = 1; i < 7; i++) ring.tri(0, i, i + 1);
   d.add(ring.orientByNormals().color('#55585c').gloss(0.6).doubleSided());
-  d.add(sbox(0.1, 0.07, 0.022, 0.19, -0.2, 0.39).color('#222222'));
-  d.add(sbox(0.1, 0.07, 0.022, -0.19, 0.08, 0.21).color('#222222'));
   d.add(limb([[-0.17, 0.31, 1.02]], 0.022, 4, { tip: [-0.17, 0.31, 1.06] }).color('#c8ccd0').gloss(0.8));
   d.add(limb([[0, 0.262, 1.655]], 0.012, 3, { tip: [0, 0.29, 1.645] }).color(skin));
   if (R() < 0.3) d.add(sbox(0.32, 0.26, 0.2, 0, 0.52, 0.93).color('#8a6a3a'));
@@ -1688,9 +1781,65 @@ function cyclist(rand) {
   return g;
 }
 
+// A tube along a polyline in the plane x = const (more or less), its rings
+// laid out from the x axis, so that the same vertex stays on the same side
+// however the line bends from pose to pose (limb() lays them out from the
+// vertical, which a leg swinging past the upright would turn round).
+function tubeX(pts, radii, n, tip) {
+  const g = new Geo();
+  const rings = [];
+  for (let k = 0; k < pts.length; k++) {
+    const d = v3.norm(v3.sub(pts[Math.min(k + 1, pts.length - 1)], pts[Math.max(k - 1, 0)]));
+    const e2 = v3.norm(v3.cross([1, 0, 0], d)), e1 = v3.cross(d, e2);
+    rings.push(g.vertexCount);
+    for (let i = 0; i < n; i++) {
+      const a = 2 * Math.PI * i / n, c = Math.cos(a), s = Math.sin(a);
+      const nn = v3.add(v3.scale(e1, c), v3.scale(e2, s));
+      g.vert(pts[k][0] + nn[0] * radii[k], pts[k][1] + nn[1] * radii[k], pts[k][2] + nn[2] * radii[k], nn[0], nn[1], nn[2], i / n, k);
+    }
+  }
+  for (let k = 0; k + 1 < rings.length; k++) {
+    for (let i = 0; i < n; i++) { const j = (i + 1) % n; g.quadIdx(rings[k] + i, rings[k] + j, rings[k + 1] + j, rings[k + 1] + i); }
+  }
+  if (tip) {
+    const d = v3.norm(v3.sub(tip, pts[pts.length - 1])), last = rings[rings.length - 1];
+    const t = g.vert(tip[0], tip[1], tip[2], d[0], d[1], d[2], 0.5, pts.length);
+    for (let i = 0; i < n; i++) g.tri(last + i, last + (i + 1) % n, t);
+  }
+  return g.orientByNormals();
+}
+
+// A cyclist's legs and the cranks, the pedals a share u of a turn on from
+// where they are at u = 0 (going round forwards: the upper pedal moves
+// ahead): the cranks turned about the bottom bracket, the feet on the pedals,
+// and each knee where a thigh and a shin of their lengths put it, forwards.
+const PEDAL_KEYS = 6;
+const CRANK = { y: -0.05, z: 0.3, r: 0.18, a0: 2.55 };
+function pedalling(trousers, u) {
+  const g = new Geo();
+  const turn = -2 * Math.PI * u;
+  const at = (a) => [CRANK.y + CRANK.r * Math.cos(a), CRANK.z + CRANK.r * Math.sin(a)];
+  // the cranks, one piece through the bracket, turned as a whole
+  const c0 = at(CRANK.a0), c1 = at(CRANK.a0 + Math.PI);
+  const crank = limb([[0.15, c0[0], c0[1]], [0, CRANK.y, CRANK.z], [-0.15, c1[0], c1[1]]], 0.014, 3).color('#3a3a3a');
+  g.add(crank.transform(m4.mul(m4.translation(0, CRANK.y, CRANK.z), m4.rotationX(turn), m4.translation(0, -CRANK.y, -CRANK.z))));
+  const L1 = 0.45, L2 = 0.44;
+  for (const s of [1, -1]) {
+    const p = at(CRANK.a0 + (s > 0 ? 0 : Math.PI) + turn);
+    const hip = [-0.15, 0.98], ankle = [p[0] - 0.04, p[1] + 0.05];
+    const dy = ankle[0] - hip[0], dz = ankle[1] - hip[1], dl = Math.hypot(dy, dz);
+    const cosA = Math.min(1, (L1 * L1 + dl * dl - L2 * L2) / (2 * L1 * dl)), sinA = Math.sqrt(1 - cosA * cosA);
+    const uy = dy / dl, uz = dz / dl;
+    const knee = [hip[0] + L1 * (uy * cosA - uz * sinA), hip[1] + L1 * (uy * sinA + uz * cosA)];
+    g.add(tubeX([[s * 0.09, hip[0], hip[1]], [s * 0.11, knee[0], knee[1]], [s * 0.1, ankle[0], ankle[1]]], [0.075, 0.056, 0.045], 3,
+      [s * 0.1, p[0] + 0.1, p[1] - 0.01]).color(trousers));
+  }
+  return g;
+}
+
 // A bicycle, wheels on the ground, pointing along +y; `parked`: its lamps off
 // and its wheels still.
-function bicycle(frame, parked = false) {
+function bicycle(frame, parked = false, cranks = true) {
   const R = STYLE;
   const g = new Geo();
   const black = '#1c1c1c';
@@ -1714,7 +1863,7 @@ function bicycle(frame, parked = false) {
   g.add(limb([HB, FH], 0.016, 3).color(frame));
   g.add(limb([[-0.25, 0.31, 1.0], [0.25, 0.31, 1.0]], 0.014, 3).color(black));
   // the cranks, one pedal up at the back and one down at the front, through the bottom bracket
-  g.add(limb([[0.15, -0.2, 0.4], [0.05, -0.05, 0.3], [-0.15, 0.08, 0.22]], 0.014, 3).color('#3a3a3a'));
+  if (cranks) g.add(limb([[0.15, -0.2, 0.4], [0.05, -0.05, 0.3], [-0.15, 0.08, 0.22]], 0.014, 3).color('#3a3a3a'));
   // the saddle: a wedge, broad at the back
   const sd = new Geo();
   const sv = [[-0.08, -0.31, 0.93], [0.08, -0.31, 0.93], [0, -0.06, 0.935], [0, -0.25, 0.97]].map((q) => { const n = v3.norm(v3.sub(q, [0, -0.22, 0.9])); return sd.vert(q[0], q[1], q[2], n[0], n[1], n[2]); });
@@ -1735,13 +1884,14 @@ function bicycle(frame, parked = false) {
   return g;
 }
 
-function addRider(g, { shirt, trousers, skin, helmeted, helmetI, id }) {
+function addRider(g, { shirt, trousers, skin, helmeted, helmetI, id, legs = true }) {
   // the rider
   const hip = [0, -0.17, 1.0], sh = [0, 0.08, 1.46], neck = [0, 0.13, 1.53];
   g.add(limb([hip, sh], [0.14, 0.16], 4, { sx: 1.25, sy: 0.75, tip: neck }).color(shirt));
   for (const s of [-1, 1]) {
     g.add(limb([[s * 0.17, 0.08, 1.42], [s * 0.23, 0.27, 1.04]], [0.05, 0.04], 3).color(shirt));
     g.add(limb([[s * 0.23, 0.27, 1.04]], 0.032, 3, { tip: [s * 0.245, 0.32, 1.0] }).color(skin));
+    if (!legs) continue;
     const up = s > 0;
     const knee = up ? [s * 0.11, 0.13, 0.8] : [s * 0.11, 0.17, 0.62], foot = up ? [s * 0.1, -0.2, 0.42] : [s * 0.1, 0.07, 0.23];
     g.add(limb([[s * 0.09, -0.15, 0.98], knee, foot], [0.075, 0.056, 0.045], 3, { tip: [foot[0], foot[1] + 0.13, foot[2] - 0.04] }).color(trousers));
@@ -2461,8 +2611,9 @@ function trams(b) {
 
 // Things that come in along an open route, cross the town and leave again:
 // one every `every` seconds, each existing from its start to its end.
-// Whatever `make` returns may carry small parts in `.detail`: they go with it
-// all the way, drawn from `within` metres.
+// Whatever `make(rand, speed)` returns may carry small parts in `.detail`:
+// they go with it all the way, drawn from `within` metres; and a movement of
+// its own that repeats in `.gait` (see moving()).
 function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 0, within = 12 }) {
   const path = new Path(pts.map((p) => [p[0], p[1], 0]));
   const n = Math.max(1, Math.round(P / every));
@@ -2471,22 +2622,38 @@ function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 
     const v = speed * rand.range(0.97, 1.03);
     const d = path.length / v;
     const tf = follow(path, { speed: v, offset: -v * t0, span: size * 1.5, lift });
-    const geo = make(rand);
+    const geo = make(rand, v);
     const times = adaptiveTimes(tf, t0, t0 + d, { size, tolerance: 0.1, maxStep: 40 });
-    b.dynamic(geo, { times, transform: tf, caps: 'both' });
-    if (geo.detail) b.dynamic(geo.detail, { times, transform: tf, caps: 'both', within });
+    moving(b, geo, { times, transform: tf, caps: 'both' }, within);
+  }
+}
+
+// Adds a thing made by person() or cyclist() that moves as `o` says (times,
+// transform, caps): its body, and its detail, drawn from `within` metres.  A
+// thing with a `gait` (a stride, the pedals going round) has parts that move
+// with it as well, each with its own poses of one round of that movement
+// (`keys`) and perhaps drawn only from near by.  All on the same keys.
+function moving(b, geo, o, within) {
+  b.dynamic(geo, o);
+  if (geo.detail) b.dynamic(geo.detail, { ...o, within });
+  const g = geo.gait;
+  if (!g) return;
+  for (const part of g.parts) {
+    const cycle = { period: g.period, keys: part.keys, start: o.times[0] + g.phase * g.period };
+    b.dynamic(part.geo, part.within ? { ...o, within: part.within, cycle } : { ...o, cycle });
   }
 }
 
 function walkersRoundTower(b, rand) {
   const n = 7, r = 10.6;
   const loop = new Path(Array.from({ length: 72 }, (_, i) => [r * Math.cos(i / 72 * 2 * Math.PI), r * Math.sin(i / 72 * 2 * Math.PI), 0]), { closed: true });
+  const v = 2 * loop.length / P;
   for (let i = 0; i < n; i++) {
-    const tf = follow(loop, { speed: 2 * loop.length / P, offset: i * loop.length / n, span: 1 });
-    const p = person(rand, { scale: rand.range(0.92, 1.06) });
+    const tf = follow(loop, { speed: v, offset: i * loop.length / n, span: 1 });
+    // (they go round and round all the time: a whole number of strides to the period)
+    const p = person(rand, { scale: rand.range(0.92, 1.06), walk: v, fit: P });
     const times = adaptiveTimes(tf, 0, P, { size: 0.5, tolerance: 0.08, maxStep: 4 });
-    b.dynamic(p, { times, transform: tf, caps: 'none' });
-    b.dynamic(p.detail, { times, transform: tf, caps: 'none', within: 14 });
+    moving(b, p, { times, transform: tf, caps: 'none' }, 14);
   }
 }
 
@@ -2504,10 +2671,13 @@ function birds(b, rand) {
       const up = [-0.38 * Math.cos(a), -0.38 * Math.sin(a), 1];
       return m4.facing(pos, fwd, up);
     };
-    // the wings beat once a second; keys every quarter second catch up, level, down, level
-    const tri = (t) => 1 - 4 * Math.abs(((t + fo) % 1 + 1) % 1 - 0.5);
-    if (i % 2) b.dynamic((t) => pigeon(col, tri(t)), { times: timeRange(0, P, 0.25), transform: tf, caps: 'none' });
-    else b.dynamic(pigeon(col, 0.15), { times: timeRange(0, P, 0.5), transform: tf, caps: 'none' });
+    // the wings beat once a second (a whole number of beats to the period):
+    // four poses to a beat, up, level, down, level.  Half of the birds keep
+    // beating; the others beat twice and then glide for two seconds, each
+    // starting at a time of its own.
+    const tri = (u) => 1 - 4 * Math.abs(u - 0.5);
+    if (i % 2) b.dynamic((u) => pigeon(col, tri(u)), { times: timeRange(0, P, 0.5), transform: tf, caps: 'none', cycle: { period: 1, keys: 4, start: -fo } });
+    else b.dynamic((u) => pigeon(col, u < 0.5 ? tri((u * 4) % 1) : 0.15), { times: timeRange(0, P, 0.5), transform: tf, caps: 'none', cycle: { period: 4, keys: 16, start: Math.floor(GAIT() * 16) / 4 } });
   }
 }
 
@@ -2571,13 +2741,14 @@ function carouselHorses(b) {
 }
 
 function flags(b) {
-  // two flags on the town hall's poles
-  const L = 3.4, Hf = 2.2, nx = 5, nz = 2;
-  const make = (col, ph) => (t) => {
+  // two flags on the town hall's poles, a wave running out along them every
+  // 1.5 s: one round of it as eight poses (80 rounds to the period)
+  const L = 3.4, Hf = 2.2, nx = 5, nz = 2, wave = 1.5;
+  const make = (col, ph) => (w) => {
     const g = Geo.plane(L, Hf, nx, nz).rotateX(Math.PI / 2).translate(L / 2, 0, 0);
     for (let i = 0; i < g.p.length; i += 3) {
       const x = g.p[i], u = x / L;
-      g.p[i + 1] += u * 0.35 * Math.sin(2 * Math.PI * (u * 1.3 - t / 1.5) + ph);
+      g.p[i + 1] += u * 0.35 * Math.sin(2 * Math.PI * (u * 1.3 - w) + ph);
       g.p[i + 2] -= u * u * 0.25;
     }
     g.computeNormals();
@@ -2585,7 +2756,7 @@ function flags(b) {
   };
   for (const [y, col, ph] of [[-12, ['#f2c12e', '#f4f1e8', '#d8402f'], 0], [12, ['#2f6fb3', '#f4f1e8', '#2f6fb3'], 1.7]]) {
     const top = [SQ - 3.2, y, 12.4];
-    b.dynamic(make(col, ph), { times: timeRange(0, P, 0.25), transform: () => m4.mul(m4.translation(top[0], top[1], top[2] - Hf / 2 - 0.05), m4.rotationZ(Math.PI)), caps: 'none' });
+    b.dynamic(make(col, ph), { times: [0, P], transform: () => m4.mul(m4.translation(top[0], top[1], top[2] - Hf / 2 - 0.05), m4.rotationZ(Math.PI)), caps: 'none', cycle: { period: wave, keys: 8 } });
   }
 }
 
@@ -2649,6 +2820,7 @@ export default {
   build(b) {
     const rand = rng(1871);
     STYLE = rng(29);
+    GAIT = rng(3);
     HOUSE_ID = 1;
     BOXES = [];
     MERLONS = [];
@@ -2756,7 +2928,7 @@ export default {
     trams(b);
     travellers(b, rand, R_BIKE_IN, { speed: 4.6, every: 8, make: cyclist, size: 0.9 });
     travellers(b, rand, R_BIKE_OUT, { speed: 4.6, every: 8, make: cyclist, size: 0.9, start: 4 });
-    R_WALK.forEach((r, i) => travellers(b, rand, r, { speed: 1.35, every: 12, make: (rr) => person(rr, { scale: rr.range(0.9, 1.07) }), size: 0.4, start: i * 2.2 }));
+    R_WALK.forEach((r, i) => travellers(b, rand, r, { speed: 1.35, every: 12, make: (rr, v) => person(rr, { scale: rr.range(0.9, 1.07), walk: v }), size: 0.4, start: i * 2.2 }));
     walkersRoundTower(b, rand);
     birds(b, rand);
     fountainJets(b);

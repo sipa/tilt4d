@@ -415,15 +415,131 @@ What it takes to store depends on the kind of motion:
   goes in a straight line.
 * A mesh that changes shape (`geo` given as a function) or colour (`paint`)
   is stored vertex by vertex at every key, 32 bytes a vertex. Keep those for
-  what needs them (a flag, a jellyfish's bell), and build things that could be
-  stiff parts out of stiff parts: a walker as a body and four limbs, each a
-  call of its own, rather than one mesh that bends.
+  what needs them and does not repeat (a growing plant, a melting snowman),
+  and build things that could be stiff parts out of stiff parts.
+* A mesh with a movement of its own that repeats, while it is taken somewhere
+  (a walker's stride, a wing beat, a waving flag, a turning wheel), is stored
+  as the few poses of one round of that movement, once: see `cycle` below.
 
 An object that neither starts from nor ends in nothing has open ends in time.
 `caps` seals them so that a tilted slice through its first or last moment looks
 solid: `'auto'` seals every end that is not held, `'none'` seals nothing (right
 for anything that loops, see below), or `'start'`, `'end'`, `'both'`. An object
 that scales up from zero and back down to zero is closed already.
+
+### A movement that repeats: `cycle`
+
+Much of what moves does two things at once: it goes somewhere, and all the
+while it does the same small thing over and over. A walker strides, a bird
+beats its wings, a fish wags its tail, a wheel turns, a flag waves. Keyed the
+plain way, the small thing sets the pace: a key at every swing for as long as
+the journey lasts, each of them stored. With `cycle`, one round of the small
+movement is given as a few poses, which are stored once, and `times` only has
+to follow the journey:
+
+```js
+// a walker's legs and arms as one mesh, swung by an angle that goes there and back once a round
+const limbs = (u) => {
+  const a = 0.5 * Math.cos(2 * Math.PI * u);
+  return Geo.merge(leg(-0.1, a), leg(0.1, -a), arm(-0.24, -a), arm(0.24, a));
+};
+b.dynamic(limbs, {
+  times, transform: tf,                         // the journey: the very keys of the walker's body
+  cycle: { period: 1.04, keys: 4, start: t0 },  // two steps to a round, four poses of it
+});
+```
+
+* `period` is the seconds a round takes, `keys` the number of poses stored
+  for it, evenly spaced over the round (default 4), and `start` a time at
+  which a round begins (default 0). Things that should not move in step get
+  different `start`s.
+* Pose `i` is the mesh at `u = i / keys`. Give `geo` as a function
+  `u => Geo` to change its shape over the round (the same vertex count and
+  triangle list every time), or give `cycle.transform: u => matrix` to move a
+  fixed mesh within its own frame before `transform` places it, or both. A
+  wheel: `cycle: { period, keys: 16, transform: (u) => m4.rotationX(-2 * Math.PI * u) }`.
+  `cycle.paint: u => ({ color, emissive })` repaints the mesh over the round.
+* Between two poses every vertex goes in a straight line within the mesh's
+  own frame, and its normal, its colour (as stored, that is in sRGB, with the
+  emissive) and its `aux` go evenly from the one to the other; texture
+  coordinates, material, gloss, flags and tag are the earlier pose's, so keep
+  those the same in all poses. After the last pose comes the first again. A small swing of a short part can be given
+  as its two ends (`keys: 2`); a stride wants four poses, a wave a pose every
+  eighth of it, and something that turns all the way round one every 20° or
+  so (but see below on what happens to triangles between poses).
+* A round has to bring every vertex back to where it started, since the first
+  pose follows the last. A wheel's round is therefore a whole turn, however
+  many identical spokes it has. Identical blades or spokes that are meshes of
+  their own can share one blade's whole turn: the same mesh and cycle with a
+  different `start` each (`start: -i * period / n`).
+* A triangle whose corners move differently from one pose to the next (any
+  triangle of something that turns) is not flat in between: the three
+  tetrahedra that stand for its sweep fold it, by up to a quarter of the
+  difference between its corners' movements. That is about `L × a / 4` for a
+  triangle that reaches `L` along the radius and turns by the angle `a`
+  (in radians) between poses: 3 cm for a walker's leg in one piece swinging
+  through 30°, but 2 m for a 30 m turbine blade at a pose every 15°. A level
+  view shows it as a crease that comes and goes, a tilted one as a wide
+  ribbon or saw teeth. So split long turning parts along their length (a rod
+  in three pieces folds a third as much, in three places) and give big ones
+  more poses. The same holds for any moving mesh between its keys.
+* Walkers, as worked out in `src/scenes/plaza.js` (`walkingLimbs`): two
+  straight legs swung between two poses cross like an X at mid-stride (the
+  fold again). Four poses to a stride do, with each leg in two pieces split
+  at the knee, the swinging foot lifted a little and its knee forward at the
+  two poses where the feet pass, and the leg's vertices listed from the foot
+  up, so that what fold is left bends the leg forward like a knee. Build a
+  limb once and transform it for each pose: a mesh built afresh at every pose
+  must come out with its vertices in the same places round the limb, or the
+  limb collapses in between. Step length about `0.5 + 0.18 × speed` metres,
+  period `2 × step / speed`, and a `start` of its own for every walker.
+* Where only part of a thing moves by itself (a fish's tail, a walker's
+  limbs), make that part a mesh of its own with the cycle and leave the rest
+  on the plain keys: the stiff part is then drawn once where the slice finds
+  it, however quick the beat.
+* What turns faster than the screen can show (a wheel's spokes passing more
+  than about 20 times a second) appears to stand still or turn backwards
+  from frame to frame, whatever its poses: draw that as a blur, in the
+  `surface` hook (see the wheels in `src/scenes/circuit.js`), not as a cycle.
+* `transform` and `times` are as for a mesh that is only moved: a straight run
+  needs two keys, a bend needs them close. (Between two keys the placing
+  matrix goes evenly from the one to the other, which is the same thing as
+  every vertex going in a straight line.) Put the parts of one thing on the
+  same `times` and `transform`: they then share the stored keys.
+* `paint`, and a `geo` that is a function of the time, do not go with `cycle`.
+  `caps`, `holdBefore`, `holdAfter` and `within` work as usual.
+
+What it costs to keep: the poses, 32 bytes a vertex and pose, once (meshes
+with the same poses share them), and 64 bytes for each of the journey's keys.
+The length of the journey does not come into it.
+
+What it costs to draw is what the mesh costs at any one moment: its
+triangles, three tetrahedra each, where the slice finds it, in the picture and
+in every shadow map it stands in. That is the same as for a mesh on plain
+keys. (The statistics count a step for every stretch from pose to pose along
+the way, so `tetrahedra` goes up a great deal. Nothing is stored for a step
+and nothing is looked through for it: the renderer works out which steps a
+slice can touch from where the thing is at the two keys either side, and
+draws those.) So giving a movement to something that is drawn already costs
+nothing, and adding limbs costs their triangles. One thing does cost: poses
+that follow each other more quickly than the slice crosses the thing (its
+size across the slice, over `C`: a hundredth of a second for a walker when
+level, more when tilted far) are drawn several at a time. So a movement of a
+few rounds a second is free, and one of fifty a second on something big is
+not. `tools/cost.mjs` shows it; measure before and after.
+
+Where it pays:
+
+* in place of a mesh that was stored vertex by vertex at many keys for a
+  movement that in fact repeats (a flag, a wing beat, a jet of water): the
+  picture stays the same and the storage shrinks to one round;
+* for movement that was left out because of what it would have cost to
+  store: strides, tail beats, turning wheels, rocking boats, nodding heads.
+  Put everything that moves with one period in one mesh (all four limbs), so
+  that it is one thing more to draw and not four.
+
+`src/scenes/enginetest.js` has one of each kind in its back row, and builds
+the same things the long way round with `?cyclebrute=1`, for comparing.
 
 ### Scenes that repeat
 
@@ -493,7 +609,10 @@ surroundings a side of the reflection picture shows. So what a view costs
 depends on what is in front of the camera and round it, not on the whole
 scene: a town seen from inside costs less than the same town seen from a hill.
 The widest shadow map takes in the most; keep `shadowRadii` no larger than the
-scene needs. Moving geometry is tested the same way, chunk by chunk.
+scene needs. Moving geometry is tested the same way, chunk by chunk, and what
+a pass draws of it goes to the GPU in one draw call for each repeat of the
+scene in sight (a few a pass), however scattered: it costs by its tetrahedra,
+not by how many things it is.
 
 On a device that cannot keep up, the page lowers the resolution it draws at,
 and with it the distance from which detail given with `within` is drawn.

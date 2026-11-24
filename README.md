@@ -74,7 +74,7 @@ node tools/bundle.mjs       # or: npm run bundle
 ```
 
 writes `dist/index.html`: the page with its stylesheet and all its scripts,
-every scene included, minified into one file of about 680 kB (240 kB as a web
+every scene included, minified into one file of about 710 kB (260 kB as a web
 server sends it compressed). The shaders are minified too: they are the
 template strings marked `/* wgsl */` in the scripts, and an unmarked one is
 left as it is (the tool points out any it finds). It needs nothing beside it, so it can be uploaded
@@ -370,10 +370,16 @@ The slice is drawn like this:
   between keys, split into three tetrahedra in `(x, y, z, t)`. A vertex shader
   cuts every tetrahedron with the slice (a 4D version of marching tetrahedra)
   and emits the resulting triangle or quad. Only the chunks of tetrahedra whose
-  4D bounding box the slice passes through are sent to the GPU. The
+  4D bounding box the slice passes through are sent to the GPU: each frame
+  the page writes out a table of them, and a pass draws all of its share in
+  one call, its instances looked up in that table. The
   tetrahedra are not stored: a mesh that only moves is kept once, with the
   matrix that places it at each key, and the vertex shader works out the
-  corners of each tetrahedron from that.
+  corners of each tetrahedron from that. A mesh with a movement of its own
+  that repeats on the way (a stride, a wing beat) is kept as the few poses of
+  one round of it: the page works out which steps from pose to pose the slice
+  can touch, and the shader which two poses a corner lies between. So what
+  such a movement costs to keep does not grow with how long it goes on.
 * Lighting, sky and materials are evaluated at each pixel's own moment, which
   is why clocks, lamps and the sky all show the tilt.
 * Shadows use shadow maps of the slice itself, two or three of them covering

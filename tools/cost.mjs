@@ -117,10 +117,13 @@ try {
         pos: spec.pos ?? sp.pos, t: spec.t ?? sp.t ?? 0, yaw: (spec.yaw ?? sp.yaw ?? 0) + (spec.turn ?? 0), pitch: spec.pitch ?? sp.pitch ?? 0,
         tilt: spec.tilt ?? 0, tiltDir: spec.tiltdir ?? 90,
       });
-      // twice: the first frame of a scene with reflections draws all six sides of that picture,
-      // and the first frame at a new time draws its shadow maps in full
+      // Twice: the first frame at a new time draws its shadow maps in full.  The second, which is
+      // counted, is drawn as a still: that draws all six sides of a scene's reflection picture, and
+      // a sixth of them is counted.  (A running frame draws one side, in turn, and the sides are
+      // not alike: counting whichever came up would make a view's figure depend on what was
+      // measured before it.)
       for (let i = 0; i < 2; i++) {
-        renderer.render({ ...player.camera(), fovY: 62 * Math.PI / 180, time: 0, timeTint: 1 });
+        renderer.render({ ...player.camera(), fovY: 62 * Math.PI / 180, time: 0, timeTint: 1, still: i === 1 });
         await renderer.settle();
       }
       return { ...renderer.info.frame };

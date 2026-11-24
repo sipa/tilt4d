@@ -32,8 +32,8 @@ const BIG = 1e30;
 // object.  Each chunk records its bounding box in space and time, which lets
 // the renderer skip every chunk the player's slice cannot touch.
 const CHUNK_TETS = 48;
-// The numbers given to tetrahedra come in blocks of this many, each block
-// belonging to one chunk (see finalize).
+// What a frame draws of a chunk is handed to the GPU as blocks of this many
+// of its tetrahedra (see finalize, and `visible` in the renderer).
 export const BLOCK = 16;
 // Static pieces with a time window get their own visibility test if they have
 // at least this many triangles (additive ones always do: they cover a lot of screen).
@@ -147,11 +147,17 @@ export class SceneBuilder {
     // four corners each, as vertex numbers within the mesh, bit 30 set for
     // "at the later key" and bit 31 on the first for the orientation), and a
     // chunk says which list, which vertices and which keys it stands for.
+    // A mesh with a movement of its own that repeats (a `cycle`: a stride, a
+    // wing beat) is stored as the few poses of one round of it, once, and
+    // placed by keys like a mesh that only moves; `cycles` has an entry per
+    // such mesh: { vert, nv, n, dt, start } (see _cyclic).
     this.dv = new Grow(DYN_STRIDE);
     this.keys = new Grow(64);
     this.tmpl = new Grow(16);
-    this.shared = new Map(); // meshes and lists already stored, by their contents (see _share)
-    // per layer: { count, t0, t1, box: [minx, miny, minz, maxx, maxy, maxz], tmpl, per, vert, nv, key, rigid, ... }
+    this.cycles = [];
+    this.shared = new Map(); // meshes, lists and runs of keys already stored, by their contents (see _share)
+    // per layer: { count, t0, t1, box: [minx, miny, minz, maxx, maxy, maxz], tmpl, per, vert, nv, key, kind, ... }
+    // (kind: 0 stored vertex by vertex, 1 one mesh placed by keys, 2 that with a cycle)
     this.chunks = [[], [], []];
     // one entry per static() call and layer: { layer, first, count, from, to, period, box }
     this.sCalls = [];
@@ -433,10 +439,13 @@ export class SceneBuilder {
   //   caps       'auto' (default): seal the ends in time that are not held, so
   //              a tilted slice through the moment of (dis)appearance looks
   //              solid; or 'none', 'start', 'end', 'both'
+  //   cycle      a movement of the mesh's own that repeats, on top of where
+  //              `transform` puts it: see _cyclic
   // Between keys every vertex moves in a straight line at constant speed, so
   // straight uniform motion needs just two keys, while turning or accelerating
   // objects need more.
   dynamic(geo, o = {}) {
+    if (o.cycle) return this._cyclic(geo, o);
     const times = resolveTimes(o);
     const nk = times.length;
     const geoAt = typeof geo === 'function' ? geo : () => geo;
@@ -452,8 +461,61 @@ export class SceneBuilder {
     // only moved about: the same mesh at every key, placed by `transform` and not repainted
     const rigid = typeof geo !== 'function' && !paint;
     dv.reserve(nv * (rigid ? 1 : nk) + (capStart ? nv + 1 : 0) + (capEnd ? nv + 1 : 0));
+    const writeKey = (g, t, m, pt, dstBase, extraFlags) => this._putDyn(g, nv, t, m, pt, dstBase, extraFlags);
 
-    const writeKey = (g, t, m, pt, dstBase, extraFlags) => {
+    const boxes = [];
+    let vertBase = base, keyBase = 0, mirrored = false;
+    if (rigid) {
+      // the mesh as it is, once (or not at all, if the same mesh is there already) ...
+      const own = writeKey(g0, 0, null, null, base, 0).box;
+      vertBase = this._share(dv, base, nv);
+      // ... and where each key puts it
+      const placed = this._putKeys(times, xf, [own]);
+      keyBase = placed.keyBase; mirrored = placed.mirrored;
+      boxes.push(...placed.boxes);
+    } else {
+      for (let k = 0; k < nk; k++) {
+        const t = times[k];
+        boxes.push(writeKey(k === 0 ? g0 : geoAt(t), t, xf ? xf(t) : null, paint ? paint(t) : null, base + k * nv, 0).box);
+      }
+      dv.count += nv * nk;
+    }
+
+    const { layers, lists } = this._tetLists(g0, rigid ? [vertBase] : [base, base + (nk >> 1) * nv, base + (nk - 1) * nv], rigid && mirrored);
+    for (const { layer, list, per, dark } of lists) {
+      const chunks = this.chunks[layer];
+      let chunk = null;
+      for (let k = 0; k < nk - 1; k++) {
+        if (!chunk) {
+          chunk = { count: 0, t0: times[k], t1: times[k], box: boxes[k].slice(), within, path: [boxes[k]], dark,
+            tmpl: list, per, vert: rigid ? vertBase : base + k * nv, nv: rigid ? 0 : nv, key: rigid ? keyBase + k : 0, kind: rigid ? 1 : 0 };
+        }
+        chunk.count += per;
+        chunk.t1 = times[k + 1];
+        growBox(chunk.box, boxes[k + 1]);
+        chunk.path.push(boxes[k + 1]);
+        if (chunk.count >= CHUNK_TETS) { chunks.push(chunk); chunk = null; }
+      }
+      if (chunk) chunks.push(chunk);
+      this.counts.tetrahedra += per * (nk - 1);
+    }
+
+    const poseAt = (k) => ({ t: times[k], g: k === 0 ? g0 : geoAt(times[k]), m: xf ? xf(times[k]) : null, pt: paint ? paint(times[k]) : null });
+    if (capStart) this._cap(poseAt(0), layers, within);
+    if (capEnd) this._cap(poseAt(nk - 1), layers, within);
+    if (o.holdBefore) this._hold(poseAt(0), { to: times[0], within: o.within });
+    if (o.holdAfter) this._hold(poseAt(nk - 1), { from: times[nk - 1], within: o.within });
+    this.counts.dynamicObjects++;
+    this._progress();
+    return this;
+  }
+
+  // Writes one pose of a moving mesh (nv vertices) into the vertex store from
+  // dstBase on: moved by the matrix m and repainted as pt says, if given, and
+  // with the time t.  Returns the middle of its vertices and its bounds.
+  _putDyn(g, nv, t, m, pt, dstBase, extraFlags) {
+    const dv = this.dv;
+    {
       if (g.vertexCount !== nv) throw new Error('dynamic(): the mesh must keep the same vertex count at every key');
       const nm = m ? m4.normalMat(m) : null;
       const nsign = m && m4.det3(m) < 0 ? -1 : 1;
@@ -487,40 +549,40 @@ export class SceneBuilder {
         dv.u16[(o8 + 28) >> 1] = toHalf(g.uv[i * 2]); dv.u16[(o8 + 30) >> 1] = toHalf(g.uv[i * 2 + 1]);
       }
       return { centre: [cx / nv, cy / nv, cz / nv], box };
-    };
-
-    const boxes = [];
-    let vertBase = base, keyBase = 0, mirrored = false;
-    if (rigid) {
-      // the mesh as it is, once (or not at all, if the same mesh is there already) ...
-      const own = writeKey(g0, 0, null, null, base, 0).box;
-      vertBase = this._share(dv, base, nv);
-      // ... and where each key puts it
-      const keys = this.keys;
-      keys.reserve(nk);
-      keyBase = keys.count;
-      for (let k = 0; k < nk; k++) {
-        const t = times[k], m = xf ? xf(t) : m4.identity(), det = m4.det3(m);
-        if (k === 0) mirrored = det < 0;
-        keys.f32.set([m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], t, det < 0 ? -1 : 1, 0, 0], keys.count * 16);
-        keys.count++;
-        // (bounds: the mesh's own box, placed, takes in the placed mesh)
-        const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-        for (let c = 0; c < 8; c++) {
-          const x = own[c & 1 ? 3 : 0], y = own[c & 2 ? 4 : 1], z = own[c & 4 ? 5 : 2];
-          const p = [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
-          for (let j = 0; j < 3; j++) { if (p[j] < box[j]) box[j] = p[j]; if (p[j] > box[j + 3]) box[j + 3] = p[j]; }
-        }
-        boxes.push(box);
-      }
-    } else {
-      for (let k = 0; k < nk; k++) {
-        const t = times[k];
-        boxes.push(writeKey(k === 0 ? g0 : geoAt(t), t, xf ? xf(t) : null, paint ? paint(t) : null, base + k * nv, 0).box);
-      }
-      dv.count += nv * nk;
     }
+  }
 
+  // Stores the matrices that place a mesh at its key times (or finds the same
+  // run of them, if it is there already: the parts of one thing mostly go the
+  // same way).  own: the bounds of the mesh as it is, one box or several.
+  // Returns where they are, whether the first one mirrors, the matrices
+  // (by columns, as m4 has them), and the bounds of the placed mesh at each
+  // key.
+  _putKeys(times, xf, own) {
+    const keys = this.keys, nk = times.length, first = keys.count, mats = [], boxes = [];
+    let mirrored = false;
+    keys.reserve(nk);
+    for (let k = 0; k < nk; k++) {
+      const t = times[k], m = xf ? xf(t) : m4.identity(), det = m4.det3(m);
+      if (k === 0) mirrored = det < 0;
+      keys.f32.set([m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], t, det < 0 ? -1 : 1, 0, 0], keys.count * 16);
+      keys.count++;
+      mats.push(m);
+      // (bounds: the mesh's own box, placed, takes in the placed mesh)
+      boxes.push(placedBox(m, own));
+    }
+    keys.count = first; // (_share counts them in, unless the same run is there already)
+    return { keyBase: this._share(keys, first, nk), mirrored, mats, boxes };
+  }
+
+  // The tetrahedra of one step of a mesh from key to key, three to the prism
+  // that each triangle sweeps out, layer by layer: makes the lists (or finds
+  // them) and returns { layers: the layer of every triangle, lists: [{ layer,
+  // list, per }] }.  judgeAt: where in the vertex store to look at the mesh
+  // (once, or at several keys) to tell which way its triangles are wound;
+  // mirrored: it is stored as it is and placed by a mirroring matrix.
+  _tetLists(g0, judgeAt, mirrored) {
+    const dv = this.dv, nv = g0.vertexCount, idx = g0.idx;
     // Order the vertices of each triangle by a rank that is shared between
     // vertices at the same position, so neighbouring prisms split their common
     // quad along the same diagonal.
@@ -537,12 +599,12 @@ export class SceneBuilder {
     const ntri = idx.length / 3;
 
     // Does the winding of the placed triangles agree with their normals?  (A
-    // mirroring transform reverses it.)  Judged at whichever of the first,
-    // middle and last key is least degenerate.
+    // mirroring transform reverses it.)  Judged at whichever of the places
+    // given (the first, middle and last key) is least degenerate.
     let agree = 0;
-    for (const k of rigid ? [0] : [0, nk >> 1, nk - 1]) {
+    for (const from of judgeAt) {
       let sum = 0;
-      const at = (v) => (vertBase + k * nv + v) * DYN_STRIDE;
+      const at = (v) => (from + v) * DYN_STRIDE;
       for (let i = 0; i < ntri; i++) {
         const A = at(idx[i * 3]), B = at(idx[i * 3 + 1]), Cc = at(idx[i * 3 + 2]);
         const f = dv.f32, a4 = A >> 2, b4 = B >> 2, c4 = Cc >> 2;
@@ -556,7 +618,7 @@ export class SceneBuilder {
       if (Math.abs(sum) > Math.abs(agree)) agree = sum;
     }
     // (a mesh stored as it is was judged as it is: a mirroring placement turns it round)
-    const inward = (agree < 0) !== (rigid && mirrored) ? 1 : 0;
+    const inward = (agree < 0) !== mirrored ? 1 : 0;
 
     const tris = new Uint32Array(idx.length);
     const layers = new Uint8Array(ntri);
@@ -574,10 +636,8 @@ export class SceneBuilder {
       flipBit[i] = odd ? 0x80000000 : 0;
     }
 
-    const grow = (box, b) => {
-      for (let i = 0; i < 3; i++) { if (b[i] < box[i]) box[i] = b[i]; if (b[i + 3] > box[i + 3]) box[i + 3] = b[i + 3]; }
-    };
     const LATER = 0x40000000;
+    const lists = [];
     for (let layer = 0; layer < LAYERS; layer++) {
       const mine = [];
       for (let i = 0; i < ntri; i++) if (layers[i] === layer) mine.push(i);
@@ -590,61 +650,164 @@ export class SceneBuilder {
         const a = tris[i * 3], b = tris[i * 3 + 1], c = tris[i * 3 + 2], fb = flipBit[i];
         tm.u32.set([(a | fb) >>> 0, b, c, a | LATER, (b | fb) >>> 0, c, a | LATER, b | LATER, (c | fb) >>> 0, a | LATER, b | LATER, c | LATER], (at + n * 3) * 4);
       });
-      const list = this._share(tm, at, per);
-      const chunks = this.chunks[layer];
-      let chunk = null;
-      for (let k = 0; k < nk - 1; k++) {
-        if (!chunk) {
-          chunk = { count: 0, t0: times[k], t1: times[k], box: boxes[k].slice(), within, path: [boxes[k]],
-            tmpl: list, per, vert: rigid ? vertBase : base + k * nv, nv: rigid ? 0 : nv, key: rigid ? keyBase + k : 0, rigid };
-        }
-        chunk.count += per;
-        chunk.t1 = times[k + 1];
-        grow(chunk.box, boxes[k + 1]);
-        chunk.path.push(boxes[k + 1]);
-        if (chunk.count >= CHUNK_TETS) { chunks.push(chunk); chunk = null; }
-      }
-      if (chunk) chunks.push(chunk);
-      this.counts.tetrahedra += per * (nk - 1);
+      // (4: the mark of .noShadow().  A mesh none of which casts a shadow is left out of the shadow maps altogether.)
+      lists.push({ layer, list: this._share(tm, at, per), per, dark: mine.every((i) => (g0.a[idx[i * 3] * 4 + 3] & 4) !== 0) });
     }
+    return { layers, lists };
+  }
 
-    // Seal an end in time with the solid interior of the mesh at that moment:
-    // a fan of tetrahedra from the centroid, all at one instant.
-    const cap = (k) => {
-      const t = times[k], g = k === 0 ? g0 : geoAt(t);
-      dv.reserve(nv + 1);
-      const cb = dv.count;
-      const { centre, box } = writeKey(g, t, xf ? xf(t) : null, paint ? paint(t) : null, cb, FLAG_CAP);
-      // centre vertex: a copy of vertex 0 moved to the centroid
-      const src = cb * DYN_STRIDE, dst = (cb + nv) * DYN_STRIDE;
-      dv.u8.copyWithin(dst, src, src + DYN_STRIDE);
-      dv.f32[dst >> 2] = centre[0]; dv.f32[(dst >> 2) + 1] = centre[1]; dv.f32[(dst >> 2) + 2] = centre[2];
-      dv.count += nv + 1;
-      const fan = [];
-      for (let i = 0; i < ntri; i++) if (!layers[i]) fan.push(nv, idx[i * 3], idx[i * 3 + 1], idx[i * 3 + 2]);
-      if (!fan.length) return;
-      const tm = this.tmpl, per = fan.length / 4;
-      tm.reserve(per);
-      const at = tm.count;
-      tm.u32.set(fan, at * 4);
-      this.chunks[0].push({ count: per, t0: t, t1: t, box, within, path: [box], tmpl: this._share(tm, at, per), per, vert: cb, nv: 0, key: 0, rigid: false });
-      this.counts.tetrahedra += per;
+  // Seals an end in time with the solid interior of the mesh at that moment:
+  // a fan of tetrahedra from the centroid, all at one instant.  pose: { t, g,
+  // m, pt }, the mesh as it is then, the matrix that places it and its paint.
+  _cap({ t, g, m, pt }, layers, within) {
+    const dv = this.dv, nv = g.vertexCount, idx = g.idx, ntri = idx.length / 3;
+    dv.reserve(nv + 1);
+    const cb = dv.count;
+    const { centre, box } = this._putDyn(g, nv, t, m, pt, cb, FLAG_CAP);
+    // centre vertex: a copy of vertex 0 moved to the centroid
+    const src = cb * DYN_STRIDE, dst = (cb + nv) * DYN_STRIDE;
+    dv.u8.copyWithin(dst, src, src + DYN_STRIDE);
+    dv.f32[dst >> 2] = centre[0]; dv.f32[(dst >> 2) + 1] = centre[1]; dv.f32[(dst >> 2) + 2] = centre[2];
+    dv.count += nv + 1;
+    const fan = [];
+    for (let i = 0; i < ntri; i++) if (!layers[i]) fan.push(nv, idx[i * 3], idx[i * 3 + 1], idx[i * 3 + 2]);
+    if (!fan.length) return;
+    const tm = this.tmpl, per = fan.length / 4;
+    tm.reserve(per);
+    const at = tm.count;
+    tm.u32.set(fan, at * 4);
+    const dark = fan.every((v, i) => i % 4 === 0 || (g.a[v * 4 + 3] & 4) !== 0);
+    this.chunks[0].push({ count: per, t0: t, t1: t, box, within, path: [box], dark, tmpl: this._share(tm, at, per), per, vert: cb, nv: 0, key: 0, kind: 0 });
+    this.counts.tetrahedra += per;
+  }
+
+  // Keeps a pose (as for _cap) for all the time before or after it: as
+  // geometry that does not move, with that time window.
+  _hold({ g, m, pt }, window) {
+    const placed = m ? g.clone().transform(m) : g;
+    this.static(pt ? applyPaint(placed === g ? g.clone() : placed, pt) : placed, window);
+    this.counts.staticObjects--;
+  }
+
+  // A mesh with a movement of its own that repeats, while `transform` takes it
+  // along: a walker's stride, a bird's wing beat, a flag in the wind, a wheel
+  // going round.  One round of the movement is given as a few poses, which are
+  // stored once, however long the thing is on its way; and `times` only has to
+  // follow where `transform` takes it, as for a mesh that does not change.
+  //   cycle: {
+  //     period     seconds for one round
+  //     keys       how many poses of a round are stored, evenly spaced over
+  //                it (default 4): pose i is the mesh at u = i / keys
+  //     start      a time at which a round begins (default 0)
+  //     transform  u -> matrix: moves the mesh within its own frame, before
+  //                `transform` places it (optional)
+  //     paint      u -> { color?, emissive? }, as `paint` (optional)
+  //   }
+  //   geo        a Geo; or, to change its shape over the round, a function
+  //              u -> Geo (0 <= u < 1), with the same vertex count and
+  //              triangle list every time
+  // Between two poses every vertex goes in a straight line within the mesh's
+  // frame, and from the last pose back to the first.  (A triangle whose
+  // corners move differently is folded a little in between, as between any
+  // two keys: see docs/SCENES.md on how many poses a movement wants.)
+  // `transform` is taken to turn the frame little from one key time to the
+  // next (as `times` has to see to anyway).  `paint`, and a `geo` that is a
+  // function of the time, do not go with a cycle.  What a round costs to draw
+  // is what the mesh costs at any moment; what it costs to keep is the poses.
+  _cyclic(geo, o) {
+    const cy = o.cycle, n = Math.max(1, Math.round(cy.keys ?? 4));
+    if (!(cy.period > 0)) throw new Error('dynamic(): a cycle needs a `period` in seconds');
+    if (o.paint) throw new Error('dynamic(): with a cycle, repaint the mesh with `cycle.paint`');
+    const times = resolveTimes(o), nk = times.length;
+    const xf = o.transform || null;
+    const within = o.within > 0 ? o.within : BIG; // detail: drawn only when the viewer is this near
+    const capMode = o.caps ?? 'auto';
+    const capStart = capMode === 'both' || capMode === 'start' || (capMode === 'auto' && !o.holdBefore);
+    const capEnd = capMode === 'both' || capMode === 'end' || (capMode === 'auto' && !o.holdAfter);
+
+    // ---- the poses of one round, as they are in the mesh's own frame
+    const pose = (u) => {
+      let g = typeof geo === 'function' ? geo(u) : geo;
+      if (cy.transform) g = g.clone().transform(cy.transform(u));
+      return g;
     };
-    if (capStart) cap(0);
-    if (capEnd) cap(nk - 1);
+    const poses = [];
+    for (let i = 0; i < n; i++) poses.push(pose(i / n));
+    const g0 = poses[0], nv = g0.vertexCount;
+    if (nv === 0) return this;
+    for (const g of poses) {
+      if (g.idx.length !== g0.idx.length) throw new Error('dynamic(): the mesh must keep the same triangles at every pose of a cycle');
+    }
+    const dv = this.dv, base = dv.count;
+    dv.reserve(nv * n);
+    const own = poses.map((g, i) => this._putDyn(g, nv, 0, null, cy.paint ? cy.paint(i / n) : null, base + i * nv, 0).box);
+    const vertBase = this._share(dv, base, nv * n);
 
-    if (o.holdBefore) {
-      const g = xf ? g0.clone().transform(xf(times[0])) : g0;
-      this.static(paint ? applyPaint(g === g0 ? g0.clone() : g, paint(times[0])) : g, { to: times[0], within: o.within });
-      this.counts.staticObjects--;
+    // ---- where the keys put it.  Between two of them the matrix goes
+    // evenly from one to the other, which is what moving every vertex in a
+    // straight line comes to.
+    const { keyBase, mirrored, mats } = this._putKeys(times, xf, own);
+    // The record of the cycle goes with numbers of single precision, as the
+    // shader has them: the two have to agree on which stretches from pose to
+    // pose fall within which stretch from key to key.
+    const f = Math.fround;
+    const dt = f(cy.period / n), start = f(cy.start ?? 0);
+    const cycle = this.cycles.length;
+    this.cycles.push({ vert: vertBase, nv, n, dt, start });
+    const grid = (m) => f(start + f(m * dt)); // when pose m of the endless row of them is reached
+    const mod = (m) => ((m % n) + n) % n;
+    // the mesh at the time t (within the stretch from key k to the next):
+    // which stretch between poses that is in, how far along it, and the matrix
+    const at = (t, k) => {
+      const t0 = f(times[k]), t1 = f(times[Math.min(k + 1, nk - 1)]);
+      let m = Math.floor((t - start) / dt);
+      while (grid(m) > t) m--;
+      while (grid(m + 1) <= t && grid(m + 1) > grid(m)) m++;
+      const w = t1 > t0 ? Math.min(1, Math.max(0, (t - t0) / (t1 - t0))) : 0;
+      const a = mats[k], b = mats[Math.min(k + 1, nk - 1)];
+      return { m, u: Math.min(1, Math.max(0, (t - grid(m)) / dt)), mat: w === 0 ? a : w === 1 ? b : a.map((v, i) => v + (b[i] - v) * w) };
+    };
+
+    // ---- the chunks: one for each stretch from key to key, which stands for
+    // all the steps from pose to pose that fall within it, however many.  No
+    // step is written down anywhere: the renderer works out which of them a
+    // slice can touch (from where the mesh is at the chunk's two ends, as a
+    // box round all its poses, and from when the steps are), and the shader
+    // works out the rest.
+    const { layers, lists } = this._tetLists(g0, [vertBase], mirrored);
+    let steps = 0;
+    for (let k = 0; k < nk - 1; k++) {
+      const t0 = f(times[k]), t1 = f(times[k + 1]);
+      // the stretches that take in some of this one: from the one t0 is in to the last that starts before t1
+      let ma = at(t0, k).m, mb = ma;
+      while (grid(mb + 1) < t1) mb++;
+      const count = mb - ma + 1;
+      steps += count;
+      const b0 = placedBox(mats[k], own), b1 = placedBox(mats[k + 1], own);
+      const box = b0.slice();
+      growBox(box, b1);
+      for (const { layer, list, per, dark } of lists) {
+        this.chunks[layer].push({ count: per * count, t0, t1, box, within, path: [b0, b1], dark,
+          tmpl: list, per, vert: 0, nv: ma, key: keyBase + k, kind: 2, cycle, steps: count, grid0: grid(ma), dt });
+      }
     }
-    if (o.holdAfter) {
-      const tl2 = times[nk - 1];
-      const gl = geoAt(tl2);
-      const g = xf ? gl.clone().transform(xf(tl2)) : gl;
-      this.static(paint ? applyPaint(g === gl ? gl.clone() : g, paint(tl2)) : g, { from: tl2, within: o.within });
-      this.counts.staticObjects--;
-    }
+    for (const { per } of lists) this.counts.tetrahedra += per * steps;
+
+    // ---- the ends: the mesh as it is at that moment, worked out as the shader does
+    const poseAt = (k) => {
+      const p = at(f(times[k]), Math.min(k, nk - 2));
+      const a = poses[mod(p.m)], b = poses[mod(p.m + 1)];
+      let g = a;
+      if (p.u > 0 && b !== a) {
+        g = a.clone();
+        for (let i = 0; i < g.p.length; i++) { g.p[i] += (b.p[i] - a.p[i]) * p.u; g.n[i] += (b.n[i] - a.n[i]) * p.u; }
+      }
+      return { t: times[k], g, m: mats[k], pt: cy.paint ? cy.paint(mod(p.m) / n) : null };
+    };
+    if (capStart) this._cap(poseAt(0), layers, within);
+    if (capEnd) this._cap(poseAt(nk - 1), layers, within);
+    if (o.holdBefore) this._hold(poseAt(0), { to: times[0], within: o.within });
+    if (o.holdAfter) this._hold(poseAt(nk - 1), { from: times[nk - 1], within: o.within });
     this.counts.dynamicObjects++;
     this._progress();
     return this;
@@ -677,43 +840,56 @@ export class SceneBuilder {
 
   // Packs everything into the buffers the renderer uploads.
   finalize() {
-    // Chunks are numbered in order of starting time (within each layer), so
-    // that the chunks a slice touches, which lie close together in time, are
-    // also neighbours and can be drawn with few draw calls.  Detail that is
-    // drawn only from near by comes after everything else, so that it is never
-    // swept up in a draw call that bridges the gap between two other chunks.
-    // Each chunk is given a run of numbers for its tetrahedra, starting at a
-    // multiple of BLOCK; the vertex shader, which is handed one such number,
-    // finds the chunk in a table with an entry per BLOCK numbers (`blocks`),
-    // and in the chunk's own entry (`runs`) what it needs to work out the rest.
+    // The chunks, layer by layer, in order of starting time (detail that is
+    // drawn only from near by after the rest).  Each has an entry in `runs`,
+    // which is all the vertex shader needs to work out any of its tetrahedra
+    // from the chunk's number and the tetrahedron's number within it: a frame
+    // hands those over for the chunks it draws, BLOCK tetrahedra at a time.
     const all = [];
-    let tetAt = 0;
     for (let layer = 0; layer < LAYERS; layer++) {
       for (const c of this.chunks[layer].slice().sort((a, b) => (a.within < BIG) - (b.within < BIG) || a.t0 - b.t0)) {
-        all.push({ ...c, first: tetAt, layer });
-        tetAt += Math.ceil(c.count / BLOCK) * BLOCK;
+        all.push({ ...c, layer });
       }
     }
-    const runs = new Uint32Array(Math.max(1, all.length) * 8);
-    const blocks = new Uint32Array(Math.max(1, tetAt / BLOCK));
+    // A chunk of a mesh with a cycle says in `vert` where the cycle's record
+    // is, and in `nv` which stretch from pose to pose it starts with.  Those
+    // records come after the chunks' in the same table: where the poses are,
+    // how many vertices each has, how many poses there are, and (as the bits
+    // of single-precision numbers) the time from pose to pose and the time a
+    // round starts at.
+    const runs = new Uint32Array(Math.max(1, all.length + this.cycles.length) * 8);
     all.forEach((c, i) => {
-      runs.set([c.first, c.count, c.tmpl, c.per, c.vert, c.nv, c.key, c.rigid ? 1 : 0], i * 8);
-      blocks.fill(i, c.first / BLOCK, c.first / BLOCK + Math.ceil(c.count / BLOCK));
+      runs.set([0, c.count, c.tmpl, c.per, c.kind === 2 ? all.length + c.cycle : c.vert, c.nv >>> 0, c.key, c.kind], i * 8);
     });
-    // chunk table: [first, count] and [t0, t1, centre xyz, half-size xyz, radius]
+    const bits = new Float32Array(2), asBits = new Uint32Array(bits.buffer);
+    this.cycles.forEach((c, i) => {
+      bits[0] = c.dt; bits[1] = c.start;
+      runs.set([c.vert, c.nv, c.n, asBits[0], asBits[1], 0, 0, 0], (all.length + i) * 8);
+    });
+    // chunk table: [tetrahedra to a step, count] and [t0, t1, centre xyz, half-size xyz, radius]
     const chunkRange = new Uint32Array(all.length * 2);
     const chunkBox = new Float64Array(all.length * 9);
     const chunkLayer = new Uint8Array(all.length);
+    const chunkDark = new Uint8Array(all.length); // 1: none of it casts a shadow
     const chunkNear = new Float32Array(all.length); // how near the viewer has to be for it to be drawn
     // For chunks of such detail, where the thing is over the chunk's stretch of
     // time: the middle of its bounds at the start and at the end, and a radius
     // that takes in the thing itself and any bend of its path in between.  (A
     // chunk's bounds take in the whole stretch, which for something on a long
-    // straight run says little about how near it is at any one moment.)
+    // straight run says little about how near it is at any one moment.)  The
+    // same for the chunks of meshes with a cycle, of which only the steps are
+    // drawn that lie where the slice meets the thing; `chunkSteps` says how
+    // many steps such a chunk has, when the first begins and how long each is.
     const chunkPath = new Float32Array(all.length * 7);
+    const chunkSteps = new Float64Array(all.length * 6);
     all.forEach((c, i) => {
       chunkNear[i] = c.within < BIG ? c.within : Infinity;
-      if (c.within < BIG) {
+      if (c.kind === 2) {
+        // (and how big the thing is, as half its bounds each way, at whichever end it is bigger)
+        const [p, q] = c.path;
+        chunkSteps.set([c.steps, c.grid0, c.dt, Math.max(p[3] - p[0], q[3] - q[0]) / 2, Math.max(p[4] - p[1], q[4] - q[1]) / 2, Math.max(p[5] - p[2], q[5] - q[2]) / 2], i * 6);
+      }
+      if (c.within < BIG || c.kind === 2) {
         const mid = (b) => [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
         const a = mid(c.path[0]), z = mid(c.path[c.path.length - 1]), d = [z[0] - a[0], z[1] - a[1], z[2] - a[2]];
         const len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -725,10 +901,11 @@ export class SceneBuilder {
         }
         chunkPath.set([a[0], a[1], a[2], z[0], z[1], z[2], r], i * 7);
       }
-      chunkRange[i * 2] = c.first; chunkRange[i * 2 + 1] = c.count;
+      chunkRange[i * 2] = c.per; chunkRange[i * 2 + 1] = c.count;
       const b = c.box, h = [(b[3] - b[0]) / 2, (b[4] - b[1]) / 2, (b[5] - b[2]) / 2];
       chunkBox.set([c.t0, c.t1, (b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2, h[0], h[1], h[2], Math.hypot(h[0], h[1], h[2])], i * 9);
       chunkLayer[i] = c.layer;
+      chunkDark[i] = c.dark ? 1 : 0;
     });
     // Static index buffer, per layer: first everything that is always drawn,
     // then the pieces with a time window that are worth testing one by one
@@ -825,7 +1002,7 @@ export class SceneBuilder {
     stats.work = this._work();
     // what the graphics card is given to hold
     stats.bytes = this.sv.count * STATIC_STRIDE + staticIndices.byteLength + this.inst.count * INSTANCE_STRIDE
-      + this.dv.count * DYN_STRIDE + this.keys.count * 64 + this.tmpl.count * 16 + runs.byteLength + blocks.byteLength
+      + this.dv.count * DYN_STRIDE + this.keys.count * 64 + this.tmpl.count * 16 + runs.byteLength
       + this.textures.reduce((sum, t) => sum + t.width * t.height * t.channels * (t.float ? 2 : 1), 0);
     return {
       solidTris,
@@ -841,11 +1018,28 @@ export class SceneBuilder {
       dynKeys: this.keys.f32.slice(0, Math.max(1, this.keys.count) * 16),
       dynTmpl: this.tmpl.u32.slice(0, Math.max(1, this.tmpl.count) * 4),
       dynRuns: runs,
-      dynBlocks: blocks,
-      chunks: { count: all.length, range: chunkRange, box: chunkBox, layer: chunkLayer, near: chunkNear, path: chunkPath },
+      chunks: { count: all.length, range: chunkRange, box: chunkBox, layer: chunkLayer, dark: chunkDark, near: chunkNear, path: chunkPath, steps: chunkSteps },
       stats,
     };
   }
+}
+
+// Makes the box `box` take in the box `b`.
+function growBox(box, b) {
+  for (let i = 0; i < 3; i++) { if (b[i] < box[i]) box[i] = b[i]; if (b[i + 3] > box[i + 3]) box[i + 3] = b[i + 3]; }
+}
+
+// The bounds of what the matrix m makes of the boxes given.
+function placedBox(m, boxes) {
+  const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+  for (const own of boxes) {
+    for (let c = 0; c < 8; c++) {
+      const x = own[c & 1 ? 3 : 0], y = own[c & 2 ? 4 : 1], z = own[c & 4 ? 5 : 2];
+      const p = [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
+      for (let j = 0; j < 3; j++) { if (p[j] < box[j]) box[j] = p[j]; if (p[j] > box[j + 3]) box[j + 3] = p[j]; }
+    }
+  }
+  return box;
 }
 
 function applyPaint(g, pt) {

@@ -12,10 +12,16 @@
 // east along the south straight.  The scene repeats every PERIOD = LAP / 15 s,
 // so every car does a whole number of laps per period.
 //
+// Gulls wheel over the straight and the beach, gliding and now and then
+// beating their wings; the flags on the grandstand and the marshals' huts
+// wave, and the yachts and the dinghy at the jetty rock in the swell:
+// movements that repeat, stored as the poses of one round (`cycle`).
+//
 // Detail for close inspection (on foot, or driving alongside) is mostly
 // painted by the shader from uv, tags and the copies' numbers: the cars'
-// wheels, glass, helmets, lights and racing numbers, the trains' windows,
-// doors and wheels, shutters on the houses.  What stands out in 3D is added
+// wheels (turning, as the coaches' do, at the vehicle's speed), glass,
+// helmets, lights and racing numbers, the trains' windows, doors and wheels,
+// shutters on the houses.  What stands out in 3D is added
 // with `within`, so that it costs nothing from afar: mirrors, tyres and
 // exhausts on the cars and coaches all round the lap, the trains' bogies, the
 // balloons' ropes and burners, the yachts' rigging, the timing boards',
@@ -24,7 +30,7 @@
 import { Geo } from '../geom.js';
 import { m4, v3 } from '../math.js';
 import { dayNightEnv } from '../env.js';
-import { Path, adaptiveTimes, rng, smoothstep, lerp } from '../util.js';
+import { Path, adaptiveTimes, timeRange, rng, smoothstep, lerp } from '../util.js';
 
 // ------------------------------------------------------------------ constants
 
@@ -375,6 +381,19 @@ function prism(profile, width, edgeAttr, capAttr, opts = {}) {
   return g.orientByNormals();
 }
 
+// The painted wheels of the traffic turn, and at speed blur (see wheelSpin
+// in the shader): a race car's five spokes on a wheel that rolls on a radius
+// of 0.33 m, a coach's ten studs on one of 0.5 m.  How many times the pattern comes round
+// in a period at 15 m/s, made whole so that the turning joins up from one
+// period to the next (the radius changes by less than a hundredth of a
+// millimetre); at 30 and 45 m/s it is twice and three times that.
+const WHEEL_ROUNDS = {
+  car: Math.round(UNIT * PERIOD / (2 * Math.PI * 0.33) * 5),
+  bus: Math.round(UNIT * PERIOD / (2 * Math.PI * 0.5) * 10),
+};
+// a vehicle's speed, for its wheels: aux -1/8 for every 15 m/s
+const speedAux = (g, k) => g.aux(-k / 8);
+
 // matrix placing a model (x across, y along, z up) on the track at (s, u), on the ground
 function trackMatrix(s, u, dz = 0, z = null) {
   const f = frameAt(s);
@@ -685,6 +704,42 @@ function blimpDetailGeo() {
   }
   return g.aux(1);
 }
+// A gull (+Y forward, +Z up, 1.5 m across the wings): a white body and tail,
+// wings of a very pale grey with black tips (a wing is one sheet, the same
+// colour on both sides, and a gull is mostly seen from below, in the shade),
+// each wing hinged at the shoulder and again at the wrist.  u is the share
+// of a wing beat done: at 0 (and half way) the wings are held as they are in
+// a glide, a little up at the shoulder and the hands a little down; the beat
+// goes down first, then up.  15 triangles.
+const GULL_WHITE = parseHex('#f1f1ec'), GULL_GREY = parseHex('#dfe3e6'), GULL_TIP = parseHex('#1e2023');
+function gullGeo(u) {
+  const s = -Math.sin(2 * Math.PI * u);
+  const shoulder = 0.14 + 0.55 * s, hand = shoulder - 0.22 + 0.25 * s;   // angles up from level
+  const g = new Geo();
+  // the body, a stretched octahedron, and the tail
+  const nose = [0, 0.27, 0.01], back = [0, -0.2, 0.02], ring = [[0.065, 0.02, 0], [0, 0.02, 0.06], [-0.065, 0.02, 0], [0, 0.02, -0.055]];
+  for (let k = 0; k < 4; k++) {
+    const a = ring[k], c = ring[(k + 1) % 4];
+    g.add(Geo.triangle(nose, c, a));
+    g.add(Geo.triangle(back, a, c));
+  }
+  g.add(Geo.triangle([0, -0.12, 0.025], [-0.075, -0.34, 0.02], [0.075, -0.34, 0.02]).doubleSided());
+  g.color(GULL_WHITE);
+  for (const sx of [-1, 1]) {
+    const x0 = 0.04, xw = 0.36, z0 = 0.02;
+    // a point d metres out from the shoulder along the inner wing, or e
+    // metres on from the wrist along the hand
+    const inner = (d, y) => [sx * (x0 + d * Math.cos(shoulder)), y, z0 + d * Math.sin(shoulder)];
+    const w = xw - x0;
+    const outer = (e, y) => { const p = inner(w, y); return [p[0] + sx * e * Math.cos(hand), y, p[2] + e * Math.sin(hand)]; };
+    g.add(Geo.quad(inner(0, -0.1), inner(w, -0.13), inner(w, 0.07), inner(0, 0.09)).doubleSided().color(GULL_GREY));
+    const tip = Geo.triangle(outer(0, -0.13), outer(0.38, -0.15), outer(0, 0.07)).doubleSided().color(GULL_GREY);
+    tip.c.splice(3, 3, ...GULL_TIP);
+    g.add(tip);
+  }
+  return g;
+}
+
 function boatGeo(sail) {
   const g = prism([[-4.2, 0], [3.4, 0], [4.8, 1.3], [-4.4, 1.3]], 2.6, (k) => (k === 0 ? null : { color: '#f4f2ec', gloss: 0.5 }), { color: '#f4f2ec', gloss: 0.5, mat: MAT.HULL }, { fan: true });
   g.add(Geo.box(0.16, 0.16, 11).translate(0, 0.8, 6.6).color('#ccc'));
@@ -713,6 +768,9 @@ const CHASE_SP = ${f(CHASE_SP)};
 const LH = vec2f(${f(LH[0])}, ${f(LH[1])});
 const BEAM_T = ${f(BEAM_T)};
 const RAIL_X = ${f(RAIL_X)};
+const PERIOD = ${f(PERIOD)};
+const CAR_SPOKE_ROUNDS = ${f(WHEEL_ROUNDS.car)};
+const BUS_STUD_ROUNDS = ${f(WHEEL_ROUNDS.bus)};
 
 fn coastX(y: f32) -> f32 {
   let a = (y - 1120.0) / 330.0;
@@ -848,20 +906,41 @@ fn helmetColor(num: f32) -> vec3f {
   let h = vec3f(hash11(num * 3.1), hash11(num * 5.7 + 1.0), hash11(num * 9.3 + 2.0));
   return h * h * 0.85 + 0.06;
 }
-// a race car's wheel from the side, d in metres from its centre: rgb, gloss
-fn carWheel(d: vec2f, num: f32, aa: f32) -> vec4f {
+// How far a vehicle's wheels have turned at the time t, in rounds of their
+// pattern (n rounds a period at 15 m/s: see WHEEL_ROUNDS): the speed is in
+// the vehicle's aux, as -1/8 for each 15 m/s.  (Counted from the start of the
+// period, which keeps the numbers small; n is whole, so it joins up there.)
+// And how blurred the pattern is (0 .. 1): the page shows a frame at one
+// instant, 60 or so times a second and without motion blur, and a pattern
+// that comes round many times a second jumps by most of a round from frame
+// to frame and seems to creep, stop or turn backwards; an eye sees a blur.
+// So the pattern fades to its average over a round as it comes round faster:
+// it is all there up to 3 rounds a second and gone from 20.  (The traffic
+// keeps its speed, 15 to 45 m/s, which is 48 to 108 rounds a second: its
+// wheels are always blurred, and the turning is there for anything slower.)
+fn wheelSpin(t: f32, aux: f32, n: f32) -> vec2f {
+  let tt = t - floor(t / PERIOD) * PERIOD;
+  let k = round(-aux * 8.0);
+  return vec2f(fract(tt / PERIOD * k * n), smoothstep(3.0, 20.0, abs(k) * n / PERIOD));
+}
+// a race car's wheel from the side, d in metres from its centre; spin: how
+// far it has turned (fifths of a turn; it rolls towards +d.x) and how
+// blurred its spokes are (see wheelSpin): rgb, gloss
+fn carWheel(d: vec2f, num: f32, aa: f32, spin: vec2f) -> vec4f {
   let r = length(d);
   let k = hash11(num * 7.1);
   let rim = select(select(vec3f(0.6, 0.61, 0.64), vec3f(0.07, 0.075, 0.08), k > 0.45), vec3f(0.55, 0.4, 0.12), k > 0.8);
   var c = mix(vec3f(0.028), vec3f(0.5, 0.45, 0.1), cover(abs(r - 0.29) - 0.005, aa) * 0.7);
   if (r < 0.24) {
-    let a5 = fract(atan2(d.y, d.x) * 0.7958 + 0.25) - 0.5;
+    let a5 = fract(atan2(d.y, d.x) * 0.7958 + 0.25 + spin.x) - 0.5;
     let spoke = abs(a5) * 1.2566 * r - 0.02 - 0.06 * r;
-    let metal = min(min(spoke, abs(r - 0.223) - 0.012), r - 0.06);
-    // between the spokes: the disc, and the calliper on top
+    // (blurred: the share of the circle of radius r that the five spokes cover)
+    let spokes = mix(cover(spoke, aa), min(1.0, (0.04 + 0.12 * r) / (1.2566 * max(r, 0.001))), spin.y);
+    let metal = max(spokes, cover(min(abs(r - 0.223) - 0.012, r - 0.06), aa));
+    // between the spokes: the disc, and the calliper on top (which does not turn)
     let calliper = step(abs(d.x), 0.07) * step(0.11, d.y) * step(d.y, 0.2);
     let inner = mix(vec3f(0.035), select(vec3f(0.6, 0.05, 0.03), vec3f(0.75, 0.55, 0.05), k > 0.5), calliper);
-    c = mix(c, mix(inner, rim, cover(metal, aa)), cover(r - 0.235, aa));
+    c = mix(c, mix(inner, rim, metal), cover(r - 0.235, aa));
     c = mix(c, vec3f(0.05), cover(r - 0.022, aa));
   }
   return vec4f(c, select(0.15, 0.6, r < 0.235));
@@ -911,7 +990,7 @@ fn carSide(sIn: Surface, aa: f32) -> Surface {
     c *= mix(0.7, 1.0, smoothstep(0.345, 0.42, r));
     c = mix(c, vec3f(0.006), cover(r - 0.345, aa));
     if (r < 0.345) {
-      let w = carWheel(d, num, aa);
+      let w = carWheel(d, num, aa, wheelSpin(s.t, s.aux, CAR_SPOKE_ROUNDS));
       c = mix(c, w.rgb, cover(r - 0.333, aa));
       gl = w.w;
     }
@@ -1045,9 +1124,13 @@ fn busSide(sIn: Surface, aa: f32) -> Surface {
     c = mix(c, vec3f(0.01), cover(r - 0.56, aa));
     var w = vec3f(0.03);
     if (r < 0.32) {
-      let arc = (fract(atan2(d.y, d.x) * 1.5915) - 0.5) * 0.6283 * r;
+      // ten studs, turning with the wheel, or blurred into a ring (the share
+      // of the circle of radius r that they cover; see wheelSpin)
+      let spin = wheelSpin(s.t, s.aux, BUS_STUD_ROUNDS);
+      let arc = (fract(atan2(d.y, d.x) * 1.5915 + spin.x) - 0.5) * 0.6283 * r;
       w = mix(vec3f(0.55, 0.56, 0.58), vec3f(0.25), cover(abs(r - 0.24) - 0.025, aa));
-      w = mix(w, vec3f(0.12), cover(length(vec2f(arc, r - 0.15)) - 0.018, aa));
+      let ring = 10.0 * sqrt(max(0.0, 0.000324 - (r - 0.15) * (r - 0.15))) / (PI * max(r, 0.001));
+      w = mix(w, vec3f(0.12), mix(cover(length(vec2f(arc, r - 0.15)) - 0.018, aa), ring, spin.y));
     }
     c = mix(c, w, cover(r - 0.5, aa));
     s.gloss = select(0.15, 0.5, r < 0.3);
@@ -1986,9 +2069,10 @@ export default {
         b.static(hut, { transform: m });
         b.static(marshal, { transform: m4.mul(m, m4.translation(-1.7, 1.6, 0), m4.rotationZ(-0.3)), within: 120, solid: false });
         const fm = m4.mul(m, m4.translation(-1.4, 0, 5.1));
-        for (let j = 0; j < 8; j++) {
-          b.static(flagCloth(j / 8).transform(fm), { from: j * 0.85 / 8 + s * 0.01, to: (j + 1) * 0.85 / 8 + s * 0.01, period: 0.85, within: 150 });
-        }
+        b.dynamic(flagCloth, {
+          times: [0, PERIOD], transform: () => fm, caps: 'none', within: 150,
+          cycle: { period: PERIOD / Math.round(PERIOD / 0.85), keys: 8, start: s * 0.01 },
+        });
       }
 
       // catch fence on top of the pit wall: posts every 4 m and a mesh (with
@@ -2064,9 +2148,10 @@ export default {
       }
       b.static(stand.mat(MAT.CROWD), { transform: m });
       b.static(roof.color('#e7e3da').gloss(0.3), { transform: m });
-      // flags along the roof's front edge, flying south in the breeze
+      // flags along the roof's front edge, flying south in the breeze (the
+      // wave runs along the flag only, so one row of quads makes it)
       const flag = (color, mat) => (ph) => {
-        const g = new Geo(), nx = 6, nz = 2, L = 3.2, H = 2.0;
+        const g = new Geo(), nx = 6, nz = 1, L = 3.2, H = 2.0;
         for (let j = 0; j <= nz; j++) {
           for (let i = 0; i <= nx; i++) {
             const a = i / nx, y = -a * L;
@@ -2086,8 +2171,12 @@ export default {
         const pm = m4.mul(m, m4.translation(-17.6, y, 15.6));
         b.static(Geo.cylinder(0.07, 5.2, 5, { caps: false }).color('#ddd'), { transform: pm });
         const fm = m4.mul(pm, m4.translation(0, -0.05, 5.1));
-        const make = flag(cols[k], k === 4 || k === 5 ? MAT.CHECKER : 0);
-        stopMotion(b, (ph) => make(ph).transform(fm), 12, 0.9 + 0.07 * k, k * 0.13);
+        // each waves at a pace of its own: a cycle of eight poses, a whole
+        // number of rounds in the period
+        const round = PERIOD / Math.round(PERIOD / (0.9 + 0.07 * k));
+        b.dynamic(flag(cols[k], k === 4 || k === 5 ? MAT.CHECKER : 0), {
+          times: [0, PERIOD], transform: () => fm, caps: 'none', cycle: { period: round, keys: 8, start: k * 0.13 },
+        });
       }
     }
 
@@ -2218,9 +2307,18 @@ export default {
       d.add(Geo.quad([x1 + 0.02, y + 0.2, -0.5], [x1 + 0.02, y + 0.6, -0.5], [x1 + 0.02, y + 0.6, top], [x1 + 0.02, y + 0.2, top]).uvTransform(0.4, top + 0.5)
         .color('#4a5058').mat(MAT.LADDER).cutout().doubleSided());
       const dinghy = prism([[-1.8, 0.0], [1.4, 0.0], [2.0, 0.55], [-1.9, 0.55]], 1.5, (k) => (k === 0 ? null : k === 2 ? { color: '#6b5440' } : { color: '#2a6f97' }), { color: '#2a6f97' }, { fan: true });
-      d.add(dinghy.transform(m4.mul(m4.translation(x1 - 8, y + 2.6, 0.02), m4.rotationZ(-Math.PI / 2 + 0.08))));
       d.add(rope([x1 - 2.5, y + 0.9, top + 0.4], [x1 - 6.2, y + 2.6, 0.5], 0.03, '#cbbf9f'));
       b.static(d, { within: 150, solid: false });
+      // the dinghy rides the swell: it rises and falls 3 cm, rolls 3 degrees
+      // and pitches 1 (a cycle of six poses, a whole number of rounds a period)
+      const swell = (u, k, ph) => k * Math.sin(2 * Math.PI * u + ph);
+      b.dynamic(dinghy, {
+        times: [0, PERIOD], transform: () => m4.mul(m4.translation(x1 - 8, y + 2.6, 0.02), m4.rotationZ(-Math.PI / 2 + 0.08)), caps: 'none', within: 150,
+        cycle: {
+          period: PERIOD / Math.round(PERIOD / 4.3), keys: 6,
+          transform: (u) => m4.mul(m4.translation(0, 0, swell(u, 0.03, 0)), m4.rotationY(swell(u, 0.05, 0.9)), m4.rotationX(swell(u, 0.018, 2.1))),
+        },
+      });
     }
 
     // ---------------------------------------------------------- wind turbines on the western ridge
@@ -2422,7 +2520,7 @@ export default {
           const s0 = SPAWN_S + lane.ahead - lane.dir * speed * SPAWN_T + i * LAP / lane.n;
           const tf = laneTransform(s0, speed, lane.offset, lane.dir);
           const color = lane.kind === 'bus' ? busCols[i % busCols.length] : carCols[ci % carCols.length];
-          const geo = lane.kind === 'bus' ? busGeo(color) : carGeo(color, CAR_NUMBERS[ci++]);
+          const geo = speedAux(lane.kind === 'bus' ? busGeo(color) : carGeo(color, CAR_NUMBERS[ci++]), lane.k);
           const detail = lane.kind === 'bus' ? busDetailGeo() : carDetailGeo(color);
           const times = adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.07, size: lane.kind === 'bus' ? 6 : 2.3, maxStep: 8, minStep: 0.03 });
           b.dynamic(geo, { times, transform: tf, caps: 'none' });
@@ -2499,8 +2597,68 @@ export default {
           return m4.facing([bt.c[0] + bt.b * Math.cos(a), bt.c[1] + bt.a * Math.sin(a), 0.05], [-bt.b * Math.sin(a), bt.a * Math.cos(a), 0]);
         };
         const times = adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.15, size: 5, maxStep: 8 });
-        b.dynamic(boatGeo(bt.sail), { times, transform: tf, caps: 'none' });
-        b.dynamic(boatDetailGeo(), { times, transform: tf, caps: 'none', within: 50 });
+        // and they rock in the swell, hull, sails and rigging alike: a roll of
+        // 3.5 degrees, a pitch of 1.2 and a heave of 5 cm, a cycle of six
+        // poses, each boat at a pace of its own (a whole number of rounds a period)
+        const swell = (u, k, ph) => k * Math.sin(2 * Math.PI * u + ph);
+        const cycle = {
+          period: PERIOD / Math.round(PERIOD / (4.6 + 0.45 * boats.indexOf(bt))), keys: 6, start: bt.ph * 10,
+          transform: (u) => m4.mul(m4.translation(0, 0, swell(u, 0.05, 0.6)), m4.rotationY(swell(u, 0.061, 0)), m4.rotationX(swell(u, 0.021, 1.9))),
+        };
+        b.dynamic(boatGeo(bt.sail), { times, transform: tf, caps: 'none', cycle });
+        b.dynamic(boatDetailGeo(), { times, transform: tf, caps: 'none', within: 50, cycle });
+      }
+    }
+
+    // ---------------------------------------------------------- gulls
+    // Ten gulls wheel over the start of the main straight, the railway and
+    // the beach at about 10 m/s, a whole number of rounds a period, banked
+    // into the turn and rising and falling a little.  Each glides for a few
+    // seconds, then beats its wings a few times (a cycle of four poses: the
+    // glide, down, the glide, up), then glides again.  Drawn within 350 m
+    // (beyond that a gull is a pixel or two), and casting no shadow.
+    {
+      const gr = rng(77);
+      const gulls = [
+        { c: [318, -470], r: 32, h: 18, laps: 12, ph: 0.0, dir: 1 },
+        { c: [318, -470], r: 32, h: 21, laps: 12, ph: 0.45, dir: 1 },
+        { c: [362, -500], r: 40, h: 22, laps: 10, ph: 0.2, dir: -1 },
+        { c: [296, -455], r: 28, h: 25, laps: 14, ph: 0.7, dir: 1 },
+        { c: [405, -430], r: 50, h: 28, laps: 8, ph: 0.35, dir: -1 },
+        { c: [332, -560], r: 35, h: 16, laps: 11, ph: 0.9, dir: 1 },
+        // and a few more along the beach beside the straight, two of them round the jetty's end
+        { c: [395, -150], r: 45, h: 24, laps: 9, ph: 0.15, dir: -1 },
+        { c: [470, 95], r: 38, h: 17, laps: 10, ph: 0.6, dir: 1 },
+        { c: [470, 95], r: 38, h: 20, laps: 10, ph: 0.1, dir: 1 },
+        { c: [400, 380], r: 55, h: 30, laps: 7, ph: 0.5, dir: -1 },
+      ];
+      const glide = gullGeo(0).noShadow();
+      for (const gl of gulls) {
+        const v = gl.laps * 2 * Math.PI * gl.r / PERIOD, bank = Math.atan(v * v / (9.8 * gl.r));
+        const tf = (t) => {
+          const a = gl.dir * (t / PERIOD * gl.laps + gl.ph) * 2 * Math.PI;
+          const ca = Math.cos(a), sa = Math.sin(a);
+          const pos = [gl.c[0] + gl.r * ca, gl.c[1] + gl.r * sa, gl.h + 2.5 * Math.sin(a + 1.3)];
+          const fwd = [-sa * gl.dir, ca * gl.dir, 2.5 * Math.cos(a + 1.3) * gl.dir / gl.r];
+          // banked: up leans towards the middle of the circle
+          const up = [-ca * Math.sin(bank), -sa * Math.sin(bank), Math.cos(bank)];
+          return m4.facing(pos, fwd, up);
+        };
+        // (a key every 8 m or so: the gull is off its circle by 0.3 m at most between two)
+        const keys = timeRange(0, PERIOD, PERIOD / Math.round(PERIOD / 0.8));
+        const span = (ta, tb) => [ta, ...keys.filter((t) => t > ta + 1e-6 && t < tb - 1e-6), tb];
+        const beat = gr.range(0.33, 0.4);
+        // glides and bouts of wing beats, from the start of the period to its end
+        let t = gr.range(0.5, 4);
+        let last = 0;
+        while (t < PERIOD - 4) {
+          const n = gr.int(3, 7), tb = t + n * beat;
+          b.dynamic(glide, { times: span(last, t), transform: tf, caps: 'none', within: 350 });
+          b.dynamic((u) => gullGeo(u).noShadow(), { times: span(t, tb), transform: tf, caps: 'none', within: 350, cycle: { period: beat, keys: 4, start: t } });
+          last = tb;
+          t = tb + gr.range(2.5, 6.5);
+        }
+        b.dynamic(glide, { times: span(last, PERIOD), transform: tf, caps: 'none', within: 350 });
       }
     }
   },
