@@ -19,10 +19,12 @@ const COMMON_HINTS = [['M', 'mode'], ['T', 'time colouring'], ['R', 'level and s
 
 // The one control that is not in other games, the same in every mode.
 const TILT = ['Wheel / Z X', 'Tilt the view into time: with the wheel rolled forward (or X), what lies to your right turns to the future and what lies to your left to the past, further the further off it is; rolled back (or Z), the other way round. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
+const TILT_UP = ['V + Wheel', 'With V held (or Ctrl, or the right mouse button), the wheel and Z X tilt the view up and down instead: rolled forward, what lies above you turns to the future and what lies below to the past.'];
 
 export const CONTROLS = {
   walk: [
     TILT,
+    TILT_UP,
     ['W A S D', 'Walk, where the view shows: in a tilted view, a step to the side is also a step through time, on or back.'],
     ['Shift', 'Run.'],
     ['Space', 'Jump: over a fence, or onto a low wall, where you can stand and walk.'],
@@ -30,6 +32,7 @@ export const CONTROLS = {
   ],
   drive: [
     TILT,
+    TILT_UP,
     ['W / S', (c) => `Faster / slower; S from rest reverses. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Hills slow it, and ground steeper than 45° it cannot climb.`],
     ['A / D', 'Steer. In a tilted view that also turns the car in time: towards the side that shows the future, it heads into the future.'],
     ['Shift', (c) => `More power: a top speed of ${c.mark(2.8)} instead of ${c.mark(2)}.`],
@@ -38,6 +41,7 @@ export const CONTROLS = {
   ],
   fly: [
     TILT,
+    TILT_UP,
     ['Mouse', 'Turn and pitch.'],
     ['W A S D', 'Thrust. There is no drag, so you keep coasting.'],
     ['Space / C', 'Thrust up / down.'],
@@ -47,6 +51,7 @@ export const CONTROLS = {
   ],
   swim: [
     TILT,
+    TILT_UP,
     ['Mouse', 'Turn and pitch.'],
     ['W A S D', 'Swim where you look. The water slows you back to rest.'],
     ['Space / C', 'Rise / sink.'],
@@ -76,7 +81,7 @@ export class Hud {
     this.gauge = $('gauge').getContext('2d');
     this.el = {
       scene: $('hud-scene'), mode: $('hud-mode'), state: $('hud-state'), fps: $('hud-fps'), keys: $('hud-keys'), hint: $('hud-hint'),
-      speed: $('ro-speed'), space: $('ro-space'), time: $('ro-time'), rate: $('ro-rate'), clock: $('ro-clock'), tilt: $('ro-tilt'), side: $('ro-side'), look: $('ro-look'),
+      speed: $('ro-speed'), space: $('ro-space'), time: $('ro-time'), rate: $('ro-rate'), clock: $('ro-clock'), tilt: $('ro-tilt'), side: $('ro-side'), up: $('ro-up'), upName: $('ro-up-name'), look: $('ro-look'),
     };
     this.mode = null;
     this.units = UNITS.ms;
@@ -121,6 +126,10 @@ export class Hud {
     };
     when(el.side, st.sideGradient);
     when(el.look, st.lookGradient);
+    // and upwards, which is only there while the view is tilted that way
+    const lifted = Math.abs(st.upGradient * u.span / u.perM) >= 0.005;
+    if (el.up.lifted !== lifted) { el.up.lifted = lifted; el.up.hidden = el.upName.hidden = !lifted; }
+    if (lifted) when(el.up, st.upGradient);
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) {
       el.fps.textContent = `${Math.round(this.fpsN / this.fpsAcc)} fps · ${info.tets.toLocaleString()} tets`;

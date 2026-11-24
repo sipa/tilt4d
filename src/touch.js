@@ -14,7 +14,9 @@ const DEAD = 0.12;
 
 // Lower-right buttons.  `hold` buttons act while pressed.  The tilt is there
 // in every control mode, with the mode's own buttons in a row beneath it.
-const TILT_BUTTONS = [{ id: 'tiltBack', label: '−', hold: true }, { id: 'tiltOn', label: '+', hold: true }];
+// The small one beside them says which way they tilt, and changes it when
+// tapped: sideways or up and down.
+const TILT_BUTTONS = [{ id: 'tiltWay', label: '↔' }, { id: 'tiltBack', label: '−', hold: true }, { id: 'tiltOn', label: '+', hold: true }];
 const MODE_BUTTONS = {
   walk: [{ id: 'jump', label: 'jump', hold: true, wide: true }],
   drive: [{ id: 'brake', label: 'brake', hold: true, wide: true }],
@@ -33,22 +35,26 @@ const TOP_BUTTONS = [
 
 // The one control that is not in other games, the same in every mode.
 const TILT = ['− / +', 'Hold to tilt the view into time: with +, what lies to your right turns to the future and what lies to your left to the past, further the further off it is; with −, the other way round. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
+const TILT_WAY = ['↔ / ↕', 'Tap to change which way − and + tilt: sideways, or up and down, where + turns what lies above you to the future and what lies below to the past.'];
 
 export const TOUCH_CONTROLS = {
   walk: [
     TILT,
+    TILT_WAY,
     ['Left thumb', 'Walk, where the view shows: in a tilted view, a step to the side is also a step through time, on or back. Push the stick all the way to run.'],
     ['Right thumb', 'Drag to look around.'],
     ['jump', 'Jump: over a fence, or onto a low wall, where you can stand and walk.'],
   ],
   drive: [
     TILT,
+    TILT_WAY,
     ['Left thumb', (c) => `Up and down speed up and slow down; left and right steer. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Its top speed is ${c.mark(2)}. Hills slow it, and ground steeper than 45° it cannot climb.`],
     ['Right thumb', 'Drag sideways to steer too: the car turns with the view. In a tilted view that also turns it in time: towards the side that shows the future, it heads into the future. Up and down only looks.'],
     ['brake', 'Hold to stop.'],
   ],
   fly: [
     TILT,
+    TILT_WAY,
     ['Left thumb', 'Thrust forwards, back and sideways. There is no drag, so you keep coasting.'],
     ['Right thumb', 'Drag to turn and pitch.'],
     ['Two fingers', 'Twist them on the right to roll.'],
@@ -57,6 +63,7 @@ export const TOUCH_CONTROLS = {
   ],
   swim: [
     TILT,
+    TILT_WAY,
     ['Left thumb', 'Swim where you look; all the way to sprint. The water slows you back to rest.'],
     ['Right thumb', 'Drag to turn and pitch.'],
     ['▲ / ▼', 'Rise / sink.'],
@@ -75,6 +82,7 @@ export class TouchControls {
     this.lookers = new Map(); // pointer id -> last position
     this.look = [0, 0];
     this.twist = 0; // radians the two looking fingers have turned about each other
+    this.tiltUp = false; // the two tilting buttons tilt up and down, not sideways
     this.held = new Set();
     this.pressed = new Set(); // hold buttons that went down since the last read (a quick tap can be over before it)
     this.ring = root.querySelector('.t-stick');
@@ -112,14 +120,22 @@ export class TouchControls {
         c.textContent = caption;
         el.appendChild(c);
       }
-      for (const b of buttons) el.appendChild(this._button(b, () => {}));
+      for (const b of buttons) el.appendChild(this._button(b, (id) => { if (id === 'tiltWay') this._tiltWay(!this.tiltUp); }));
       this.actions.appendChild(el);
     };
     row(TILT_BUTTONS, 'tilt');
     if (MODE_BUTTONS[mode].length) row(MODE_BUTTONS[mode]);
+    this._tiltWay(this.tiltUp);
   }
 
-  // Input since the last call: { move: [right, up, forward], look: [dx, dy], run, jump, brake, tilt, twist }.
+  // Which way the two tilting buttons tilt, shown on the button that changes it.
+  _tiltWay(up) {
+    this.tiltUp = up;
+    const el = this.actions.querySelector('[data-id="tiltWay"]');
+    if (el) { el.textContent = up ? '↕' : '↔'; el.setAttribute('aria-label', up ? 'tilting up and down: tap to tilt sideways' : 'tilting sideways: tap to tilt up and down'); }
+  }
+
+  // Input since the last call: { move: [right, up, forward], look: [dx, dy], run, jump, brake, tilt, tiltUp, twist }.
   read() {
     const s = this.stick;
     let x = 0, y = 0, mag = 0;
@@ -130,6 +146,7 @@ export class TouchControls {
         x = s.x * k; y = s.y * k;
       }
     }
+    const tilt = (this.held.has('tiltOn') ? 1 : 0) - (this.held.has('tiltBack') ? 1 : 0);
     const out = {
       move: [x, (this.held.has('up') ? 1 : 0) - (this.held.has('down') ? 1 : 0), y],
       look: [this.look[0], this.look[1]],
@@ -137,7 +154,8 @@ export class TouchControls {
       run: (this.mode === 'walk' || this.mode === 'swim') && mag > 0.9,
       brake: this.held.has('brake'),
       jump: this.held.has('jump') || this.pressed.has('jump'),
-      tilt: (this.held.has('tiltOn') ? 1 : 0) - (this.held.has('tiltBack') ? 1 : 0),
+      tilt: this.tiltUp ? 0 : tilt,
+      tiltUp: this.tiltUp ? tilt : 0,
       twist: this.twist,
     };
     this.look[0] = this.look[1] = 0;

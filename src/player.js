@@ -15,6 +15,17 @@
 //   tilting   R and O: R leans into the future (or the past), so that what
 //             lies to the right is seen later and what lies to the left
 //             earlier (or the other way round), the further away it is
+// A fifth does the same up and down:
+//   lifting   U and O: U leans into the future, so that what lies above is
+//             seen later and what lies below earlier (or the other way round)
+// On the ground the frame has to stay upright for walking and steering (U
+// straight up, or along the slope's normal for a car), so there the lift is
+// kept apart from the frame, as the angle `lift`, and turned into it last of
+// all wherever the slice itself is asked for (see _slice): what is drawn,
+// how fast time passes, the readouts.  Turning and tilting act on the upright
+// frame as they always did, and going back and forth between the ground and
+// free movement leaves the slice as it is.  In free movement the lift is a
+// rotation of the frame like the others.
 //
 // The velocity is not tied to the frame.  It has two parts:
 //
@@ -97,6 +108,7 @@ export class Player {
     this.vel = [0, 0, 0, 0]; // what the controls add to that, in m/s (the 4th: C * seconds per second)
     this.speed = 0; // drive mode: the car's speed along F
     this.viewPitch = 0; // the ground modes: looking up or down, which leaves the frame as it is
+    this.lift = 0; // the ground modes: the slice tilted up (or down), by turning U and O, which leaves the frame as it is too
     this.mode = 'walk';
     this.C = 10;
     this.walkSpeed = 3;
@@ -125,6 +137,7 @@ export class Player {
   rest(yaw = this.yaw()) {
     const c = Math.cos(yaw), s = Math.sin(yaw);
     this.M.set([c, -s, 0, 0, 0, 0, 1, 0, s, c, 0, 0, 0, 0, 0, 1]);
+    this.lift = 0;
     this.tiltHold = 0;
     this.stop();
   }
@@ -152,12 +165,27 @@ export class Player {
   // The rate at which time passes for a player who is left alone: the time
   // component of O where the ground or the water holds them, 1 in flight.
   _restRate() {
-    return this.mode === 'fly' ? 1 : this.M[15];
+    return this.mode === 'fly' ? 1 : this._cosTilt();
+  }
+
+  // The frame as the slice has it: this.M, with U and O turned by the lift
+  // (which is nothing in free movement, where the frame has it already).
+  _slice() {
+    if (!this.lift) return this.M;
+    const M = this.M.slice();
+    f4.rotCols(M, U, O, this.lift);
+    return M;
+  }
+
+  // The time component of the slice's normal: the cosine of the tilt, all of it.
+  _cosTilt() {
+    return this.lift ? this._slice()[15] : this.M[15];
   }
 
   // Take the tilt out, keeping the way you face as far as possible: the
   // smallest rotation that takes O back onto the time axis.
   level() {
+    this.lift = 0;
     const o = this.col(O);
     if (o[3] < -0.9999) {
       const vel = this.vel, speed = this.speed, rate = this.rate;
@@ -194,9 +222,17 @@ export class Player {
     this._setDown();
     this.eye = this.eyeHeights?.[mode] ?? 1.7;
     if (now.ground && !was.ground) {
-      this.viewPitch = clamp(Math.asin(clamp(M[F * 4 + 2], -1, 1)), -1.55, 1.55);
+      // Down from free movement: the slice stays as it is.  How far its
+      // normal points up or down becomes the lift, the rest of it the tilt of
+      // the upright frame, and the line of sight's height above that frame's
+      // own floor becomes looking up or down.
+      const f = this.col(F), oz = clamp(M[O * 4 + 2], -1, 1);
       this._upright();
+      this.lift = Math.abs(oz) > 1e-9 ? Math.asin(-oz) : 0;
+      this.viewPitch = clamp(Math.asin(clamp(f4.dot(f, f4.col(this._slice(), U)), -1, 1)), -1.55, 1.55);
     } else if (was.ground && !now.ground) {
+      f4.rotCols(M, U, O, this.lift);
+      this.lift = 0;
       f4.rotCols(M, F, U, this.viewPitch);
       this.viewPitch = 0;
     } else if (mode === 'walk') {
@@ -211,7 +247,9 @@ export class Player {
   }
 
   // Stands the frame upright for a ground mode: U becomes +Z, and the tilt
-  // and the heading stay as they are as far as that allows.
+  // and the heading stay as they are as far as that allows.  (What the
+  // slice's normal has of up or down has no place in an upright frame: the
+  // caller keeps it as the lift.)
   _upright() {
     const strip = (v, ...basis) => {
       let w = v.slice();
@@ -224,7 +262,7 @@ export class Player {
     const long = (v) => Math.hypot(v[0], v[1], v[2], v[3]) > 0.05;
     const f = this.col(F), u = this.col(U);
     let o = strip(this.col(O), Z_AXIS);
-    o = long(o) ? f4.norm(o) : T_AXIS; // the slice was tilted straight up or down: level it
+    o = long(o) ? f4.norm(o) : T_AXIS; // the slice was tilted straight up or down: all of that is lift
     // the heading: where F points, or, looking straight up or down, where the top of the view was
     const back = f[2] > 0 ? -1 : 1;
     let h = null;
@@ -264,8 +302,9 @@ export class Player {
   // which way the tilted view has its future: so many degrees clockwise from
   // the heading.  90, to the right, is what the tilting control makes of a
   // level view (and 270 what it makes of one the other way).  The player
-  // stands still.
-  setPose({ pos = [0, 0, 0], t = 0, yaw = 0, pitch = 0, tilt = 0, tiltDir = 90 } = {}) {
+  // stands still.  lift, in degrees, tilts the slice upwards after that: what
+  // lies above in the view is then seen later.
+  setPose({ pos = [0, 0, 0], t = 0, yaw = 0, pitch = 0, tilt = 0, tiltDir = 90, lift = 0 } = {}) {
     const rad = Math.PI / 180;
     this.P = [pos[0], pos[1], pos[2], t];
     this._setDown();
@@ -282,6 +321,10 @@ export class Player {
       const dir = [0, 1, 2, 3].map((k) => Math.cos(a) * h[k] + Math.sin(a) * r[k]);
       f4.rotPlane(this.M, dir, this.col(O), tilt * rad);
     }
+    if (lift) {
+      if (MODES[this.mode].ground) this.lift = lift * rad;
+      else f4.rotCols(this.M, U, O, lift * rad);
+    }
     this.rate = this._restRate();
   }
 
@@ -294,7 +337,7 @@ export class Player {
   // The factor on a gradual change of the tilt: 1 with a level slice, `ease`
   // at 90 degrees.
   _ease() {
-    const c = this.M[15]; // cos(tilt)
+    const c = this._cosTilt();
     return this.ease + (1 - this.ease) * c * c;
   }
 
@@ -322,21 +365,53 @@ export class Player {
     return landed;
   }
 
+  // The same up and down: rotates U and O by `angle`, U leaning into the
+  // future for a positive one, so that what lies above is seen later.  It
+  // stops on the quarter turns as the tilt does.  On the ground the frame
+  // itself stays upright and the angle is kept apart (see the head of this
+  // file).
+  _lift(angle) {
+    if (!angle || this.tiltHold > 0) return false;
+    const M = this.M, ground = MODES[this.mode].ground;
+    const ut = M[U * 4 + 3], ot = M[O * 4 + 3];
+    let landed = false;
+    if (ground || Math.hypot(ut, ot) > 1e-3) {
+      const phi = ground ? this.lift : Math.atan2(ut, ot); // the lift as it shows along U
+      const q = phi / HALF_PI;
+      const stop = (angle > 0 ? Math.floor(q + 1e-7) + 1 : Math.ceil(q - 1e-7) - 1) * HALF_PI;
+      if (angle > 0 ? phi + angle >= stop - 1e-9 : phi + angle <= stop + 1e-9) {
+        angle = stop - phi;
+        this.tiltHold = 0.45;
+        landed = true;
+      }
+    }
+    if (ground) {
+      let a = this.lift + angle;
+      if (a > Math.PI) a -= 2 * Math.PI; else if (a <= -Math.PI) a += 2 * Math.PI;
+      this.lift = Math.abs(a) < 1e-12 ? 0 : a;
+    } else {
+      f4.rotCols(M, U, O, angle);
+    }
+    return landed;
+  }
+
   // The wheel (or a tap on a − / + button) tilts in steps, which shrink
-  // towards 90 degrees.
-  _tiltSteps(notches) {
+  // towards 90 degrees: sideways, or up and down.
+  _tiltSteps(notches, up = false) {
     const dir = Math.sign(notches);
     let left = Math.min(8, Math.abs(notches));
     while (left > 0) {
-      const c = this.M[15];
-      if (this._tilt(dir * Math.min(1, left) * 0.1 * (0.04 + 0.96 * c * c))) break;
+      const c = this._cosTilt();
+      const angle = dir * Math.min(1, left) * 0.1 * (0.04 + 0.96 * c * c);
+      if (up ? this._lift(angle) : this._tilt(angle)) break;
       left -= 1;
     }
   }
 
   // input: { move: [right, up, forward], look: [dx, dy] radians, roll, run,
   //          jump, brake, tilt (-1..1, held), wheel (notches of tilt, may be
-  //          fractional), twist }
+  //          fractional), tiltUp and wheelUp (the same for the tilt up and
+  //          down), twist }
   update(dt, input) {
     const M = this.M, C = this.C, vel = this.vel;
     const [lx, ly] = input.look;
@@ -366,6 +441,8 @@ export class Player {
     this.tiltHold = Math.max(0, this.tiltHold - dt);
     if (input.wheel) this._tiltSteps(input.wheel);
     if (input.tilt) this._tilt(input.tilt * 0.7 * dt * this._ease());
+    if (input.wheelUp) this._tiltSteps(input.wheelUp, true);
+    if (input.tiltUp) this._lift(input.tiltUp * 0.7 * dt * this._ease());
 
     // ---- the velocity
     // The resting rate of time goes to where friction takes it: at once on
@@ -421,7 +498,8 @@ export class Player {
           // water drag brings the swimmer back to rest; the body rights itself
           const k = Math.exp(-dt / 1.3);
           for (let i = 0; i < 4; i++) vel[i] *= k;
-          f4.rotCols(M, R, U, Math.atan2(-r[2], u[2]) * Math.min(1, 2.5 * dt));
+          // (not where U has all but left space for time, at a lift of a quarter turn: there is no upright to find)
+          if (Math.hypot(r[2], u[2]) > 0.05) f4.rotCols(M, R, U, Math.atan2(-r[2], u[2]) * Math.min(1, 2.5 * dt));
         }
         const v = Math.hypot(vel[0], vel[1], vel[2], vel[3]);
         if (v > 0) {
@@ -662,13 +740,14 @@ export class Player {
   // viewPitch in the ground modes.
   camera() {
     const cp = Math.cos(this.viewPitch), sp = Math.sin(this.viewPitch);
-    const u = this.col(U), f = this.col(F);
+    const M = this._slice();
+    const u = f4.col(M, U), f = f4.col(M, F);
     const mix = (b, c) => [0, 1, 2, 3].map((k) => b * u[k] + c * f[k]);
     return {
-      R: this.col(R),
+      R: f4.col(M, R),
       U: mix(cp, -sp),
       F: mix(sp, cp),
-      O: this.col(O),
+      O: f4.col(M, O),
       P: this.P.slice(),
       C: this.C,
     };
@@ -676,7 +755,7 @@ export class Player {
 
   // Numbers for the HUD.
   status() {
-    const v = this.vel, o = this.col(O), cam = this.camera(), C = this.C;
+    const v = this.vel, cam = this.camera(), o = cam.O, C = this.C;
     const side = Math.hypot(cam.R[0], cam.R[1], cam.R[2]);
     const speed = Math.hypot(v[0], v[1], v[2]);
     const timeRate = this.rate + v[3] / C;
@@ -701,6 +780,8 @@ export class Player {
       // metre along the line of sight (negative = past)
       sideGradient: cam.R[3] / C,
       lookGradient: cam.F[3] / C,
+      // and per metre upwards: along the frame's own up (in the ground modes that is straight up whichever way one looks)
+      upGradient: f4.col(this._slice(), U)[3] / C,
       t: this.P[3],
     };
   }

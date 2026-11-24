@@ -14,6 +14,8 @@
 //                   to the left, which is what rolling the wheel forward
 //                   makes of a level view; 270 = to the left (the wheel
 //                   rolled back); 0 = ahead; 180 = behind, the past ahead
+//   --lift deg      tilt of the slice up and down, on top of that: with a
+//                   positive one the future lies above and the past below
 //   --mode name     walk | drive | fly | swim
 //   --size WxH      image size (default 960x540)
 //   --fov deg       vertical field of view (default 62); a small value zooms in
@@ -95,7 +97,7 @@ try {
   });
   page.on('pageerror', (e) => { console.log('[pageerror] ' + e.message); });
   const q = new URLSearchParams({ shot: '1', scene: args.scene || 'lab' });
-  for (const k of ['pos', 't', 'yaw', 'pitch', 'tilt', 'tiltdir', 'mode', 'hud', 'fov', 'tint', 'cast']) if (args[k] !== undefined) q.set(k, args[k]);
+  for (const k of ['pos', 't', 'yaw', 'pitch', 'tilt', 'tiltdir', 'lift', 'mode', 'hud', 'fov', 'tint', 'cast']) if (args[k] !== undefined) q.set(k, args[k]);
   await page.goto(`http://127.0.0.1:${port}/${(args.page || '').replace(/^\/+/, '')}?${q}${args.query ? '&' + args.query : ''}`);
   await page.waitForFunction(() => window.__shot && (window.__shot.ready || window.__shot.error), null, { timeout: 180000 });
   const state = await page.evaluate(() => window.__shot);

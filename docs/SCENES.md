@@ -33,6 +33,12 @@ Turning the view afterwards leaves the slice as it is and only changes where
 the player looks within it: after a quarter turn to the right the direction of
 the tilt, and with it the future, lies ahead.
 
+A second control tilts the slice up and down in the same way (it rotates `U`
+and `O`): what lies above the player is then seen later and what lies below
+earlier, or the other way round. So a scene can show time by height as well:
+a tower of clocks, things that rise or fall steadily, floors one above
+another. The two tilts add up.
+
 The player's motion is a separate matter. Standing still, scene time passes at
 `cos θ` seconds per second on the ground and in water (so not at all at 90°,
 and backwards beyond), and at one second per second in flight. The mode's
@@ -837,7 +843,7 @@ below 200 Hz, and at which pitches it holds.
 ```
 node tools/shot.mjs --scene myscene --out /tmp/a.png
      [--pos x,y,z] [--t seconds] [--yaw deg] [--pitch deg]
-     [--tilt deg] [--tiltdir deg] [--mode walk|drive|fly|swim] [--size 960x540] [--hud] [--tint 0|1|2]
+     [--tilt deg] [--tiltdir deg] [--lift deg] [--mode walk|drive|fly|swim] [--size 960x540] [--hud] [--tint 0|1|2]
 ```
 
 renders one frame in headless Chromium (software WebGPU, a few seconds per
@@ -852,6 +858,7 @@ a level view, so that the future lies to the right and the past to the left.
 `--tiltdir` says where the future lies instead, in degrees clockwise from the
 heading: `270` is the control's other direction, `0` shows the future ahead
 and `180` the past ahead, as a player sees it who has turned after tilting.
+`--lift 30` tilts the slice upwards as well, or instead: the future above.
 The player in a shot stands still.
 Use `--mode fly` with `--pitch -30` and a high `--pos` for overviews.
 A shot has the slight colouring by time that the page starts out with (a warm

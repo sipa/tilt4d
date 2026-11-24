@@ -115,7 +115,7 @@ try {
       player.setMode(spec.mode || sc.def.mode || 'walk');
       player.setPose({
         pos: spec.pos ?? sp.pos, t: spec.t ?? sp.t ?? 0, yaw: (spec.yaw ?? sp.yaw ?? 0) + (spec.turn ?? 0), pitch: spec.pitch ?? sp.pitch ?? 0,
-        tilt: spec.tilt ?? 0, tiltDir: spec.tiltdir ?? 90,
+        tilt: spec.tilt ?? 0, tiltDir: spec.tiltdir ?? 90, lift: spec.lift ?? 0,
       });
       // Twice: the first frame at a new time draws its shadow maps in full.  The second, which is
       // counted, is drawn as a still: that draws all six sides of a scene's reflection picture, and

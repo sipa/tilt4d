@@ -57,6 +57,7 @@ let touchMode = false; // true once the screen has been touched (and until a mou
 const keys = new Set();
 const look = [0, 0];
 let wheel = 0;
+let wheelUp = 0; // the same, rolled with Ctrl, V or the right mouse button held: the tilt up and down
 let jumpPressed = false; // Space went down since the last frame (a quick tap can be over before the next one)
 
 // for poking at things from the browser console
@@ -453,6 +454,11 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Escape') { leave(); return; }
   keys.add(e.code);
   if (['Space', 'Tab', 'Backspace'].includes(e.code)) e.preventDefault();
+  // With Ctrl held (for the tilt up and down), the keys that move the player
+  // are the browser's shortcuts for saving, bookmarking and the like: not
+  // while playing.  (Ctrl+W, which closes the tab, is not the page's to stop:
+  // V and the right mouse button do what Ctrl does here, without that risk.)
+  if (e.ctrlKey && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'KeyZ', 'KeyX', 'KeyC', 'KeyV', 'KeyB'].includes(e.code)) e.preventDefault();
   if (e.repeat) return;
   switch (e.code) {
     case 'Space': jumpPressed = true; break;
@@ -501,8 +507,21 @@ addEventListener('wheel', (e) => {
   const delta = e.deltaY || (e.shiftKey ? e.deltaX : 0);
   // Rolling the wheel away from you tilts the view so that the future lies to
   // the right and the past to the left; towards you, the other way round.
-  wheel -= Math.max(-1, Math.min(1, delta / notch));
-}, { passive: true });
+  // With Ctrl, V or the right mouse button held it tilts up and down instead:
+  // away from you, the future lies above.  (Ctrl with the wheel is also what
+  // a pinch on a trackpad arrives as, and what browsers zoom the page on:
+  // hence a listener that may say no to that.)
+  const step = Math.max(-1, Math.min(1, delta / notch));
+  if (e.ctrlKey || (e.buttons & 2) || keys.has('KeyV')) {
+    e.preventDefault();
+    wheelUp -= step;
+  } else {
+    wheel -= step;
+  }
+}, { passive: false });
+
+// Whether a key is down that turns the tilting controls from sideways to up and down.
+const upKeys = () => keys.has('KeyV') || keys.has('ControlLeft') || keys.has('ControlRight');
 
 function readInput() {
   const k = (c) => (keys.has(c) ? 1 : 0);
@@ -511,7 +530,7 @@ function readInput() {
   const input = {
     move: [
       unit(k('KeyD') - k('KeyA') + t.move[0]),
-      unit(k('Space') - Math.max(k('KeyC'), k('ControlLeft')) + t.move[1]),
+      unit(k('Space') - k('KeyC') + t.move[1]),
       unit(k('KeyW') - k('KeyS') + t.move[2]),
     ],
     look: [(look[0] + t.look[0]) * lookSpeed, (look[1] + t.look[1]) * lookSpeed * (invertLook ? -1 : 1)],
@@ -519,12 +538,15 @@ function readInput() {
     run: k('ShiftLeft') || k('ShiftRight') || t.run,
     jump: (player.mode === 'walk' && (k('Space') || jumpPressed)) || t.jump,
     brake: k('KeyB') || (player.mode === 'drive' && k('Space')) || t.brake,
-    tilt: unit(k('KeyX') - k('KeyZ') + t.tilt),
+    // (Z and X with V or Ctrl held tilt up and down, as the wheel does then)
+    tilt: unit((upKeys() ? 0 : k('KeyX') - k('KeyZ')) + t.tilt),
+    tiltUp: unit((upKeys() ? k('KeyX') - k('KeyZ') : 0) + t.tiltUp),
     wheel,
+    wheelUp,
     twist: t.twist,
   };
   look[0] = look[1] = 0;
-  wheel = 0;
+  wheel = wheelUp = 0;
   jumpPressed = false;
   return input;
 }
@@ -592,7 +614,7 @@ function frame(now) {
     if (playing) {
       const input = readInput();
       player.update(dt, input);
-      if (input.wheel || input.tilt) {
+      if (input.wheel || input.tilt || input.wheelUp || input.tiltUp) {
         const deg = Math.round(player.status().tilt * 1800 / Math.PI) / 10;
         const held = player.mode !== 'fly'; // the ground and the water tie the pace of time to the tilt
         hud.flash(deg === 0 ? 'level' : deg === 90 ? `tilt 90°: the view runs along time${held ? ', and time stands still' : ''}`
@@ -660,7 +682,7 @@ async function start() {
       player.setPose({
         pos: params.has('pos') ? params.get('pos').split(',').map(Number) : sp.pos,
         t: num('t', sp.t ?? 0), yaw: num('yaw', sp.yaw ?? 0), pitch: num('pitch', sp.pitch ?? 0),
-        tilt: num('tilt', 0), tiltDir: num('tiltdir', 90),
+        tilt: num('tilt', 0), tiltDir: num('tiltdir', 90), lift: num('lift', 0),
       });
       applyMode();
       overlay.hidden = true;

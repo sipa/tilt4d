@@ -111,6 +111,16 @@ Turning with the mouse leaves the tilt as it is and only changes where you
 look within it: turn to the right in a view tilted with the wheel forward, and
 you face the future.
 
+That way the future can be put to either side, ahead or behind, but not above
+or below. For that there is a second tilt, **up and down**: hold `V` (or
+`Ctrl`, or the right mouse button) while rolling the wheel or holding `Z` or
+`X`. Rolled forward, what lies above you turns to the future and what lies
+below to the past; rolled back, the other way round. The two tilts add up, and
+`R` takes both out. On a trackpad a pinch does the same. (`Ctrl` is the usual
+key for such a thing, but with `W` it is the browser's own key for closing the
+tab, which a page cannot prevent: `V` and the right mouse button are the safe
+ones while walking.)
+
 The tilt also sets the pace of your own time, which the HUD shows: standing
 still it passes at the cosine of the tilt, so normally when level, at half
 speed at 60°, not at all at 90° and backwards beyond. That holds on foot, in a
@@ -142,7 +152,8 @@ towards the future's side, it heads into the future. The readouts show it:
   it, plus that part through time;
 * **to the right** and **looking at** say how much later or earlier the view
   shows things, for every 10 m further to your right and further along your
-  line of sight.
+  line of sight; **upwards**, which is only there while the view is tilted up
+  or down, says the same for every 10 m higher up.
 
 ### Settings
 
@@ -246,7 +257,8 @@ Touching the screen brings up on-screen controls instead: a stick under the
 left thumb (it appears wherever the thumb lands on the left side), dragging
 with the right thumb to look, and a few buttons. In every mode `−` and `+` at
 the lower right tilt the view while held (`+` as the wheel rolled forward does:
-the future to your right).
+the future to your right). The small button beside them, `↔`, changes which way
+they tilt: tap it and it reads `↕`, and `+` puts the future above you.
 
 | mode | left stick | further buttons |
 |---|---|---|
@@ -306,7 +318,9 @@ how much time its tilt takes in. What is
 drawn is the 3D slice spanned by `R`, `U` and `F`; `O` is its normal and is
 only there to rotate against. Turning rotates `F` and `R` in their plane,
 looking up rotates `F` and `U`, and tilting rotates `R` and `O` in exactly the
-same way. See `src/player.js`.
+same way; the tilt up and down rotates `U` and `O`. (On foot and in a car the
+frame has to stay upright to walk and steer by, so there that last rotation is
+kept apart from it and applied to the slice at the end.) See `src/player.js`.
 
 The velocity is not part of the frame, and has two parts.
 
