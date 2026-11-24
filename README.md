@@ -141,7 +141,16 @@ You move where the view shows. In a tilted view "to the right" is partly a
 direction in time, so stepping or thrusting sideways takes you on in time (or
 back) on top of that. So does going forward once you have turned towards the
 side that shows the future or the past, which is how a car gets there: steered
-towards the future's side, it heads into the future. The readouts show it:
+towards the future's side, it heads into the future.
+
+With the view tilted up or down, height is such a direction too. Rising in
+flight or in the water takes you on in time, and so does whatever takes you up
+on foot: a hill, a step, a jump. Coming down takes you back. A jump therefore
+leaves the view as it is, and it is your own clock that runs ahead and back
+again. (Close to 90° that would have no end. From 84° on, less and less of it
+is taken, and the view shifts a little with your height instead.)
+
+The readouts show it:
 
 * **speed in slice** is how fast you are moving within the view, which is the
   speed at which the scenery passes;
@@ -321,7 +330,9 @@ only there to rotate against. Turning rotates `F` and `R` in their plane,
 looking up rotates `F` and `U`, and tilting rotates `R` and `O` in exactly the
 same way; the tilt up and down rotates `U` and `O`. (On foot and in a car the
 frame has to stay upright to walk and steer by, so there that last rotation is
-kept apart from it and applied to the slice at the end.) See `src/player.js`.
+kept apart from it and applied to the slice at the end. A change of height
+there, which is straight up and not along the frame, is given the step through
+time that keeps the eye in the slice.) See `src/player.js`.
 
 The velocity is not part of the frame, and has two parts.
 

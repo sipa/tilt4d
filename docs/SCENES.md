@@ -39,6 +39,16 @@ earlier, or the other way round. So a scene can show time by height as well:
 a tower of clocks, things that rise or fall steadily, floors one above
 another. The two tilts add up.
 
+Moving follows the slice in every mode. Flying or swimming upwards in a slice
+lifted by λ goes `tan λ / C` seconds on for every metre of height. On foot the
+height is not steered, but the same holds: whatever raises the walker by `h`
+(a slope, a step, a jump, standing on something) takes them `h·tan λ / C`
+seconds on, and coming down takes them back: the walker stays in the slice,
+and arrives up there at the moment the view shows there. (The tangent has no
+end: beyond 84° the share falls away, to nothing at 90°.) A car that leans
+with the ground has the ground's normal for its "up": driving up a slope is
+along its own frame and takes no time of this kind.
+
 The player's motion is a separate matter. Standing still, scene time passes at
 `cos θ` seconds per second on the ground and in water (so not at all at 90°,
 and backwards beyond), and at one second per second in flight. The mode's

@@ -27,6 +27,13 @@
 // free movement leaves the slice as it is.  In free movement the lift is a
 // rotation of the frame like the others.
 //
+// One thing on the ground is not along the upright frame's F and R, and so
+// not in such a slice by itself: a change of height.  The ground, a step, a
+// jump or a fall move the eye straight up or down.  So that takes the player
+// through time as well, by what keeps them in the slice they were in (see
+// _riseTime): going up into what the view shows later arrives later, as it
+// does in flight.
+//
 // The velocity is not tied to the frame.  It has two parts:
 //
 //   rate  how fast the scene's time passes for a player who is left alone.
@@ -81,6 +88,11 @@ const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, w
 // and in a car (see _climb), and the time in which a slope that holds a car
 // altogether wears its own speed down.
 const MAX_CLIMB = Math.PI / 3, MAX_CLIMB_CAR = Math.PI / 4, HILL_TIME = 1;
+// On the ground, in a slice tilted up or down, a change of height goes
+// through time as well (see _riseTime): by the tangent of the tilt, which has
+// no end.  It is the tangent up to a tilt of 84 degrees (where the tilting
+// itself has slowed to a crawl) and falls away from there, to nothing at 90.
+const RISE_COS = Math.cos(84 * Math.PI / 180);
 
 // The player's body for collisions: an upright cylinder from `lo` to `hi`
 // above the feet on the ground, a sphere about the eye otherwise.  Things
@@ -107,6 +119,7 @@ export class Player {
     this.M = f4.identity();
     this.rate = 1; // seconds of scene time per second that pass for a player left alone
     this.vel = [0, 0, 0, 0]; // what the controls add to that, in m/s (the 4th: C * seconds per second)
+    this.rising = 0; // and what going up or down adds on the ground, in a slice tilted that way: seconds per second (for the readouts)
     this.speed = 0; // drive mode: the car's speed along F
     this.viewPitch = 0; // the ground modes: looking up or down, which leaves the frame as it is
     this.lift = 0; // the ground modes: the slice tilted up (or down), by turning U and O, which leaves the frame as it is too
@@ -163,6 +176,7 @@ export class Player {
   _halt() {
     this.vel = [0, 0, 0, 0];
     this.speed = 0;
+    this.rising = 0;
   }
 
   // The rate at which time passes for a player who is left alone: the time
@@ -183,6 +197,31 @@ export class Player {
   // The time component of the slice's normal: the cosine of the tilt, all of it.
   _cosTilt() {
     return this.lift ? this._slice()[15] : this.M[15];
+  }
+
+  // On the ground: how far through time (in metres) every metre straight up
+  // goes.  Height is not steered there: it is what the ground, a step, a jump
+  // or a fall make it, and straight up is not a direction of a slice that is
+  // tilted up or down.  This is what puts the eye back in the slice it was
+  // in: with normal O', dz * O'.z + dw * O'.t = 0.  For a walker that is
+  // tan(lift), over the cosine of the sideways tilt if there is one: what
+  // rising costs in flight, where "up" is the frame's own U and leans.
+  //
+  // At 90 degrees there is nothing to go by: the slice has no height in it,
+  // and no step through time makes up for one.  So the tangent is followed up
+  // to 84 degrees and from there the share falls, in a straight line through
+  // nothing at 90 to the tangent again at 96 (beyond a quarter turn it has
+  // the other sign, as time has).  In that range the view does shift a little
+  // with the height.
+  //
+  // (Nothing without a lift: an upright frame's normal has no height in it.
+  // A car's leans with the ground and may, a little, on a slope taken
+  // sideways in a tilted view; the small corrections that keep it on the
+  // ground are left alone there, as they were.)
+  _riseTime() {
+    if (!this.lift) return 0;
+    const M = this._slice(), oz = M[O * 4 + 2], ot = M[O * 4 + 3];
+    return -oz * ot / Math.max(ot * ot, RISE_COS * RISE_COS);
   }
 
   // Take the tilt out, keeping the way you face as far as possible: the
@@ -246,8 +285,11 @@ export class Player {
     }
     if (now.ground || was.ground) this.stop();
     if (now.ground) {
+      const z = this.P[2];
       if (!was.ground) this._land();
       this._stickToGround(1, true);
+      // down to the ground (or to this mode's eye height) within the slice, where that is tilted up or down
+      this.P[3] += this._riseTime() * (this.P[2] - z) / this.C;
       if (this.solids) this._collide();
     }
   }
@@ -550,9 +592,20 @@ export class Player {
     }
 
     if (ground) {
+      const z = P[2];
       this._stickToGround(Math.min(1, 8 * dt), false);
       f4.orthonormalize(M, [U, O, F, R]);
+      // What the ground, a step, a jump or a fall has changed of the height
+      // goes through time too in a slice tilted up or down (see _riseTime).
+      // The readouts get it as a rate, evened out over a few frames: a step
+      // up a stair is all in one.
+      const span = this.paused ? 0 : dt * this.timeScale;
+      const dw = this._riseTime() * (P[2] - z);
+      P[3] += dw / C;
+      this.rising += ((span > 0 ? dw / (C * span) : 0) - this.rising) * (1 - Math.exp(-dt / 0.08));
+      if (Math.abs(this.rising) < 1e-6) this.rising = 0;
     } else {
+      this.rising = 0;
       f4.orthonormalize(M, [O, F, U, R]);
       this._bounds();
     }
@@ -767,7 +820,8 @@ export class Player {
     const v = this.vel, cam = this.camera(), o = cam.O, C = this.C;
     const side = Math.hypot(cam.R[0], cam.R[1], cam.R[2]);
     const speed = Math.hypot(v[0], v[1], v[2]);
-    const timeRate = this.rate + v[3] / C;
+    const through = v[3] / C + this.rising; // (on the ground, going up or down in a slice tilted that way counts as well)
+    const timeRate = this.rate + through;
     return {
       // What the controls have added (see the head of this file): how fast
       // that is, counting its part through time as length, and its two
@@ -777,7 +831,7 @@ export class Player {
       // it is then and the slice turns away from it.)
       slice: Math.hypot(v[0], v[1], v[2], v[3]), // m/s
       speed, // through space, m/s
-      through: v[3] / C, // through time, seconds of scene time per second
+      through, // through time, seconds of scene time per second
       timeRate, // all of the time that passes: the resting rate and `through`
       // the view's own left-to-right direction and the player's motion
       // through spacetime (in units of C), as (space, time) pairs in the
