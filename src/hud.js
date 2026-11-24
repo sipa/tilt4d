@@ -18,12 +18,12 @@ const COMMON_HINTS = [['M', 'mode'], ['T', 'time colouring'], ['R', 'level and s
 // as its mark (see DRAG in player.js) in the units chosen.
 
 // The one control that is not in other games, the same in every mode.
-const TILT = ['Wheel / Z X', 'Tilt the view into time: what lies ahead turns to the past (or, the other way, the future), further back the further off it is. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
+const TILT = ['Wheel / Z X', 'Tilt the view into time: with the wheel rolled forward (or X), what lies to your right turns to the future and what lies to your left to the past, further the further off it is; rolled back (or Z), the other way round. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
 
 export const CONTROLS = {
   walk: [
     TILT,
-    ['W A S D', 'Walk, where the view shows: in a tilted view, forward is also earlier.'],
+    ['W A S D', 'Walk, where the view shows: in a tilted view, a step to the side is also a step through time, on or back.'],
     ['Shift', 'Run.'],
     ['Space', 'Jump: over a fence, or onto a low wall, where you can stand and walk.'],
     ['Mouse', 'Look around.'],
@@ -31,7 +31,7 @@ export const CONTROLS = {
   drive: [
     TILT,
     ['W / S', (c) => `Faster / slower; S from rest reverses. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Hills slow it, and ground steeper than 45° it cannot climb.`],
-    ['A / D', 'Steer.'],
+    ['A / D', 'Steer. In a tilted view that also turns the car in time: towards the side that shows the future, it heads into the future.'],
     ['Shift', (c) => `More power: a top speed of ${c.mark(2.8)} instead of ${c.mark(2)}.`],
     ['Space', 'Brake.'],
     ['Mouse', 'Steer too: the car turns with the view. Up and down only looks.'],
@@ -76,7 +76,7 @@ export class Hud {
     this.gauge = $('gauge').getContext('2d');
     this.el = {
       scene: $('hud-scene'), mode: $('hud-mode'), state: $('hud-state'), fps: $('hud-fps'), keys: $('hud-keys'), hint: $('hud-hint'),
-      speed: $('ro-speed'), space: $('ro-space'), time: $('ro-time'), rate: $('ro-rate'), clock: $('ro-clock'), tilt: $('ro-tilt'), look: $('ro-look'),
+      speed: $('ro-speed'), space: $('ro-space'), time: $('ro-time'), rate: $('ro-rate'), clock: $('ro-clock'), tilt: $('ro-tilt'), side: $('ro-side'), look: $('ro-look'),
     };
     this.mode = null;
     this.units = UNITS.ms;
@@ -113,9 +113,14 @@ export class Hud {
     put(el.clock, fmtClock(st.t));
     const deg = st.tilt * 180 / Math.PI;
     put(el.tilt, deg < 0.05 ? 'level' : `${deg.toFixed(deg < 10 || Math.abs(deg - 90) < 10 ? 1 : 0)}°`);
-    const g = st.lookGradient * u.span / u.perM;
-    put(el.look, Math.abs(g) < 0.005 ? 'the present' : `${Math.abs(g).toFixed(2)} s ${g < 0 ? 'earlier' : 'later'} per ${u.span} ${u.length}`);
-    tint(el.look, g);
+    // how much earlier or later the view shows things, by their distance: to the right, and along the line of sight
+    const when = (e, perMetre) => {
+      const g = perMetre * u.span / u.perM;
+      put(e, Math.abs(g) < 0.005 ? 'the present' : `${Math.abs(g).toFixed(2)} s ${g < 0 ? 'earlier' : 'later'} per ${u.span} ${u.length}`);
+      tint(e, g);
+    };
+    when(el.side, st.sideGradient);
+    when(el.look, st.lookGradient);
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) {
       el.fps.textContent = `${Math.round(this.fpsN / this.fpsAcc)} fps · ${info.tets.toLocaleString()} tets`;
@@ -124,12 +129,13 @@ export class Hud {
     this.drawGauge(st);
   }
 
-  // A little spacetime diagram of the plane containing your line of sight and
-  // the scene's time axis: up is later, right is further ahead.  The coloured
-  // line is the line of sight (and, dotted, its continuation behind you); the
+  // A little spacetime diagram of the plane containing the view's own
+  // left-to-right direction and the scene's time axis: up is later, right is
+  // further to your right.  The coloured line is the view from side to side:
+  // the half that rises shows the future, the half that dips the past.  The
   // arrow is your motion through spacetime, as far as it lies in this plane:
-  // straight up while you stand still, and as long as the radius when it
-  // takes in as much as time ordinarily passing does.
+  // straight up while you stand still or go straight on, and as long as the
+  // radius when it takes in as much as time ordinarily passing does.
   drawGauge(st) {
     const c = this.gauge, S = 300, cx = S / 2, cy = S / 2, r = 112;
     c.clearRect(0, 0, S, S);
@@ -145,23 +151,25 @@ export class Hud {
     c.setLineDash([]);
     c.fillStyle = 'rgba(233,237,242,0.55)';
     c.fillText('later', cx, cy - r - 16);
-    c.fillText('ahead', cx + r - 14, cy + r + 8);
+    c.fillText('right', cx + r - 14, cy + r + 8);
 
-    // line of sight: (space, time), time upwards
-    const [sx, sT] = st.sight, L = r - 6;
+    // the view from side to side: (space, time), time upwards
+    const [sx, sT] = st.across, L = r - 6;
     const lean = Math.abs(sT) > 0.004;
-    const ahead = !lean ? INK : sT < 0 ? PAST : FUTURE, behind = !lean ? INK : sT < 0 ? FUTURE : PAST;
+    const right = !lean ? INK : sT < 0 ? PAST : FUTURE, left = !lean ? INK : sT < 0 ? FUTURE : PAST;
     c.lineWidth = 6;
-    c.strokeStyle = ahead;
+    c.strokeStyle = right;
     c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + sx * L, cy - sT * L); c.stroke();
-    c.strokeStyle = behind; c.setLineDash([2, 12]);
+    c.strokeStyle = left;
     c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx - sx * L, cy + sT * L); c.stroke();
-    c.setLineDash([]);
     if (lean) {
-      // label beside the line, on the side away from the arrow
-      const off = sT < 0 ? 22 : -22;
-      c.fillStyle = ahead;
-      c.fillText(sT < 0 ? 'past' : 'future', cx + sx * L * 0.62 + sT * off, cy - sT * L * 0.62 + sx * off);
+      // a label beside each half: under the one that rises, over the one that dips, clear of the arrow
+      const off = sT < 0 ? -22 : 22;
+      const dx = sx * L * 0.62 + sT * off, dy = -sT * L * 0.62 + sx * off;
+      c.fillStyle = right;
+      c.fillText(sT < 0 ? 'past' : 'future', cx + dx, cy + dy);
+      c.fillStyle = left;
+      c.fillText(sT < 0 ? 'future' : 'past', cx - dx, cy - dy);
     }
 
     // the player's motion

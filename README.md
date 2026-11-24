@@ -10,8 +10,9 @@ See it [live](https://wuille.net/tilt4d).
 A browser demo of rendering as a projection from **four** dimensions to two.
 The world is one fixed 4D scene (space plus scene time), and what is on screen
 is a 3D slice of it. Besides turning and looking up and down, the camera has
-one more rotation: *tilting*, which swings the line of sight out of space and
-into time, so that ahead of you lies the past and behind you the future. The
+one more rotation: *tilting*, which swings the view out of space and into
+time, so that to your right lies the future and to your left the past (or the
+other way round, tilted the other way). The
 further you tilt, the slower your own time passes: at 90° it stands still, and
 beyond that it runs backwards. You move about with ordinary controls, but
 within the slice you see. It looks a little like relativity but is not: the
@@ -20,8 +21,9 @@ rotation is Euclidean and light is instantaneous.
 [CONCEPT.md](CONCEPT.md) is the note the project started from. There the
 player always moves at a fixed speed at right angles to the view, so that
 tilting and speeding up are the same thing. The demo keeps the tilt and what
-it does to time, but no longer ties it to the player's speed; see "How it
-works" below.
+it does to time, but no longer ties it to the player's speed, and it tilts the
+view from side to side where the note tilts it along the line of sight; see
+"How it works" below.
 
 The source is at <https://github.com/sipa/tilt4d>, under the MIT license (see
 [License](#license) at the end). The project is very LLM-assisted.
@@ -71,7 +73,7 @@ npm install                 # once: fetches esbuild for the tool
 node tools/bundle.mjs       # or: npm run bundle
 ```
 
-writes `dist/tilt4d.html`: the page with its stylesheet and all its scripts,
+writes `dist/index.html`: the page with its stylesheet and all its scripts,
 every scene included, minified into one file of about 680 kB (240 kB as a web
 server sends it compressed). The shaders are minified too: they are the
 template strings marked `/* wgsl */` in the scripts, and an unmarked one is
@@ -82,7 +84,7 @@ itself. `make` fetches the tool the first time and afterwards rebuilds the
 file only when something it is made from has changed; `make clean` removes it
 and `make OUT=public/index.html` writes it elsewhere. With the tool itself,
 `--out` names the file and `--no-minify` leaves the code readable.
-`node tools/shot.mjs --page dist/tilt4d.html --scene lab` renders from it,
+`node tools/shot.mjs --page dist/index.html --scene lab` renders from it,
 which is a way to check a build.
 
 One thing is worth putting next to it on a web server all the same:
@@ -99,10 +101,15 @@ needs no file: it is drawn in the page's head.
 
 The one control that other games do not have is the **tilt**, and it is the
 same everywhere: roll the **mouse wheel** forward, or hold `X`, and what lies
-ahead of you turns to the past, further back the further off it is; roll it
-back, or hold `Z`, for the future. It works standing still. The tilt stops for
-a moment when the view is level again and at 90°, where the view runs straight
-along time. `R` makes the view level and brings you to rest at once.
+to your right turns to the future and what lies to your left to the past,
+further the further off it is; roll it back, or hold `Z`, and it is the other
+way round. It works standing still. The tilt stops for a moment when the view
+is level again and at 90°, where the view runs straight along time from left
+to right. `R` makes the view level and brings you to rest at once.
+
+Turning with the mouse leaves the tilt as it is and only changes where you
+look within it: turn to the right in a view tilted with the wheel forward, and
+you face the future.
 
 The tilt also sets the pace of your own time, which the HUD shows: standing
 still it passes at the cosine of the tilt, so normally when level, at half
@@ -120,9 +127,11 @@ suits it; `M` switches.
 | **Fly** | mouse to turn, `W A S D` and `Space` / `C` to thrust, `Q` / `E` roll, `Shift` for more thrust, `B` to brake. No drag. |
 | **Swim** | as Fly, but the water brings you back to rest. `Shift` sprints. |
 
-"Forward" is forward in the view. In a tilted view that is partly a direction
-in time, so walking, driving or thrusting forward takes you into the past (or
-the future) on top of that. The readouts show it:
+You move where the view shows. In a tilted view "to the right" is partly a
+direction in time, so stepping or thrusting sideways takes you on in time (or
+back) on top of that. So does going forward once you have turned towards the
+side that shows the future or the past, which is how a car gets there: steered
+towards the future's side, it heads into the future. The readouts show it:
 
 * **speed in slice** is how fast you are moving within the view, which is the
   speed at which the scenery passes;
@@ -130,7 +139,10 @@ the future) on top of that. The readouts show it:
   ground, and the seconds of scene time you cross each second by moving
   (negative towards the past);
 * **time flows** is the pace of your own time all told: what the tilt leaves of
-  it, plus that part through time.
+  it, plus that part through time;
+* **to the right** and **looking at** say how much later or earlier the view
+  shows things, for every 10 m further to your right and further along your
+  line of sight.
 
 ### Settings
 
@@ -227,7 +239,8 @@ says that the renderer keeps up, not by how much. To see the room there is:
 Touching the screen brings up on-screen controls instead: a stick under the
 left thumb (it appears wherever the thumb lands on the left side), dragging
 with the right thumb to look, and a few buttons. In every mode `−` and `+` at
-the lower right tilt the view while held.
+the lower right tilt the view while held (`+` as the wheel rolled forward does:
+the future to your right).
 
 | mode | left stick | further buttons |
 |---|---|---|
@@ -240,37 +253,42 @@ The row along the top has `level` (level the view and stop), `time` (colour by
 time), the control mode (tap to change), full screen and `☰` for the menu. Entering a scene asks the
 browser for full screen and landscape where it allows that.
 
-The gauge in the corner is a small spacetime diagram of your line of sight:
-up is later, right is further ahead. The coloured line is where you are
-looking, amber when it dips into the past and blue when it rises into the
-future. The arrow is your own motion: straight up while you stand still and
-time simply passes (shorter the slower it passes, and pointing down when it
-runs backwards), leaning over as you move.
+The gauge in the corner is a small spacetime diagram of the view from side to
+side: up is later, right is further to your right. The coloured line is what
+the view shows across its width, blue on the side where it rises into the
+future and amber where it dips into the past. The arrow is your own motion:
+straight up while you stand still and time simply passes (shorter the slower
+it passes, and pointing down when it runs backwards), leaning over as you move
+sideways.
 
 ## What to try
 
 * Stand still with a level view: everything looks ordinary, and the scene's
   clocks run.
-* Still standing, tilt the view and watch a row of clocks: each one further
-  away shows an earlier time, and all of them run slower. Turn around: behind
-  you they are ahead. Sideways they show your own time.
-* Tilt further. Things stretch along the direction of the tilt, and the sky
-  ahead and behind are hours apart.
+* Still standing, tilt the view (wheel forward) and watch the clocks on either
+  side: those to your right show a later time than your own and those to your
+  left an earlier one, more so the further off to the side they are, and all
+  of them run slower. Straight ahead they show your own time. Turn to the
+  right, and the future lies ahead of you: each clock further away shows a
+  later time.
+* Tilt further. Things stretch from side to side, and the sky to your left and
+  the sky to your right are hours apart.
 * At 90° the view runs straight along time and nothing moves any more: what is
-  in front of you is the history of the spot you are standing on, laid out
-  like a ruler. Beyond 90° the world is mirrored and runs backwards; at 180°
-  it is level again, in reverse.
-* Now move forward in a tilted view. You head into the past you are looking
-  at, so your own time slows further: fast enough, and it stands still before
-  the tilt gets to 90° ("time flows" reaches zero when the part of your speed
-  "through time" makes up for what the tilt has left). Walk backwards and it
-  speeds up again.
+  on screen is the history of the one line you are looking along, laid out
+  from left to right like a ruler, earlier on the left and later on the right.
+  Beyond 90° the world is mirrored and runs backwards; at 180° it is level
+  again, in reverse.
+* Now step to the left in that tilted view. You head into the past that lies
+  on that side, so your own time slows further: fast enough, and it stands
+  still before the tilt gets to 90° ("time flows" reaches zero when the part
+  of your speed "through time" makes up for what the tilt has left). Step to
+  the right and it speeds up again. Or turn to face the past, and walk on.
 * Do the same flying. There the tilt leaves the pace of time alone, and only
   your motion changes it.
 * Watch something that moves in a regular rhythm, such as a chain of flashing
-  lights, and see the rhythm change with the tilt: things that move towards you
-  bunch up or stretch out, and at the right tilt a running light is everywhere
-  at once.
+  lights, and see the rhythm change with the tilt: things that move across your
+  view bunch up or stretch out, and at the right tilt a running light is
+  everywhere at once.
 
 ## How it works
 
@@ -281,7 +299,7 @@ stand for one second (10 in the Time Lab, 30 on the Coastal Circuit), which is
 how much time its tilt takes in. What is
 drawn is the 3D slice spanned by `R`, `U` and `F`; `O` is its normal and is
 only there to rotate against. Turning rotates `F` and `R` in their plane,
-looking up rotates `F` and `U`, and tilting rotates `F` and `O` in exactly the
+looking up rotates `F` and `U`, and tilting rotates `R` and `O` in exactly the
 same way. See `src/player.js`.
 
 The velocity is not part of the frame, and has two parts.
@@ -300,12 +318,14 @@ dropped.)
 
 On top of that the controls add an ordinary velocity: a walking speed, a car's
 speed along its heading, thrust that accumulates. They do so along the frame's
-own vectors, though, and in a tilted frame `F` has a time component: going
-forward at speed `v` with tilt θ covers `v·cos θ` metres of ground a second,
-and the rest of it, `v·sin θ`, is motion into the past: metres of time, which
+own vectors, though, and in a tilted frame `R` has a time component (and `F`
+gets its share of it when the view is turned): stepping to the left at speed
+`v` with tilt θ covers `v·cos θ` metres of ground a second, and the rest of
+it, `v·sin θ`, is motion into the past: metres of time, which
 the scene's scale turns into seconds. Those are the readouts' speed in slice,
-through space and through time. So on the ground time passes at `cos θ` less
-that last part, and stands still when the two are equal. There is no top
+through space and through time. So on the ground time then passes at `cos θ`
+less that last part, and stands still when the two are equal; to the right it
+is that much more. There is no top
 speed, and no speed at which anything special happens.
 
 The car alone has a mark, for the feel of driving and for no deeper reason:
@@ -442,7 +462,7 @@ With `--card` it lays the page's mark, name and tagline over the picture. That
 is how `preview.jpg` was made:
 
 ```
-node tools/shot.mjs --scene plaza --tilt 38 --tiltdir 270 --pitch 5 --tint 2 --size 1200x630 --card --out preview.jpg
+node tools/shot.mjs --scene plaza --tilt 38 --pitch 5 --tint 2 --size 1200x630 --card --out preview.jpg
 ```
 
 ## License

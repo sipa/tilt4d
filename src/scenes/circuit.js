@@ -1581,7 +1581,7 @@ const spawnXY = onTrack(SPAWN_S, 4.5);
 export default {
   id: 'circuit',
   name: 'Coastal Circuit',
-  blurb: 'Drive a 3.6 km seaside road circuit with traffic, a train, and clocks along the 1.2 km main straight. Tilt the view and the boards ahead show the past.',
+  blurb: 'Drive a 3.6 km seaside road circuit with traffic, a train, and clocks along the 1.2 km main straight. Tilt the view and the boards on the two sides of the road show different times.',
   C,
   accel: 0.8,                // the car gains 6 m/s every second (21.6 km/h), more with Shift
   mode: 'drive',

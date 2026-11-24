@@ -32,19 +32,19 @@ const TOP_BUTTONS = [
 ];
 
 // The one control that is not in other games, the same in every mode.
-const TILT = ['− / +', 'Hold to tilt the view into time: with +, what lies ahead turns to the past, further back the further off it is; with −, to the future. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
+const TILT = ['− / +', 'Hold to tilt the view into time: with +, what lies to your right turns to the future and what lies to your left to the past, further the further off it is; with −, the other way round. Except in flight, your own time slows with the tilt: it stands still at 90° and runs backwards beyond. The tilt stops for a moment when level and at 90°.'];
 
 export const TOUCH_CONTROLS = {
   walk: [
     TILT,
-    ['Left thumb', 'Walk, where the view shows: in a tilted view, forward is also earlier. Push the stick all the way to run.'],
+    ['Left thumb', 'Walk, where the view shows: in a tilted view, a step to the side is also a step through time, on or back. Push the stick all the way to run.'],
     ['Right thumb', 'Drag to look around.'],
     ['jump', 'Jump: over a fence, or onto a low wall, where you can stand and walk.'],
   ],
   drive: [
     TILT,
     ['Left thumb', (c) => `Up and down speed up and slow down; left and right steer. Left alone the car rolls out: slowly below ${c.mark(1)}, a speed that takes little to hold, and quickly above it. Its top speed is ${c.mark(2)}. Hills slow it, and ground steeper than 45° it cannot climb.`],
-    ['Right thumb', 'Drag sideways to steer too: the car turns with the view. Up and down only looks.'],
+    ['Right thumb', 'Drag sideways to steer too: the car turns with the view. In a tilted view that also turns it in time: towards the side that shows the future, it heads into the future. Up and down only looks.'],
     ['brake', 'Hold to stop.'],
   ],
   fly: [

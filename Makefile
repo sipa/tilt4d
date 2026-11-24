@@ -3,14 +3,14 @@
 # where it is posted, which is the one thing a web server needs besides the
 # file.
 #
-#   make                          writes dist/tilt4d.html and dist/preview.jpg
+#   make                          writes dist/index.html and dist/preview.jpg
 #   make OUT=public/index.html    writes them somewhere else
 #   make clean                    removes them
 #
 # Each is made again only when something it is made from has changed.  The
 # first run fetches the tools (esbuild) with npm.
 
-OUT ?= dist/tilt4d.html
+OUT ?= dist/index.html
 
 # The copy of the picture.  (Not where the file is written next to the picture
 # itself, as with OUT=tilt4d.html: there is nothing to copy then, and nothing

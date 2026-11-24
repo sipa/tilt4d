@@ -15,32 +15,45 @@ vectors: screen right `R`, screen up `U`, facing `F` and a fourth one, `O`.
 What is on screen is always the 3D slice through the player that `R`, `U` and
 `F` span, the one perpendicular to `O`. While `O` is the time axis the slice
 is level and the screen shows the world at one instant, like any 3D renderer.
-The tilting control rotates `F` and `O` in their plane by a tilt angle θ,
-however the player happens to be moving. When tilted:
+The tilting control rotates `R` and `O` in their plane by a tilt angle θ,
+however the player happens to be moving. When tilted (with the wheel rolled
+forward; rolled back, exchange left and right):
 
-* a point at distance `d` along the direction of the tilt is seen
-  `d·sin θ / C` seconds **earlier** than the player's own time; behind the
-  player it is seen later. Sideways and upwards the time is unchanged;
+* a point at distance `d` to the player's right, which is the direction of
+  the tilt, is seen `d·sin θ / C` seconds **later** than the player's own
+  time; to the left it is seen earlier. Ahead, behind and upwards the time is
+  unchanged;
 * static things are stretched by `1 / cos θ` along that direction;
-* at θ = 90° the view runs straight along the time axis, so that what lies
-  ahead is the past of the very place the player is at; beyond 90° the world
-  is mirrored.
+* at θ = 90° the view runs straight along the time axis from left to right:
+  the screen shows the history of the one upright plane the player is looking
+  along, earlier on the left and later on the right; beyond 90° the world is
+  mirrored.
+
+Turning the view afterwards leaves the slice as it is and only changes where
+the player looks within it: after a quarter turn to the right the direction of
+the tilt, and with it the future, lies ahead.
 
 The player's motion is a separate matter. Standing still, scene time passes at
 `cos θ` seconds per second on the ground and in water (so not at all at 90°,
 and backwards beyond), and at one second per second in flight. The mode's
 ordinary controls (walking, driving, thrust) move the player along `R`, `U`
-and `F` as they are, so in a tilted slice going forward at speed `v` covers
-`v·cos θ` metres of ground a second and takes the player another
-`v·sin θ / C` seconds back in time.
+and `F` as they are, so in a tilted slice a step to the right at speed `v`
+covers `v·cos θ` metres of ground a second and takes the player another
+`v·sin θ / C` seconds on in time. Going forward does the same for a player
+who has turned towards the future (a car has to: it only goes where it
+points).
 
 So a scene shows the effect well when **time is visible everywhere**: clocks,
 things that move steadily or rhythmically, lights that blink in sequence, a sky
-that changes, things that appear, grow and vanish. Long sight lines along which
-many things move are ideal: tilted, each row of moving things shows a whole
-stretch of its history at once. `C` sets how much time a tilt takes in: at 45°
-the view goes back one second for every `C` metres. Choose it so that this
-shows along the scene's sight lines, and so that the things that move do so at
+that changes, things that appear, grow and vanish. A player who has just
+arrived tilts the view from side to side, so have such things on both sides
+of the starting view: clocks to the left and to the right of it differ at
+once. Long rows along which many things move are ideal: seen from the side
+(or end on, by a player who has turned after tilting), each row of moving
+things shows a whole stretch of its history at once. `C` sets how much time a
+tilt takes in: at 45° the view is one second on for every `C` metres to the
+right. Choose it so that this
+shows across the scene's views, and so that the things that move do so at
 a fair fraction of `C`, since that is where a tilt changes how fast and how
 long they look. Driving, flying and swimming speeds scale with `C` as well.
 
@@ -632,7 +645,7 @@ same sky time, so distant things dissolve into the sky behind them.
 Set `skyDistance` to about the distance at which your fog has swallowed
 everything (roughly `3 / fog density`). Then the horizon and the sky agree
 whatever the tilt. With a day/night cycle the result is striking: tilted far,
-the sky ahead is hours earlier than the sky behind. For that to show, a day
+the sky on one side is hours earlier than the sky on the other. For that to show, a day
 should last a few minutes: the sky spans `±skyDistance·sin θ / C` seconds.
 
 `viewDistance` is a hard limit for dynamic geometry: anything moving that is
@@ -715,9 +728,12 @@ frame) and prints the build statistics, the tetrahedra drawn and any errors.
 in Firefox instead, an independent WebGPU implementation, and run
 `node tools/check-wgsl.mjs myscene` to validate the shader with naga, the
 WGSL compiler Firefox uses; the two compilers do not accept exactly the same
-programs. `--tilt 30` tilts the slice by 30° towards the direction faced, so
-that the past lies ahead; `--tiltdir 180` tilts it the other way, which shows
-the future ahead. The player in a shot stands still.
+programs. `--tilt 30` tilts the slice by 30° as the tilting control does from
+a level view, so that the future lies to the right and the past to the left.
+`--tiltdir` says where the future lies instead, in degrees clockwise from the
+heading: `270` is the control's other direction, `0` shows the future ahead
+and `180` the past ahead, as a player sees it who has turned after tilting.
+The player in a shot stands still.
 Use `--mode fly` with `--pitch -30` and a high `--pos` for overviews.
 A shot has the slight colouring by time that the page starts out with (a warm
 cast on the player's past, a cool one on their future), so a tilted view comes
@@ -765,7 +781,7 @@ and put what only part of a surface needs behind a test of where the pixel
 is.
 
 Look at the picture every time. Check several places and times, level and
-tilted (`--tilt 30`, `60`, `85`, `120`), and check a periodic scene on both
+tilted (`--tilt 30`, `60`, `85`, `120`, and some with `--tiltdir 180`), and check a periodic scene on both
 sides of the seam (`--t` just below and just above a multiple of the period).
 Firefox's renderer is about ten times quicker than Chromium's for a heavy
 scene, which makes it the one to look around with; check the final pictures

@@ -23,10 +23,13 @@
 // a scene's `surface` hook cheap, and behind a test of the material.
 //
 // The views: the scene's starting point seen level, tilted 45 and 75 degrees
-// ahead, tilted 45 degrees to the right, and looking back with a tilt of 30.
+// with the past ahead, tilted 45 degrees with the past to the right, and
+// looking back with a tilt of 30 (the past ahead again).
 // --view adds one of your own, for a place where a lot is going on:
-//   --view "pos=10,20,1.7 yaw=90 pitch=-5 tilt=60 tiltdir=0 t=12 mode=fly"
-// (all parts optional; what is left out is as at the starting point).
+//   --view "pos=10,20,1.7 yaw=90 pitch=-5 tilt=60 tiltdir=90 t=12 mode=fly"
+// (all parts optional; what is left out is as at the starting point, and
+// tiltdir, the way the future lies, is 90: to the right, as the tilting
+// control makes it).
 //
 // --query "a=1&b=2" adds parameters to the page's address, for a scene that
 // reads some of its own while it is being developed.
@@ -71,10 +74,11 @@ export const score = (f) => f.triangles + 2 * f.tets + 400 * f.draws + 300000;
 
 const views = [
   { name: 'level', spec: {} },
-  { name: 'tilt 45 ahead', spec: { tilt: 45 } },
-  { name: 'tilt 75 ahead', spec: { tilt: 75 } },
-  { name: 'tilt 45 right', spec: { tilt: 45, tiltdir: 90 } },
-  { name: 'back, tilt 30', spec: { turn: 180, tilt: 30 } },
+  // (tiltdir is where the future lies: 180 is the past ahead, 270 the past to the right)
+  { name: 'tilt 45 ahead', spec: { tilt: 45, tiltdir: 180 } },
+  { name: 'tilt 75 ahead', spec: { tilt: 75, tiltdir: 180 } },
+  { name: 'tilt 45 right', spec: { tilt: 45, tiltdir: 270 } },
+  { name: 'back, tilt 30', spec: { turn: 180, tilt: 30, tiltdir: 180 } },
 ];
 for (const text of args.view) {
   const spec = {};
@@ -111,7 +115,7 @@ try {
       player.setMode(spec.mode || sc.def.mode || 'walk');
       player.setPose({
         pos: spec.pos ?? sp.pos, t: spec.t ?? sp.t ?? 0, yaw: (spec.yaw ?? sp.yaw ?? 0) + (spec.turn ?? 0), pitch: spec.pitch ?? sp.pitch ?? 0,
-        tilt: spec.tilt ?? 0, tiltDir: spec.tiltdir ?? 0,
+        tilt: spec.tilt ?? 0, tiltDir: spec.tiltdir ?? 90,
       });
       // twice: the first frame of a scene with reflections draws all six sides of that picture,
       // and the first frame at a new time draws its shadow maps in full

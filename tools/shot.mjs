@@ -9,8 +9,11 @@
 //   --pitch deg     look up (+) or down (-)
 //   --tilt deg      tilt of the slice against a level one (0 = an ordinary
 //                   view, 90 = the view runs along time, >90 = mirrored)
-//   --tiltdir deg   which way it is tilted, relative to the heading (0 = the
-//                   past lies ahead, 90 = to the right, 180 = behind)
+//   --tiltdir deg   which way the future then lies, clockwise from the
+//                   heading: 90 (the default) = to the right, with the past
+//                   to the left, which is what rolling the wheel forward
+//                   makes of a level view; 270 = to the left (the wheel
+//                   rolled back); 0 = ahead; 180 = behind, the past ahead
 //   --mode name     walk | drive | fly | swim
 //   --size WxH      image size (default 960x540)
 //   --fov deg       vertical field of view (default 62); a small value zooms in
@@ -25,7 +28,7 @@
 //   --query "a=1&b=2"   more parameters for the page's address, for a scene
 //                   that reads some of its own while it is being developed
 //   --page file     the page to load, relative to the project (default
-//                   index.html); dist/tilt4d.html checks the single-file build
+//                   index.html); dist/index.html checks the single-file build
 //
 //   --browser firefox   render in Firefox instead of Chromium: a second,
 //                   independent WebGPU implementation.  Needs a display (run

@@ -3,7 +3,7 @@
 // itself, minified.  So are the shaders, which are text inside the scripts
 // (see minify-shaders.mjs), and the page's own markup.
 //
-//   node tools/bundle.mjs [--out dist/tilt4d.html] [--no-minify]
+//   node tools/bundle.mjs [--out dist/index.html] [--no-minify]
 //
 // The file can be put on any web server under any name, or opened straight
 // from disk.  It takes the same address parameters as the page it is made
@@ -27,7 +27,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (a === '--out') args.out = process.argv[++i];
   else { console.log(`unknown argument ${a}\nusage: node tools/bundle.mjs [--out file.html] [--no-minify]`); process.exit(2); }
 }
-const out = path.resolve(args.out || path.join(ROOT, 'dist', 'tilt4d.html'));
+const out = path.resolve(args.out || path.join(ROOT, 'dist', 'index.html'));
 const minify = args.minify !== false;
 
 // The scenes are loaded on demand with import(): bundled, each of them becomes

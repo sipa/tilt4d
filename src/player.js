@@ -12,8 +12,9 @@
 //   turning   F and R
 //   pitching  F and U
 //   rolling   U and R
-//   tilting   F and O: F leans into the past (or the future), so that what
-//             lies ahead is seen earlier (or later) the further away it is
+//   tilting   R and O: R leans into the future (or the past), so that what
+//             lies to the right is seen later and what lies to the left
+//             earlier (or the other way round), the further away it is
 //
 // The velocity is not tied to the frame.  It has two parts:
 //
@@ -28,8 +29,10 @@
 //   vel   what the controls add to that, as a 4-vector.  The controls are the
 //         usual ones for walking, driving, flying and swimming, but they work
 //         along the frame's own directions, time component included:
-//         "forward" is F, so moving forward in a tilted slice also moves the
-//         player back in time, by sin(tilt) / C seconds for every metre.
+//         "right" is R, so a step to the right in a tilted slice also moves
+//         the player on in time, by sin(tilt) / C seconds for every metre.
+//         (Turning the view moves that lean from R to F: after a quarter turn
+//         to the right it is going forward that leads into the future.)
 //
 // What the tilt does to the view goes as its tangent (the scene is stretched
 // by 1 / cos(tilt)), which runs off to infinity at 90 degrees.  So a held
@@ -58,8 +61,9 @@ const MAX_SPEED = 4; // in units of C; nothing special happens there, it only ke
 // alone at C takes about half a minute to roll out.  The third is what comes
 // on top beyond C: at 1.5 C it takes half of the engine to keep going, and
 // the engine's all is 2 C (2.8 C with Shift).  The speed meant is the car's
-// own, along F: in a tilted view that is the speed at which the stretched
-// scenery goes by, and 1 / cos(tilt) times the speed over the ground.
+// own, along F: the speed at which the scenery goes by in the view.  Where F
+// leans into time (a car that has turned in a tilted view), the scenery is
+// stretched that way, and this is more than the speed over the ground.
 const DRAG = [0.1, 0.15, 0.6];
 const GRAVITY = 9.81, JUMP = 5; // walking: a jump leaves the ground at 5 m/s, which carries the feet 1.27 m up
 // The slope of the ground at which there is no way up it any more, on foot
@@ -256,10 +260,12 @@ export class Player {
     }
   }
 
-  // pos [x, y, z], t, yaw/pitch in degrees, tilt in degrees towards the
-  // direction tiltDir degrees clockwise from the heading.  The player stands
-  // still.
-  setPose({ pos = [0, 0, 0], t = 0, yaw = 0, pitch = 0, tilt = 0, tiltDir = 0 } = {}) {
+  // pos [x, y, z], t, yaw/pitch in degrees, tilt in degrees.  tiltDir says
+  // which way the tilted view has its future: so many degrees clockwise from
+  // the heading.  90, to the right, is what the tilting control makes of a
+  // level view (and 270 what it makes of one the other way).  The player
+  // stands still.
+  setPose({ pos = [0, 0, 0], t = 0, yaw = 0, pitch = 0, tilt = 0, tiltDir = 90 } = {}) {
     const rad = Math.PI / 180;
     this.P = [pos[0], pos[1], pos[2], t];
     this._setDown();
@@ -274,7 +280,7 @@ export class Player {
     if (tilt) {
       const h = this.col(F), r = this.col(R), a = tiltDir * rad;
       const dir = [0, 1, 2, 3].map((k) => Math.cos(a) * h[k] + Math.sin(a) * r[k]);
-      f4.rotPlane(this.M, this.col(O), dir, tilt * rad);
+      f4.rotPlane(this.M, dir, this.col(O), tilt * rad);
     }
     this.rate = this._restRate();
   }
@@ -292,18 +298,18 @@ export class Player {
     return this.ease + (1 - this.ease) * c * c;
   }
 
-  // The tilting control: rotates F and O by `angle`, F leaning into the past
-  // for a positive one.  A turn that would reach or pass a quarter turn of
-  // the time axis in their plane (F level again, or F along time) lands
-  // exactly on it, and the tilt then stays put for a moment, so that those
-  // are easy to hit.  Returns whether that happened.
+  // The tilting control: rotates R and O by `angle`, R leaning into the
+  // future for a positive one.  A turn that would reach or pass a quarter
+  // turn of the time axis in their plane (R level again, or R along time)
+  // lands exactly on it, and the tilt then stays put for a moment, so that
+  // those are easy to hit.  Returns whether that happened.
   _tilt(angle) {
     if (!angle || this.tiltHold > 0) return false;
     const M = this.M;
-    const ft = M[F * 4 + 3], ot = M[O * 4 + 3];
+    const rt = M[R * 4 + 3], ot = M[O * 4 + 3];
     let landed = false;
-    if (Math.hypot(ft, ot) > 1e-3) {
-      const phi = Math.atan2(-ft, ot); // the tilt as it shows along F
+    if (Math.hypot(rt, ot) > 1e-3) {
+      const phi = Math.atan2(rt, ot); // the tilt as it shows along R
       const q = phi / HALF_PI;
       const stop = (angle > 0 ? Math.floor(q + 1e-7) + 1 : Math.ceil(q - 1e-7) - 1) * HALF_PI;
       if (angle > 0 ? phi + angle >= stop - 1e-9 : phi + angle <= stop + 1e-9) {
@@ -312,7 +318,7 @@ export class Player {
         landed = true;
       }
     }
-    f4.rotCols(M, O, F, angle);
+    f4.rotCols(M, R, O, angle);
     return landed;
   }
 
@@ -671,7 +677,7 @@ export class Player {
   // Numbers for the HUD.
   status() {
     const v = this.vel, o = this.col(O), cam = this.camera(), C = this.C;
-    const sight = Math.hypot(cam.F[0], cam.F[1], cam.F[2]);
+    const side = Math.hypot(cam.R[0], cam.R[1], cam.R[2]);
     const speed = Math.hypot(v[0], v[1], v[2]);
     const timeRate = this.rate + v[3] / C;
     return {
@@ -685,13 +691,15 @@ export class Player {
       speed, // through space, m/s
       through: v[3] / C, // through time, seconds of scene time per second
       timeRate, // all of the time that passes: the resting rate and `through`
-      // the line of sight and the player's motion through spacetime (in units
-      // of C), as (space, time) pairs in the plane that contains the line of
-      // sight and the time axis
-      sight: [sight, cam.F[3]],
-      travel: [sight > 1e-6 ? (v[0] * cam.F[0] + v[1] * cam.F[1] + v[2] * cam.F[2]) / sight / C : 0, timeRate],
+      // the view's own left-to-right direction and the player's motion
+      // through spacetime (in units of C), as (space, time) pairs in the
+      // plane that contains that direction and the time axis
+      across: [side, cam.R[3]],
+      travel: [side > 1e-6 ? (v[0] * cam.R[0] + v[1] * cam.R[1] + v[2] * cam.R[2]) / side / C : 0, timeRate],
       tilt: Math.acos(clamp(o[3], -1, 1)), // of the slice against a level one, 0..pi
-      // seconds of scene time per metre along the line of sight (negative = past)
+      // seconds of scene time per metre to the right in the view, and per
+      // metre along the line of sight (negative = past)
+      sideGradient: cam.R[3] / C,
       lookGradient: cam.F[3] / C,
       t: this.P[3],
     };

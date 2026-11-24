@@ -229,7 +229,7 @@ function showUnits() {
     if (el) el.textContent = withUnits(u, s.blurb);
   }
   if (current) {
-    // how far ahead the view is a second back at a tilt of 45 degrees: every scene has its own scale
+    // how far to the side the view is a second on (or back) at a tilt of 45 degrees: every scene has its own scale
     $('about-length').textContent = roundLength(u, player.C);
     $('about-scene').textContent = ` (in “${current.entry.name}”, the scene loaded now: each has its own scale)`;
     applyMode();
@@ -499,7 +499,8 @@ addEventListener('wheel', (e) => {
   // With Shift held (running), Chrome and Edge report a wheel's notches as
   // sideways scrolling: those tilt just the same.
   const delta = e.deltaY || (e.shiftKey ? e.deltaX : 0);
-  // Rolling the wheel away from you tilts the view ahead into the past.
+  // Rolling the wheel away from you tilts the view so that the future lies to
+  // the right and the past to the left; towards you, the other way round.
   wheel -= Math.max(-1, Math.min(1, delta / notch));
 }, { passive: true });
 
@@ -659,7 +660,7 @@ async function start() {
       player.setPose({
         pos: params.has('pos') ? params.get('pos').split(',').map(Number) : sp.pos,
         t: num('t', sp.t ?? 0), yaw: num('yaw', sp.yaw ?? 0), pitch: num('pitch', sp.pitch ?? 0),
-        tilt: num('tilt', 0), tiltDir: num('tiltdir', 0),
+        tilt: num('tilt', 0), tiltDir: num('tiltdir', 90),
       });
       applyMode();
       overlay.hidden = true;
