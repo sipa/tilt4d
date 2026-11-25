@@ -693,6 +693,23 @@ a pass draws of it goes to the GPU in one draw call for each repeat of the
 scene in sight (a few a pass), however scattered: it costs by its tetrahedra,
 not by how many things it is.
 
+A slice tilted close to 90° touches a thing for a long time: one of height
+`h`, in a slice tilted up by `λ`, for `h tan λ / C` seconds, and at 90°, where
+the slice stands along time, something that stays in its place for as long as
+there is. Two things keep that from being drawn in full. Of a mesh with a
+`cycle`, the picture draws only the steps during which the thing can be
+inside its pyramid: the few seconds of a clock's wheel that fit on the screen,
+not the hour of it that the slice touches. And at 90° itself moving geometry
+is left out of the shadow maps, because nothing in such a slice can shade
+anything else in it: what casts a shadow and what it falls on would have to be
+at the same place. Just short of 90° that does not hold, and the shadow maps
+then take everything the slice touches within their reach: the views between
+about 85° and 90° are the dearest a scene has, several times a level one.
+In a scene with `reflections` so is the view at 90° itself, because every
+side of the reflection picture takes all the moving geometry the slice
+touches, whichever way the side looks.
+`node tools/cost.mjs <scene> --view "lift=89" --view "lift=90"` counts them.
+
 On a device that cannot keep up, the page lowers the resolution it draws at,
 and with it the distance from which detail given with `within` is drawn.
 

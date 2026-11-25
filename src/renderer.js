@@ -79,9 +79,12 @@ export class Renderer {
     // What is left out of a pass that cannot see it, as a sum of: 1 static
     // geometry from the picture, 2 static geometry from the shadow maps,
     // 4 moving geometry from the picture, 8 moving geometry from the shadow
-    // maps, 16 static geometry from the sides of the reflection picture.
+    // maps, 16 static geometry from the sides of the reflection picture,
+    // 32 moving geometry from the shadow maps of a slice in which nothing
+    // can shade anything else (one that stands along time: see _dynDraws),
+    // 64 the steps of a repeating movement that lie outside the picture.
     // (0 draws everything in every pass, to compare with.)
-    this.cull = 31;
+    this.cull = 127;
     this.detail = 1;   // a factor on the distances from which detail given with `within` is drawn
     this.nearFirst = true; // draw the picture's opaque static geometry nearest first (false: in the order it is stored)
     this.onError = (msg) => console.error(msg);
@@ -706,7 +709,8 @@ export class Renderer {
   // distance.
   // shadowPlanes: for each shadow map, the planes that bound what can cast a
   // shadow into it (see _cascadePlanes), or null where that is not known and
-  // distance has to do instead.
+  // distance has to do instead.  light: the direction the shadow maps are
+  // drawn along, null if that is not known, false to make no use of it.
   // A scene's tables of moving geometry, with the renderer's own table of
   // what a frame draws of them (made anew when that one has had to grow).
   _bindDyn(sc) {
@@ -724,7 +728,7 @@ export class Renderer {
     });
   }
 
-  _dynDraws(cam, sc, radii, fx, fy, near, shadowPlanes) {
+  _dynDraws(cam, sc, radii, fx, fy, near, shadowPlanes, light = false) {
     // the view, the three shadow maps, and everything (for the reflection picture, which looks all ways)
     const out = [0, 1, 2, 3, 4].map(() => [new DrawList(), new DrawList()]);
     const wantAll = sc.reflections;
@@ -764,6 +768,27 @@ export class Renderer {
     const reachT = Math.max(Math.abs(now), Math.abs(sc.tMin), Math.abs(sc.tMax));
     const slack = Math.min(0.02, (1e-5 + 6e-7 * (Math.abs(P[0]) + Math.abs(P[1]) + Math.abs(P[2]) + 2 * viewDist + C * reachT)) * (this.slackScale ?? 1));
     const step = O[3] * C * period; // how far one repeat moves a chunk along O
+    // Whether anything that moves can cast a shadow that is seen.  What casts
+    // one and what it falls on are both in the slice, s metres apart along
+    // the light l and dt seconds apart: O.xyz . l s + O.t C dt = 0.  In a
+    // slice that stands along time (a tilt of 90 degrees: O.t = 0) that
+    // leaves s = 0, unless the light lies in the slice as well: nothing in
+    // such a slice is in the light of anything else in it, while the slice
+    // finds every moving thing it touches at all times, and all of that would
+    // go into the shadow maps.  So where s cannot come to a quarter of a
+    // pixel of the finest map, which is less than the maps tell apart, with
+    // dt as long as the times that are drawn are apart at most, moving
+    // geometry is left out of them.  (The light's direction is known to a
+    // hundredth or so: see _sunDir.  While it is not known at all, in a
+    // scene's first frames and after a leap in time, it is taken to be at
+    // least a thousandth out of the slice: a single frame with all of that in
+    // its shadow maps can be hundreds of times an ordinary one.)
+    let shade = true;
+    if (light !== false && sc.cascades > 0) {
+      const across = light ? Math.abs(O[0] * light[0] + O[1] * light[1] + O[2] * light[2]) - 0.01 : 1e-3;
+      const apart = 2 * Math.max(Math.abs(sc.tMax + k1 * period - now), Math.abs(sc.tMin + k0 * period - now));
+      if (across > 0 && Math.abs(O[3]) * C * apart < 0.25 * (2 * radii[0] / SHADOW_SIZE) * across) shade = false;
+    }
     const reach = [viewDist, 3 * radii[0], sc.cascades > 1 ? 1.5 * radii[1] : 0, sc.cascades > 2 ? 1.5 * radii[2] : 0];
     if (def.shadowCentre) for (let c = 1; c <= sc.cascades; c++) reach[c] = Infinity; // (maps that do not follow the player)
     const B = ch.box, R = ch.range;
@@ -779,6 +804,7 @@ export class Renderer {
       };
       planes.push([cam.F[0], cam.F[1], cam.F[2], cam.F[3], 0.05 - near], along(-fx, cam.R), along(fx, cam.R), along(-fy, cam.U), along(fy, cam.U));
     }
+    const clipSteps = planes.length > 0 && !!(this.cull & 64);
     const tm = (o) => (B[o] + B[o + 1]) / 2;
     const seen = (o, dx, dy, dz, dt) => {
       const ht = (B[o + 1] - B[o]) / 2 * C;
@@ -821,7 +847,7 @@ export class Renderer {
       const layer = ch.layer[i], per = R[i * 2], count = R[i * 2 + 1], steps = ch.steps[i * 6];
       // which shadow maps it can cast into: wherever the slice finds it, that is inside its box
       // (none, if nothing of it casts a shadow)
-      const casts = [false, false, false, false], lit = layer === 0 && !ch.dark[i];
+      const casts = [false, false, false, false], lit = shade && layer === 0 && !ch.dark[i];
       if (lit) {
         for (let c = 1; c <= 3; c++) {
           const pl = shadowPlanes[c - 1];
@@ -835,6 +861,7 @@ export class Renderer {
       }
       for (let k = ka; k <= kb; k++) {
         let first = 0, n = count, inView, ball = null;
+        let seenFirst = -1, seenCount = 0; // (a mesh with a cycle: the steps of it that the picture takes)
         if (ch.near[i] < Infinity || steps) {
           // Where the slice finds the thing: somewhere along this chunk's
           // stretch of its path (all but straight within a chunk), where the
@@ -867,22 +894,51 @@ export class Renderer {
             const s0 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u0 - g0) / dts - 1e-3)));
             const s1 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u1 - g0) / dts + 1e-3)));
             first = s0 * per; n = (s1 - s0 + 1) * per;
+            // Of those the picture takes the ones during which the thing can be
+            // inside the view's pyramid.  It is in a box of its own size round
+            // a point that goes evenly from one end of the path to the other,
+            // so how far inside each plane it can be goes evenly too, and each
+            // plane cuts a piece off the stretch.  (Something that stays where
+            // it is, in a slice that stands along time, is touched by the slice
+            // at all times: the picture has a few seconds of that.)
+            if (clipSteps) {
+              let v0 = u0, v1 = u1;
+              const ta = (T0 + k * period - now) * C, tb = (T1 + k * period - now) * C;
+              for (const p of planes) {
+                const m = Math.abs(p[0]) * S[e + 3] + Math.abs(p[1]) * S[e + 4] + Math.abs(p[2]) * S[e + 5] + p[4];
+                const fa = p[0] * (Q[q] - P[0]) + p[1] * (Q[q + 1] - P[1]) + p[2] * (Q[q + 2] - P[2]) + p[3] * ta + m;
+                const fb = p[0] * (Q[q + 3] - P[0]) + p[1] * (Q[q + 4] - P[1]) + p[2] * (Q[q + 5] - P[2]) + p[3] * tb + m;
+                if (fa < 0 && fb < 0) { v1 = -1; break; }
+                if (fa < 0) v0 = Math.max(v0, fa / (fa - fb));
+                else if (fb < 0) v1 = Math.min(v1, fa / (fa - fb));
+              }
+              if (v0 <= v1) {
+                const a = Math.max(s0, Math.min(s1, Math.floor((T0 + (T1 - T0) * v0 - g0) / dts - 1e-3)));
+                const b = Math.max(s0, Math.min(s1, Math.floor((T0 + (T1 - T0) * v1 - g0) / dts + 1e-3)));
+                seenFirst = a * per; seenCount = (b - a + 1) * per;
+              } else {
+                seenCount = -1; // (none of it)
+              }
+            }
             // and where it is meanwhile says what can see it, more closely than the whole stretch's bounds
             const um = (u0 + u1) / 2, hu = (u1 - u0) / 2;
             ball = [Q[q] + (Q[q + 3] - Q[q]) * um, Q[q + 1] + (Q[q + 4] - Q[q + 1]) * um, Q[q + 2] + (Q[q + 5] - Q[q + 2]) * um,
               Q[q + 6] + hu * Math.hypot(Q[q + 3] - Q[q], Q[q + 4] - Q[q + 1], Q[q + 5] - Q[q + 2]), T0 + (T1 - T0) * um, (T1 - T0) * hu];
           }
         }
-        if (ball) inView = seenBall(ball[0] - P[0], ball[1] - P[1], ball[2] - P[2], (ball[4] + k * period - now) * C, ball[3], ball[5] * C);
+        if (seenCount) inView = seenCount > 0;
+        else if (ball) inView = seenBall(ball[0] - P[0], ball[1] - P[1], ball[2] - P[2], (ball[4] + k * period - now) * C, ball[3], ball[5] * C);
         else inView = seen(o, dx, dy, dz, (tm(o) + k * period - now) * C);
+        // (what the picture takes of it; the shadow maps and the reflection picture, which see other parts, take all the slice touches)
+        const pf = seenCount > 0 ? seenFirst : first, pn = seenCount > 0 ? seenCount : n;
         if (layer === 2) {
           if (inView) {
-            blend.push({ slot: k - k0, chunk: i, first, count: n, dist: centre });
-            blendTets += n;
+            blend.push({ slot: k - k0, chunk: i, first: pf, count: pn, dist: centre });
+            blendTets += pn;
           }
           continue;
         }
-        if (inView) out[0][layer].add(k - k0, i, first, n);
+        if (inView) out[0][layer].add(k - k0, i, pf, pn);
         if (wantAll) out[4][layer].add(k - k0, i, first, n);
         if (lit) {
           for (let c = 1; c <= 3; c++) if (ball ? castsBall(c, ball) : casts[c]) out[c][0].add(k - k0, i, first, n);
@@ -959,9 +1015,9 @@ export class Renderer {
     // geometry that lies wholly outside it is left out (this.cull = false
     // draws everything in every pass, for comparison).
     const cull = this.cull;
-    const sun = (cull & 10) && sc.cascades ? this._sunDir(sc, cam.P[3]) : null;
+    const sun = (cull & 42) && sc.cascades ? this._sunDir(sc, cam.P[3]) : null;
     const cascadePlanes = [0, 1, 2].map((c) => (c < sc.cascades ? (sun ? this._cascadePlanes(sun, shadowAt, radii[c], g[31]) : null) : [[0, 0, 0, -1]]));
-    const { lists: [draws, s1, s2, s3, allDyn], blend: blendDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22], cull & 8 ? cascadePlanes : [null, null, null]);
+    const { lists: [draws, s1, s2, s3, allDyn], blend: blendDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22], cull & 8 ? cascadePlanes : [null, null, null], cull & 32 ? sun : false);
     const shadowDraws = [s1, s2, s3];
     const set = this._staticSet(cam, sc, g[24]);
     const view = this._staticDraws(sc, set, cull & 1 ? this._viewPlanes(cam.R, cam.U, cam.F, cam.O, cam.P, g[24], g[20], g[21], g[22]) : [], 7, cam.P, this.nearFirst);
