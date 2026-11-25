@@ -432,6 +432,12 @@ The slice is drawn like this:
   the view is still a pyramid in space. For the shadow maps the renderer has
   to know where the light is, which only the scene's shader can say: it reads
   that back from the GPU for a stretch of time round the player's own.
+  Moving geometry is left out the same way, a stretch of its path at a time,
+  and of a movement that repeats only the rounds a pass can see: at a tilt of
+  90° the view touches a turning wheel at all times, and the picture draws
+  the few seconds of it that are on screen. At that tilt nothing in the view
+  can shade anything else in it, and moving things stay out of the shadow maps
+  altogether.
 * Small parts of things (door handles, faces, wheel spokes) are given by the
   scenes as detail that is drawn only from near by, so they cost nothing
   across the rest of the scene.

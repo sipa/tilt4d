@@ -662,7 +662,7 @@ async function start() {
     return;
   }
   renderer.onError = (msg) => { console.error(msg); setStatus(msg, true); };
-  if (params.has('cull')) renderer.cull = num('cull', 127) | 0; // (0: draw everything in every pass, to compare with; see renderer.js)
+  if (params.has('cull')) renderer.cull = num('cull', 255) | 0; // (0: draw everything in every pass, to compare with; see renderer.js)
   if (params.has('slack')) renderer.slackScale = num('slack', 1); // (the margin by which moving geometry is taken in beyond the slice, times this: see _dynDraws)
   if (params.get('order') === '0') renderer.nearFirst = false; // (draw static geometry in the order it is stored, to compare with)
   // Browsers take the graphics device away now and then (a phone that had

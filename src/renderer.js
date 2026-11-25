@@ -82,9 +82,10 @@ export class Renderer {
     // maps, 16 static geometry from the sides of the reflection picture,
     // 32 moving geometry from the shadow maps of a slice in which nothing
     // can shade anything else (one that stands along time: see _dynDraws),
-    // 64 the steps of a repeating movement that lie outside the picture.
+    // 64 the steps of a repeating movement that lie outside the picture,
+    // 128 moving geometry from the sides of the reflection picture.
     // (0 draws everything in every pass, to compare with.)
-    this.cull = 127;
+    this.cull = 255;
     this.detail = 1;   // a factor on the distances from which detail given with `within` is drawn
     this.nearFirst = true; // draw the picture's opaque static geometry nearest first (false: in the order it is stored)
     this.onError = (msg) => console.error(msg);
@@ -704,13 +705,16 @@ export class Renderer {
   // normal O.  The box meets it exactly when the distance of its centre from
   // the hyperplane is no more than the box's extent along O.  For a periodic
   // scene the same test is solved for the repeat number k.  Returns
-  // { lists, blend }: draw lists [main, shadow cascade 0, 1, 2], each
-  // [opaque, additive], and the see-through chunks one by one with their
-  // distance.
+  // { lists, blend, sides }: draw lists [main, shadow cascade 0, 1, 2], each
+  // [opaque, additive], the see-through chunks one by one with their
+  // distance, and such a pair of lists for each side of the reflection
+  // picture that is asked for.
   // shadowPlanes: for each shadow map, the planes that bound what can cast a
   // shadow into it (see _cascadePlanes), or null where that is not known and
   // distance has to do instead.  light: the direction the shadow maps are
   // drawn along, null if that is not known, false to make no use of it.
+  // sides: the sides of the reflection picture that this frame draws, each
+  // as its axes [right, up, forward].
   // A scene's tables of moving geometry, with the renderer's own table of
   // what a frame draws of them (made anew when that one has had to grow).
   _bindDyn(sc) {
@@ -728,14 +732,14 @@ export class Renderer {
     });
   }
 
-  _dynDraws(cam, sc, radii, fx, fy, near, shadowPlanes, light = false) {
-    // the view, the three shadow maps, and everything (for the reflection picture, which looks all ways)
-    const out = [0, 1, 2, 3, 4].map(() => [new DrawList(), new DrawList()]);
-    const wantAll = sc.reflections;
+  _dynDraws(cam, sc, radii, fx, fy, near, shadowPlanes, light = false, sides = []) {
+    // the view and the three shadow maps; and the sides of the reflection picture
+    const out = [0, 1, 2, 3].map(() => [new DrawList(), new DrawList()]);
+    const outSides = sides.map(() => [new DrawList(), new DrawList()]);
     const blend = [];
     const ch = sc.chunks;
     this.info.tets = 0;
-    if (!ch.count) return { lists: out, blend };
+    if (!ch.count) return { lists: out, blend, sides: outSides };
     const def = sc.def, C = cam.C, O = cam.O, P = cam.P;
     const viewDist = def.viewDistance ?? 1500;
     const sinTilt = Math.hypot(O[0], O[1], O[2]);
@@ -796,17 +800,22 @@ export class Renderer {
     // player: [a.x, a.y, a.z, a.t, d], inside where a . delta + d >= 0.  A
     // chunk is a box in space and a stretch of time; if all of that lies
     // outside one of the planes, so does the part of it in the slice.
-    const planes = [];
-    if (this.cull & 4) {
+    const pyramid = (F, R, U, sx, sy) => {
       const along = (f, V) => {
-        const a = [cam.F[0] + f * V[0], cam.F[1] + f * V[1], cam.F[2] + f * V[2], cam.F[3] + f * V[3]];
+        const a = [F[0] + f * V[0], F[1] + f * V[1], F[2] + f * V[2], F[3] + f * V[3]];
         return [...a, 0.05 * Math.hypot(...a)];
       };
-      planes.push([cam.F[0], cam.F[1], cam.F[2], cam.F[3], 0.05 - near], along(-fx, cam.R), along(fx, cam.R), along(-fy, cam.U), along(fy, cam.U));
-    }
+      return [[F[0], F[1], F[2], F[3], 0.05 - near], along(-sx, R), along(sx, R), along(-sy, U), along(sy, U)];
+    };
+    const planes = this.cull & 4 ? pyramid(cam.F, cam.R, cam.U, fx, fy) : [];
     const clipSteps = planes.length > 0 && !!(this.cull & 64);
+    // A side of the reflection picture is a view of its own, a quarter turn
+    // wide each way, along one of the picture's axes: it takes what can be
+    // inside its pyramid, as the picture does.  (Six sides between them look
+    // every way, but a running frame draws one of them.)
+    const sidePlanes = sides.map((S) => (this.cull & 128 ? pyramid(S[2], S[0], S[1], 1, 1) : []));
     const tm = (o) => (B[o] + B[o + 1]) / 2;
-    const seen = (o, dx, dy, dz, dt) => {
+    const seen = (planes, o, dx, dy, dz, dt) => {
       const ht = (B[o + 1] - B[o]) / 2 * C;
       for (const p of planes) {
         if (p[0] * dx + p[1] * dy + p[2] * dz + p[3] * dt + Math.abs(p[0]) * B[o + 5] + Math.abs(p[1]) * B[o + 6] + Math.abs(p[2]) * B[o + 7] + Math.abs(p[3]) * ht + p[4] < 0) return false;
@@ -814,7 +823,7 @@ export class Renderer {
       return true;
     };
     // the same for a ball of radius rad and a stretch of time ht either way, and for the shadow maps
-    const seenBall = (x, y, z, t, rad, ht) => {
+    const seenBall = (planes, x, y, z, t, rad, ht) => {
       for (const p of planes) {
         if (p[0] * x + p[1] * y + p[2] * z + p[3] * t + Math.hypot(p[0], p[1], p[2]) * rad + Math.abs(p[3]) * ht + p[4] < 0) return false;
       }
@@ -826,6 +835,34 @@ export class Renderer {
       for (const p of pl) {
         if (p[0] * b[0] + p[1] * b[1] + p[2] * b[2] + Math.hypot(p[0], p[1], p[2]) * b[3] + p[3] < 0) return false;
       }
+      return true;
+    };
+    // Of the steps s0 to s1 of a mesh with a cycle (chunk i at repeat k, of
+    // which the slice touches the part from u0 to u1 of the chunk's stretch),
+    // the ones during which the thing can be inside all of the planes pl:
+    // from clipA to clipB, if this returns true.  The thing is in a box of
+    // its own size round a point that goes evenly from one end of the path
+    // to the other, so how far inside each plane it can be goes evenly too,
+    // and each plane cuts a piece off the stretch.  (Something that stays
+    // where it is, in a slice that stands along time, is touched by the
+    // slice at all times: a view has a few seconds of that.)
+    let clipA = 0, clipB = 0;
+    const clip = (pl, i, k, u0, u1, s0, s1) => {
+      const Q = ch.path, q = i * 7, S = ch.steps, e = i * 6, o = i * 9;
+      const T0 = B[o], T1 = B[o + 1];
+      const ta = (T0 + k * period - now) * C, tb = (T1 + k * period - now) * C;
+      let v0 = u0, v1 = u1;
+      for (const p of pl) {
+        const m = Math.abs(p[0]) * S[e + 3] + Math.abs(p[1]) * S[e + 4] + Math.abs(p[2]) * S[e + 5] + p[4];
+        const fa = p[0] * (Q[q] - P[0]) + p[1] * (Q[q + 1] - P[1]) + p[2] * (Q[q + 2] - P[2]) + p[3] * ta + m;
+        const fb = p[0] * (Q[q + 3] - P[0]) + p[1] * (Q[q + 4] - P[1]) + p[2] * (Q[q + 5] - P[2]) + p[3] * tb + m;
+        if (fa < 0 && fb < 0) return false;
+        if (fa < 0) v0 = Math.max(v0, fa / (fa - fb));
+        else if (fb < 0) v1 = Math.min(v1, fa / (fa - fb));
+      }
+      if (v0 > v1) return false;
+      clipA = Math.max(s0, Math.min(s1, Math.floor((T0 + (T1 - T0) * v0 - S[e + 1]) / S[e + 2] - 1e-3)));
+      clipB = Math.max(s0, Math.min(s1, Math.floor((T0 + (T1 - T0) * v1 - S[e + 1]) / S[e + 2] + 1e-3)));
       return true;
     };
     let blendTets = 0;
@@ -862,6 +899,7 @@ export class Renderer {
       for (let k = ka; k <= kb; k++) {
         let first = 0, n = count, inView, ball = null;
         let seenFirst = -1, seenCount = 0; // (a mesh with a cycle: the steps of it that the picture takes)
+        let u0 = 0, u1 = 1, s0 = 0, s1 = 0; // (and what the slice touches of it: that part of the chunk's stretch, those steps)
         if (ch.near[i] < Infinity || steps) {
           // Where the slice finds the thing: somewhere along this chunk's
           // stretch of its path (all but straight within a chunk), where the
@@ -882,7 +920,6 @@ export class Renderer {
             // no further from the slice than it is big that way.
             const S = ch.steps, e = i * 6;
             const rr = ax * S[e + 3] + ay * S[e + 4] + az * S[e + 5] + slack;
-            let u0 = 0, u1 = 1;
             if (da !== db) {
               const a = (-rr - da) / (db - da), b = (rr - da) / (db - da);
               u0 = Math.max(0, Math.min(a, b)); u1 = Math.min(1, Math.max(a, b));
@@ -891,34 +928,13 @@ export class Renderer {
               continue;
             }
             const T0 = B[o], T1 = B[o + 1], g0 = S[e + 1], dts = S[e + 2];
-            const s0 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u0 - g0) / dts - 1e-3)));
-            const s1 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u1 - g0) / dts + 1e-3)));
+            s0 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u0 - g0) / dts - 1e-3)));
+            s1 = Math.max(0, Math.min(steps - 1, Math.floor((T0 + (T1 - T0) * u1 - g0) / dts + 1e-3)));
             first = s0 * per; n = (s1 - s0 + 1) * per;
-            // Of those the picture takes the ones during which the thing can be
-            // inside the view's pyramid.  It is in a box of its own size round
-            // a point that goes evenly from one end of the path to the other,
-            // so how far inside each plane it can be goes evenly too, and each
-            // plane cuts a piece off the stretch.  (Something that stays where
-            // it is, in a slice that stands along time, is touched by the slice
-            // at all times: the picture has a few seconds of that.)
+            // of those the picture takes the ones during which the thing can be inside its pyramid
             if (clipSteps) {
-              let v0 = u0, v1 = u1;
-              const ta = (T0 + k * period - now) * C, tb = (T1 + k * period - now) * C;
-              for (const p of planes) {
-                const m = Math.abs(p[0]) * S[e + 3] + Math.abs(p[1]) * S[e + 4] + Math.abs(p[2]) * S[e + 5] + p[4];
-                const fa = p[0] * (Q[q] - P[0]) + p[1] * (Q[q + 1] - P[1]) + p[2] * (Q[q + 2] - P[2]) + p[3] * ta + m;
-                const fb = p[0] * (Q[q + 3] - P[0]) + p[1] * (Q[q + 4] - P[1]) + p[2] * (Q[q + 5] - P[2]) + p[3] * tb + m;
-                if (fa < 0 && fb < 0) { v1 = -1; break; }
-                if (fa < 0) v0 = Math.max(v0, fa / (fa - fb));
-                else if (fb < 0) v1 = Math.min(v1, fa / (fa - fb));
-              }
-              if (v0 <= v1) {
-                const a = Math.max(s0, Math.min(s1, Math.floor((T0 + (T1 - T0) * v0 - g0) / dts - 1e-3)));
-                const b = Math.max(s0, Math.min(s1, Math.floor((T0 + (T1 - T0) * v1 - g0) / dts + 1e-3)));
-                seenFirst = a * per; seenCount = (b - a + 1) * per;
-              } else {
-                seenCount = -1; // (none of it)
-              }
+              if (clip(planes, i, k, u0, u1, s0, s1)) { seenFirst = clipA * per; seenCount = (clipB - clipA + 1) * per; }
+              else seenCount = -1; // (none of it)
             }
             // and where it is meanwhile says what can see it, more closely than the whole stretch's bounds
             const um = (u0 + u1) / 2, hu = (u1 - u0) / 2;
@@ -927,9 +943,9 @@ export class Renderer {
           }
         }
         if (seenCount) inView = seenCount > 0;
-        else if (ball) inView = seenBall(ball[0] - P[0], ball[1] - P[1], ball[2] - P[2], (ball[4] + k * period - now) * C, ball[3], ball[5] * C);
-        else inView = seen(o, dx, dy, dz, (tm(o) + k * period - now) * C);
-        // (what the picture takes of it; the shadow maps and the reflection picture, which see other parts, take all the slice touches)
+        else if (ball) inView = seenBall(planes, ball[0] - P[0], ball[1] - P[1], ball[2] - P[2], (ball[4] + k * period - now) * C, ball[3], ball[5] * C);
+        else inView = seen(planes, o, dx, dy, dz, (tm(o) + k * period - now) * C);
+        // (what the picture takes of it; the shadow maps, which see other parts, take all the slice touches)
         const pf = seenCount > 0 ? seenFirst : first, pn = seenCount > 0 ? seenCount : n;
         if (layer === 2) {
           if (inView) {
@@ -939,14 +955,22 @@ export class Renderer {
           continue;
         }
         if (inView) out[0][layer].add(k - k0, i, pf, pn);
-        if (wantAll) out[4][layer].add(k - k0, i, first, n);
+        for (let j = 0; j < sidePlanes.length; j++) {
+          const pl = sidePlanes[j];
+          if (!pl.length) outSides[j][layer].add(k - k0, i, first, n);
+          else if (steps) {
+            if (clip(pl, i, k, u0, u1, s0, s1)) outSides[j][layer].add(k - k0, i, clipA * per, (clipB - clipA + 1) * per);
+          } else if (seen(pl, o, dx, dy, dz, (tm(o) + k * period - now) * C)) {
+            outSides[j][layer].add(k - k0, i, first, n);
+          }
+        }
         if (lit) {
           for (let c = 1; c <= 3; c++) if (ball ? castsBall(c, ball) : casts[c]) out[c][0].add(k - k0, i, first, n);
         }
       }
     }
     this.info.tets = out[0][0].tets + out[0][1].tets + blendTets;
-    return { lists: out, blend };
+    return { lists: out, blend, sides: outSides };
   }
 
   // The frame in which the reflection picture is drawn: three 4D unit
@@ -1017,7 +1041,20 @@ export class Renderer {
     const cull = this.cull;
     const sun = (cull & 42) && sc.cascades ? this._sunDir(sc, cam.P[3]) : null;
     const cascadePlanes = [0, 1, 2].map((c) => (c < sc.cascades ? (sun ? this._cascadePlanes(sun, shadowAt, radii[c], g[31]) : null) : [[0, 0, 0, -1]]));
-    const { lists: [draws, s1, s2, s3, allDyn], blend: blendDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22], cull & 8 ? cascadePlanes : [null, null, null], cull & 32 ? sun : false);
+    // The sides of the reflection picture that this frame draws: normally
+    // one, in turn; all six for a still, for a scene's first frame, and when
+    // its axes have jumped.
+    let probeSides = [];
+    if (sc.reflections) {
+      const jumped = sc.probeAxes && sc.probeAxes.some((a, i) => f4.dot(a, axes[i]) < 0.95);
+      const all = cam.still || sc.probeAge === 0 || jumped;
+      const [X, Y, Z] = axes, neg = (v) => v.map((x) => -x);
+      // right, up and forward for the sides +X, -X, +Y, -Y, +Z, -Z of a cube map
+      const SIDES = [[neg(Z), Y, X], [Z, Y, neg(X)], [X, neg(Z), Y], [X, Z, neg(Y)], [X, Y, Z], [neg(X), Y, neg(Z)]];
+      probeSides = SIDES.map((S, side) => ({ side, S })).filter((s) => all || s.side === sc.probeAge % 6);
+    }
+    const { lists: [draws, s1, s2, s3], blend: blendDyn, sides: probeDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22],
+      cull & 8 ? cascadePlanes : [null, null, null], cull & 32 ? sun : false, probeSides.map((s) => s.S));
     const shadowDraws = [s1, s2, s3];
     const set = this._staticSet(cam, sc, g[24]);
     const view = this._staticDraws(sc, set, cull & 1 ? this._viewPlanes(cam.R, cam.U, cam.F, cam.O, cam.P, g[24], g[20], g[21], g[22]) : [], 7, cam.P, this.nearFirst);
@@ -1065,7 +1102,7 @@ export class Renderer {
       }
       return { at, blocks: b1 - b0 };
     };
-    const used = [draws, ...shadowDraws.slice(0, sc.cascades), ...(sc.reflections ? [allDyn] : [])];
+    const used = [draws, ...shadowDraws.slice(0, sc.cascades), ...probeDyn];
     for (const lists of used) {
       for (const list of lists) {
         list.calls = [];
@@ -1105,22 +1142,17 @@ export class Renderer {
       pass.end();
     }
 
-    // The reflection picture: normally one side a frame, in turn; all six for
-    // a still, for a scene's first frame, and when its axes have jumped.
-    let probeDraws = 0, probeSides = 0, probeTris = 0, probeTets = 0;
+    // The reflection picture: the sides chosen above, each with the static
+    // and the moving geometry that it can see.
+    let probeDraws = 0, probeCount = 0, probeTris = 0, probeTets = 0;
     if (sc.reflections) {
       const p = this.probe, before = nDraws, trisBefore = nTris, tetsBefore = nTets;
-      const jumped = sc.probeAxes && sc.probeAxes.some((a, i) => f4.dot(a, axes[i]) < 0.95);
-      const all = cam.still || sc.probeAge === 0 || jumped;
       sc.probeAxes = axes;
-      const [X, Y, Z] = axes, neg = (v) => v.map((x) => -x);
-      // right, up and forward for the sides +X, -X, +Y, -Y, +Z, -Z of a cube map
-      const SIDES = [[neg(Z), Y, X], [Z, Y, neg(X)], [X, neg(Z), Y], [X, Z, neg(Y)], [X, Y, Z], [neg(X), Y, neg(Z)]];
       const pg = p.globals;
-      for (let side = 0; side < 6; side++) {
-        if (!all && side !== sc.probeAge % 6) continue;
+      for (let j = 0; j < probeSides.length; j++) {
+        const { side, S } = probeSides[j], sideDyn = probeDyn[j];
         pg.set(g);
-        pg.set(SIDES[side][0], 0); pg.set(SIDES[side][1], 4); pg.set(SIDES[side][2], 8);
+        pg.set(S[0], 0); pg.set(S[1], 4); pg.set(S[2], 8);
         pg[20] = 1; pg[21] = 1;
         pg[32] = PROBE_SIZE; pg[33] = PROBE_SIZE; pg[34] = 1 / PROBE_SIZE; pg[35] = 1 / PROBE_SIZE;
         pg[44] = 0; pg[45] = 1;
@@ -1130,17 +1162,16 @@ export class Renderer {
           colorAttachments: [{ view: p.faces[side], clearValue: [0, 0, 0, 1], loadOp: 'clear', storeOp: 'store' }],
           depthStencilAttachment: { view: p.depth, depthClearValue: 0, depthLoadOp: 'clear', depthStoreOp: 'discard' },
         });
-        const S = SIDES[side];
         const seen = this._staticDraws(sc, set, cull & 16 ? this._viewPlanes(S[0], S[1], S[2], cam.O, cam.P, g[24], 1, 1, g[22]) : [], 3, cam.P);
         drawStatic(pass, pipes, bg, 0, seen.ranges[0], seen.groups[0]);
-        drawDyn(pass, pipes.dyn[0], bg, allDyn[0]);
+        drawDyn(pass, pipes.dyn[0], bg, sideDyn[0]);
         pass.setPipeline(pipes.sky);
         pass.setBindGroup(0, bg);
         pass.draw(3);
         drawStatic(pass, pipes, bg, 1, seen.ranges[1], seen.groups[1]);
-        drawDyn(pass, pipes.dyn[1], bg, allDyn[1]);
+        drawDyn(pass, pipes.dyn[1], bg, sideDyn[1]);
         pass.end();
-        probeSides++;
+        probeCount++;
       }
       sc.probeAge++;
       probeDraws = nDraws - before; probeTris = nTris - trisBefore; probeTets = nTets - tetsBefore;
@@ -1224,7 +1255,7 @@ export class Renderer {
     d.queue.submit([enc.finish()]);
     this.info.draws = nDraws;
     // (a still brings all six sides of the reflection picture up to date, a running frame one)
-    const spare = probeSides > 1 ? (probeSides - 1) / probeSides : 0;
+    const spare = probeCount > 1 ? (probeCount - 1) / probeCount : 0;
     this.info.liveDraws = Math.round(nDraws - probeDraws * spare);
     // The work of one running frame over all its passes (the view, the shadow
     // maps, one side of the reflection picture): see tools/cost.mjs.

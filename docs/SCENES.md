@@ -705,10 +705,14 @@ anything else in it: what casts a shadow and what it falls on would have to be
 at the same place. Just short of 90° that does not hold, and the shadow maps
 then take everything the slice touches within their reach: the views between
 about 85° and 90° are the dearest a scene has, several times a level one.
-In a scene with `reflections` so is the view at 90° itself, because every
-side of the reflection picture takes all the moving geometry the slice
-touches, whichever way the side looks.
-`node tools/cost.mjs <scene> --view "lift=89" --view "lift=90"` counts them.
+In a scene with `reflections` the view at 90° itself is dear as well. A side
+of the reflection picture takes the moving geometry it can see, like any
+other view; but two of the six then look along time, and what such a side
+sees is the whole history, as far as the scene is drawn, of everything the
+slice touches round the player. A running frame draws one side, so two frames
+in six are several times the others.
+`node tools/cost.mjs <scene> --view "lift=89" --view "lift=90"` counts them
+(for the reflection picture, the average of its sides).
 
 On a device that cannot keep up, the page lowers the resolution it draws at,
 and with it the distance from which detail given with `within` is drawn.
