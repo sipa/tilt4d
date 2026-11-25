@@ -28,6 +28,7 @@ const MAT = {
   BEACON: 10, SPOTS: 11, THIN: 12, GLOW: 13, RUST: 14, BEAM: 15, SHELL: 16, SPONGE: 17, LAMP: 18, FROND: 19,
   // from here on the tag means something else than for the instanced reef life (see `surface`)
   FISH: 20, FIN: 21, MANTA: 22, JELLY: 23, BITS: 24, HULL: 25, CARGO: 26, TURTLE: 27, SUB: 28, EEL: 29, SHARKFIN: 30, VENT: 31, FLIPPER: 32,
+  MOTE: 33,
 };
 
 // ---------------------------------------------------------------------------
@@ -261,14 +262,17 @@ fn cellEdge(p: vec2f, t: f32) -> f32 {
   return d2 - d1;
 }
 
-// caustics: the net of light focused by the waves (0..1)
-fn caustic(p: vec2f, t: f32) -> f32 {
+// caustics: the net of light focused by the waves (0..1).  Its threads are
+// thin and bright where two layers cross; \`soft\` (0..1) widens and dims them
+// where they would be finer than a pixel.
+fn caustic(p: vec2f, t: f32, soft: f32) -> f32 {
   let w = vec2f(noise2(p * 0.4 + vec2f(t * 0.08, 0.0)), noise2(p * 0.4 + vec2f(5.2, -t * 0.07))) - 0.5;
   let e1 = cellEdge(p + w * 1.7, t * 0.9);
   let e2 = cellEdge(p * 1.31 + vec2f(13.7, 4.1) - w * 1.3, t * 0.7 + 3.0);
-  let l1 = exp(-e1 * 11.0);
-  let l2 = exp(-e2 * 9.0);
-  return saturate(l1 * 0.7 + l2 * 0.5 + l1 * l2 * 0.9);
+  let k = mix(24.0, 10.0, soft);
+  let l1 = exp(-e1 * k);
+  let l2 = exp(-e2 * k * 0.8);
+  return saturate((l1 * 0.85 + l2 * 0.55 + l1 * l2 * 1.6) * mix(1.25, 0.75, soft));
 }
 
 // ---- meshes with holes (.cutout()): sea fans, kelp and the wreck's plating
@@ -411,6 +415,8 @@ fn surface(sIn: Surface) -> Surface {
   var s = sIn;
   let m = s.mat;
   let fwUV = fwidth(s.uv);
+  // how many metres a pixel covers here
+  let fwP = length(fwidth(s.pos));
   // instanced reef life: parts that keep their own colour, or take the copy's second one
   if (m < ${MAT.FISH}u) {
     if (s.tag == 1u) {
@@ -437,6 +443,14 @@ fn surface(sIn: Surface) -> Surface {
     s.emissive *= edge * (1.0 - smoothstep(0.1, 1.0, s.uv.y));
     return s;
   }
+  if (m == ${MAT.MOTE}u) {
+    // motes in the water: faint, brighter looking towards the sun (they
+    // scatter its light forwards), gone at arm's length and fading out a few
+    // metres off, where they would be finer than a pixel
+    let fwd = pow(max(dot(s.view, SUN_DIR), 0.0), 3.0);
+    s.emissive *= (0.2 + 1.2 * fwd) * depthDim(s.pos.z) * smoothstep(0.4, 1.2, s.dist) * (1.0 - smoothstep(3.5, 7.5, s.dist));
+    return s;
+  }
 
   // thin sheets are lit from whichever side is seen
   if (m == ${MAT.THIN}u || m == ${MAT.KELP}u || m == ${MAT.FROND}u || m == ${MAT.FAN}u || m == ${MAT.JELLY}u || m == ${MAT.FIN}u || m == ${MAT.SHARKFIN}u || m == ${MAT.FLIPPER}u) {
@@ -448,59 +462,136 @@ fn surface(sIn: Surface) -> Surface {
     let wallAmt = s.uv.y;
     let q = s.pos.xy;
     let near = 1.0 - smoothstep(12.0, 35.0, s.dist);
-    // sand ripples, gently curving
-    let warp = noise2(q * 0.11) * 7.0 + noise2(q * 0.37) * 1.6;
-    let ph = dot(q, vec2f(0.53, 0.85)) * 6.5 + warp;
-    let level = smoothstep(0.8, 0.97, s.n.z) * sandAmt * near;
-    s.n = normalize(s.n - vec3f(0.53, 0.85, 0.0) * (cos(ph) * 0.3 * level));
-    s.color *= 1.0 + (sin(ph) * 0.06 + (noise2(q * 2.7) - 0.5) * 0.22) * sandAmt;
+    // (each part below runs only where its kind of ground is, and what only
+    // shows close by only there, so that a far ridge pays for little of it)
+    if (sandAmt > 0.0) {
+      var tone = (noise2(q * 2.7) - 0.5) * 0.22;
+      if (near > 0.0) {
+        // sand ripples, gently curving, with a steep lee side and fine
+        // debris gathered in the troughs
+        let warp = noise2(q * 0.11) * 7.0 + noise2(q * 0.37) * 1.6;
+        let ph = dot(q, vec2f(0.53, 0.85)) * 6.5 + warp;
+        let level = smoothstep(0.8, 0.97, s.n.z) * sandAmt * near;
+        let lee = cos(ph) + 0.45 * cos(2.0 * ph);
+        s.n = normalize(s.n - vec3f(0.53, 0.85, 0.0) * (lee * 0.5 * level));
+        let trough = smoothstep(0.3, 0.9, -sin(ph)) * smoothstep(0.15, 0.5, noise2(q * 0.7 + 5.0));
+        tone += (sin(ph) * 0.08 - trough * 0.4) * near;
+      }
+      s.color *= 1.0 + tone * sandAmt;
+      // close by, the grains: a fine mottle, with dark and pale specks of
+      // stone and shell a few millimetres across (faded out before they are
+      // finer than a pixel)
+      let grain = (1.0 - smoothstep(0.003, 0.008, fwP)) * sandAmt;
+      if (grain > 0.0) {
+        let gc = q * 37.0;
+        let gh = hash22(floor(gc));
+        let gr = mix(0.07, 0.16, fract(gh.x * 7.3));
+        let dot = (1.0 - smoothstep(gr * 0.7, gr, length(fract(gc) - 0.2 - 0.6 * gh))) * step(0.8, gh.x);
+        let pale = step(0.55, gh.y);
+        s.color *= 1.0 + grain * ((noise2(q * 41.0) - 0.5) * 0.3 + dot * mix(-0.55, 0.4, pale));
+      }
+    }
     // reef rubble: coralline, algae and sponge patches, and a lumpy surface
     let reefAmt = (1.0 - sandAmt) * (1.0 - wallAmt);
     causticAmt = 0.55 + 0.45 * sandAmt;
-    let pn = noise2(q * 0.8 + 3.0);
-    let pn2 = noise2(q * 1.6 + 11.0);
-    let pn3 = noise2(q * 1.2 - 7.0);
-    var rc = s.color * (0.8 + 0.4 * noise2(q * 5.0) * near);
-    rc = mix(rc, vec3f(0.34, 0.15, 0.27), smoothstep(0.6, 0.8, pn) * 0.5);
-    rc = mix(rc, vec3f(0.20, 0.26, 0.10), smoothstep(0.58, 0.78, pn2) * 0.45);
-    rc = mix(rc, vec3f(0.45, 0.24, 0.10), smoothstep(0.72, 0.86, pn3) * 0.45);
-    s.color = mix(s.color, rc, reefAmt);
+    if (reefAmt > 0.0) {
+      let pn = noise2(q * 0.8 + 3.0);
+      let pn2 = noise2(q * 1.6 + 11.0);
+      let pn3 = noise2(q * 1.2 - 7.0);
+      var rc = s.color;
+      if (near > 0.0) { rc *= 0.8 + 0.4 * noise2(q * 5.0) * near; } else { rc *= 0.8; }
+      rc = mix(rc, vec3f(0.34, 0.15, 0.27), smoothstep(0.6, 0.8, pn) * 0.5);
+      rc = mix(rc, vec3f(0.20, 0.26, 0.10), smoothstep(0.58, 0.78, pn2) * 0.45);
+      rc = mix(rc, vec3f(0.45, 0.24, 0.10), smoothstep(0.72, 0.86, pn3) * 0.45);
+      s.color = mix(s.color, rc, reefAmt);
+      // close by, the reef is rubble and small colonies a hand or two across:
+      // lumps at two scales, dark in the hollows and pale on top, crusted with
+      // pink coralline and olive turf, now and then a purple or a bright sponge
+      let kAmt = reefAmt * (1.0 - smoothstep(0.012, 0.035, fwP)) * (1.0 - wallAmt);
+      if (kAmt > 0.0) {
+        let kq = s.pos * 5.5;
+        let k0 = noise3(kq) + 0.45 * noise3(kq * 2.7 + 5.0);
+        let kx = noise3(kq + vec3f(0.12, 0.0, 0.0)) + 0.45 * noise3((kq + vec3f(0.12, 0.0, 0.0)) * 2.7 + 5.0);
+        let ky = noise3(kq + vec3f(0.0, 0.12, 0.0)) + 0.45 * noise3((kq + vec3f(0.0, 0.12, 0.0)) * 2.7 + 5.0);
+        let kz = noise3(kq + vec3f(0.0, 0.0, 0.12)) + 0.45 * noise3((kq + vec3f(0.0, 0.0, 0.12)) * 2.7 + 5.0);
+        s.n = normalize(s.n - vec3f(kx - k0, ky - k0, kz - k0) * (7.0 * kAmt));
+        let top = smoothstep(0.55, 1.05, k0);
+        let hollow = 1.0 - smoothstep(0.35, 0.65, k0);
+        var kc = mix(s.color, vec3f(0.62, 0.59, 0.5), top * 0.5);
+        kc = mix(kc, vec3f(0.62, 0.34, 0.44), smoothstep(0.58, 0.7, noise2(q * 2.6 + 2.0)) * 0.7);
+        kc = mix(kc, vec3f(0.34, 0.36, 0.16), smoothstep(0.55, 0.68, noise2(q * 3.4 + 9.0)) * 0.6);
+        let rare = noise2(q * 1.9 - 4.0);
+        kc = mix(kc, vec3f(0.44, 0.28, 0.5), smoothstep(0.74, 0.8, rare) * 0.7);
+        kc = mix(kc, vec3f(0.85, 0.5, 0.15), smoothstep(0.2, 0.15, rare) * top * 0.8);
+        s.color = mix(s.color, kc * (1.0 - 0.45 * hollow), kAmt);
+        s.ambient *= 1.0 - 0.35 * hollow * kAmt;
+      }
+    }
     // lumpy rubble and rock (3D noise, so that the steep wall is not streaked)
-    let bq = s.pos * 1.7;
-    let b0 = noise3(bq);
-    let bx = noise3(bq + vec3f(0.2, 0.0, 0.0));
-    let by = noise3(bq + vec3f(0.0, 0.2, 0.0));
-    let bz = noise3(bq + vec3f(0.0, 0.0, 0.2));
-    s.n = normalize(s.n - vec3f(bx - b0, by - b0, bz - b0) * (5.0 * (1.0 - sandAmt) * near));
+    let lumps = (1.0 - sandAmt) * near;
+    if (lumps > 0.0) {
+      let bq = s.pos * 1.7;
+      let b0 = noise3(bq);
+      let bx = noise3(bq + vec3f(0.2, 0.0, 0.0));
+      let by = noise3(bq + vec3f(0.0, 0.2, 0.0));
+      let bz = noise3(bq + vec3f(0.0, 0.0, 0.2));
+      s.n = normalize(s.n - vec3f(bx - b0, by - b0, bz - b0) * (5.0 * lumps));
+    }
     // the wall: grey stone in layers, with sponges and coralline crusts
-    let w1 = noise3(s.pos * vec3f(0.4, 0.4, 1.4));
-    let w2 = noise3(s.pos * 0.9 + 17.0);
-    var wc = s.color * (0.7 + 0.6 * w1);
-    wc = mix(wc, vec3f(0.42, 0.14, 0.32), smoothstep(0.62, 0.78, w2) * 0.6);
-    wc = mix(wc, vec3f(0.55, 0.25, 0.08), (1.0 - smoothstep(0.22, 0.32, w2)) * 0.5);
-    s.color = mix(s.color, wc, wallAmt);
+    if (wallAmt > 0.0) {
+      let w1 = noise3(s.pos * vec3f(0.4, 0.4, 1.4));
+      let w2 = noise3(s.pos * 0.9 + 17.0);
+      var wc = s.color * (0.7 + 0.6 * w1);
+      wc = mix(wc, vec3f(0.42, 0.14, 0.32), smoothstep(0.62, 0.78, w2) * 0.6);
+      wc = mix(wc, vec3f(0.55, 0.25, 0.08), (1.0 - smoothstep(0.22, 0.32, w2)) * 0.5);
+      s.color = mix(s.color, wc, wallAmt);
+    }
   } else if (m == ${MAT.ROCK}u) {
     causticAmt = 0.7;
     let n3 = noise3(s.pos * 1.3);
+    // pitted, knobbly limestone, so that the facets of the mesh do not show
+    // close by: the normal bent by two scales of noise
+    let near = 1.0 - smoothstep(10.0, 30.0, s.dist);
+    if (near > 0.0) {
+      let bq = s.pos * 2.3;
+      let b0 = noise3(bq) + 0.5 * noise3(bq * 3.1);
+      let bx = noise3(bq + vec3f(0.15, 0.0, 0.0)) + 0.5 * noise3((bq + vec3f(0.15, 0.0, 0.0)) * 3.1);
+      let by = noise3(bq + vec3f(0.0, 0.15, 0.0)) + 0.5 * noise3((bq + vec3f(0.0, 0.15, 0.0)) * 3.1);
+      let bz = noise3(bq + vec3f(0.0, 0.0, 0.15)) + 0.5 * noise3((bq + vec3f(0.0, 0.0, 0.15)) * 3.1);
+      s.n = normalize(s.n - vec3f(bx - b0, by - b0, bz - b0) * (4.5 * near));
+      // dark pits and pale crusts
+      s.color *= 1.0 - 0.35 * smoothstep(0.62, 0.8, b0 * 0.67) * near;
+    }
     s.color *= 0.75 + 0.5 * n3;
     s.color = mix(s.color, vec3f(0.40, 0.14, 0.30), smoothstep(0.62, 0.8, noise3(s.pos * 0.7 + 4.0)) * 0.7);
     s.color = mix(s.color, vec3f(0.16, 0.25, 0.06), smoothstep(0.55, 0.85, s.n.z) * smoothstep(0.4, 0.7, noise3(s.pos * 2.1)) * 0.6);
   } else if (m == ${MAT.CORAL}u) {
-    // tiny polyps
-    let pp = noise3(s.pos * 14.0);
-    s.color *= 0.82 + 0.36 * pp * (1.0 - smoothstep(4.0, 12.0, s.dist));
+    // tiny polyps (an even tone further off)
+    if (s.dist < 12.0) {
+      let pp = noise3(s.pos * 14.0);
+      s.color *= 0.82 + 0.36 * pp * (1.0 - smoothstep(4.0, 12.0, s.dist));
+    } else {
+      s.color *= 0.82;
+    }
     if (s.dist < 5.0) {
       // close by, the polyps: pale specks with dark mouths
       let c = noise3(s.pos * 45.0);
       s.color *= 1.0 + (1.0 - smoothstep(2.5, 5.0, s.dist)) * (0.35 * smoothstep(0.55, 0.68, c) - 0.5 * smoothstep(0.74, 0.8, c));
     }
   } else if (m == ${MAT.BRAIN}u) {
-    // meandering ridges with narrow dark valleys between them
-    let g = sin(noise3(s.pos * 2.2) * 34.0);
-    let k = (1.0 - smoothstep(6.0, 20.0, s.dist));
-    let valley = smoothstep(-0.55, -0.9, g);
-    s.color *= 1.0 + k * (0.18 * g - 0.5 * valley);
-    s.ambient *= 1.0 - 0.3 * valley * k;
+    // meandering ridges a few centimetres apart with narrow dark valleys
+    // between them (stripes bent every which way by noise), fading to an even
+    // colour before they would shimmer
+    // (living tissue is duller than the tints of the copies)
+    s.color = mix(s.color, vec3f(dot(s.color, vec3f(0.3, 0.55, 0.15))), 0.3);
+    let k = 1.0 - smoothstep(0.005, 0.016, fwP);
+    if (k > 0.0) {
+      let g = sin(dot(s.pos, vec3f(0.8, 0.5, 0.3)) * 110.0 + (noise3(s.pos * 4.5) + 0.6 * noise3(s.pos * 11.0)) * 48.0);
+      let valley = smoothstep(-0.1, -0.75, g);
+      s.color *= 1.0 + k * (0.2 * g - 0.4 * valley);
+      s.ambient *= 1.0 - 0.35 * valley * k;
+      s.sun *= 1.0 - 0.3 * valley * k;
+    }
   } else if (m == ${MAT.FAN}u) {
     // a net of branches with water showing between them (see \`cutout\`),
     // a little darker towards their edges
@@ -534,16 +625,20 @@ fn surface(sIn: Surface) -> Surface {
       let cone = 1.0 - smoothstep(0.1, 0.2, bd);
       s.color = mix(s.color, vec3f(0.55, 0.52, 0.45) * (0.7 + 0.3 * cone), bar * cone * smoothstep(0.03, 0.06, bd));
     }
-    // rust, sponges and weed on the wreck
+    // rust, sponges and weed on the wreck: dark rust streaked down the
+    // plating, grown over with pink crust and olive turf, a few bright
+    // sponges; the plating's steep sides catch less of the caustics
     let a = noise3(s.pos * 0.9);
-    let b = noise3(s.pos * 1.7 + 9.0);
+    let b = noise3(s.pos * vec3f(1.7, 1.7, 0.6) + 9.0);
     let c = noise3(s.pos * 2.3 - 3.0);
     let d = noise3(s.pos * 3.1 + 5.0);
-    s.color *= 0.8 + 0.45 * a;
-    s.color = mix(s.color, vec3f(0.62, 0.24, 0.06), smoothstep(0.55, 0.75, b) * 0.7);
-    s.color = mix(s.color, vec3f(0.85, 0.30, 0.12), smoothstep(0.74, 0.8, c) * 0.85);
-    s.color = mix(s.color, vec3f(0.55, 0.12, 0.30), smoothstep(0.76, 0.82, d) * 0.8);
-    s.color = mix(s.color, vec3f(0.25, 0.33, 0.12), smoothstep(0.5, 0.9, s.n.z) * 0.45);
+    causticAmt = 0.45 + 0.55 * abs(s.n.z);
+    s.color *= 0.7 + 0.4 * a;
+    s.color = mix(s.color, vec3f(0.36, 0.17, 0.08), smoothstep(0.5, 0.75, b) * 0.7);
+    s.color = mix(s.color, vec3f(0.55, 0.32, 0.4), smoothstep(0.6, 0.75, a + 0.2 * d) * 0.5);
+    s.color = mix(s.color, vec3f(0.85, 0.36, 0.12), smoothstep(0.78, 0.82, c) * 0.7);
+    s.color = mix(s.color, vec3f(0.55, 0.12, 0.30), smoothstep(0.78, 0.83, d) * 0.8);
+    s.color = mix(s.color, vec3f(0.25, 0.33, 0.12), smoothstep(0.5, 0.9, s.n.z) * 0.5);
     s.gloss = 0.05;
   } else if (m == ${MAT.SHELL}u) {
     // turtle shell plates
@@ -702,9 +797,11 @@ fn surface(sIn: Surface) -> Surface {
     }
   } else if (m == ${MAT.BUBBLE}u) {
     // silvery bubbles (additive light): a faint body and a bright rim, dimmer in the depths
-    let rim = pow(saturate(1.0 - abs(dot(s.n, s.view))), 2.0);
+    // (the flat underside of a big one lights up towards its rim only)
+    let ar = saturate(s.aux);
+    let rim = select(pow(saturate(1.0 - abs(dot(s.n, s.view))), 2.5), 0.7 * ar * ar * ar * ar, s.tag == 1u);
     s.color = vec3f(0.75, 0.93, 1.0);
-    s.emissive = (0.05 + 0.9 * rim) * depthDim(s.pos.z);
+    s.emissive = (0.03 + 0.8 * rim) * depthDim(s.pos.z);
     return s;
   } else if (m == ${MAT.JELLY}u) {
     let rim = saturate(1.0 - abs(dot(s.n, s.view)));
@@ -748,13 +845,16 @@ fn surface(sIn: Surface) -> Surface {
     return s;
   }
 
-  // ---- the water: caustics from above, light fading and colours cooling with depth
+  // ---- the water: caustics from above, light fading and colours cooling with
+  // depth, and on the way to the eye as well: red goes first, then green, so
+  // that a coral a few metres off is already bluer than one at arm's length
   let lp = s.pos.xy + SUN_DIR.xy / SUN_DIR.z * depth;
-  let ca = caustic(lp * 1.2, s.t);
   let k = (1.0 - 0.55 * smoothstep(4.0, 40.0, depth)) * (1.0 - smoothstep(18.0, 40.0, s.dist)) * causticAmt;
-  s.sun *= mix(0.85, 0.35 + 1.9 * ca, k) * exp(-depth * 0.02);
+  var ca = 0.0;
+  if (k > 0.0) { ca = caustic(lp * 1.2, s.t, smoothstep(0.004, 0.03, fwP)); }
+  s.sun *= mix(0.85, 0.42 + 1.75 * ca, k) * exp(-depth * 0.02);
   s.ambient *= 0.5 + 0.5 * exp(-depth * 0.03);
-  s.color *= exp(-depth * vec3f(0.036, 0.012, 0.007));
+  s.color *= exp(-depth * vec3f(0.03, 0.01, 0.006) - s.dist * vec3f(0.035, 0.012, 0.004));
   return s;
 }
 `;
@@ -796,6 +896,38 @@ function seamlessSphere(seg, rings) {
       if (j < rings - 1) g.tri(at(j, i + 1), at(j + 1, i), at(j + 1, i + 1));
     }
   }
+  return g.orientByNormals();
+}
+
+// A big bubble is not round: it rises as a cap, domed on top and hollowed
+// underneath, its rim a little ragged.  About a unit across, centred on the
+// origin; 48 triangles where a round one wants 72.
+function capBubble(seg = 8) {
+  const g = new Geo();
+  const top = g.vert(0, 0, 0.42, 0, 0, 1);
+  const rings = [0.5, 0.95, 1.3].map((th, k) => Array.from({ length: seg }, (_, i) => {
+    const ph = TAU * i / seg, n = [Math.sin(th) * Math.cos(ph), Math.sin(th) * Math.sin(ph), Math.cos(th)];
+    const rag = k === 2 ? 0.07 * Math.sin(3 * ph + 1) + 0.04 * Math.sin(5 * ph) : 0;
+    return g.vert(n[0], n[1], n[2] - 0.58 + rag, n[0], n[1], n[2]);
+  }));
+  // (the hollow underside has a rim of its own, facing down, so that it is
+  // as clear as the middle of the dome and not lit up like its edge)
+  const under = g.vert(0, 0, -0.12, 0, 0, -1);
+  const rim = rings[2].map((k) => {
+    const n = v3.norm([g.p[k * 3] * 0.3, g.p[k * 3 + 1] * 0.3, -1]);
+    return g.vert(g.p[k * 3], g.p[k * 3 + 1], g.p[k * 3 + 2], n[0], n[1], n[2]);
+  });
+  for (let i = 0; i < seg; i++) {
+    const j = (i + 1) % seg;
+    g.tri(top, rings[0][i], rings[0][j]);
+    for (let k = 0; k < 2; k++) {
+      g.tri(rings[k][i], rings[k + 1][i], rings[k][j]);
+      g.tri(rings[k][j], rings[k + 1][i], rings[k + 1][j]);
+    }
+    g.tri(under, rim[j], rim[i]);
+  }
+  // (the underside is tagged 1, its aux 0 in the middle and 1 at the rim: see MAT.BUBBLE)
+  for (const k of [under, ...rim]) { g.x[k * 2] = k === under ? 0 : 1; g.x[k * 2 + 1] = 1; }
   return g.orientByNormals();
 }
 
@@ -1040,7 +1172,8 @@ const KIND = {
   rock: {
     variants: 4, seed: 101,
     shape: (rand) => rand() * 50,
-    mesh: (seed) => lumpy(Geo.sphere(1, 9, 6), 0.3, 1.5, seed).computeNormals(false).color(WHITE).mat(MAT.ROCK),
+    // (smooth normals: the knobs and pits are painted on in `surface`)
+    mesh: (seed) => lumpy(seamlessSphere(9, 6), 0.3, 1.5, seed).computeNormals(true).color(WHITE).mat(MAT.ROCK),
   },
   brain: {
     variants: 1,
@@ -1249,13 +1382,15 @@ const starfish = (color) => ({ kind: 'starfish', pre: m4.identity(), tint: color
 const urchin = (rand) => ({ kind: 'urchin', shape: KIND.urchin.shape(rand), pre: m4.identity() });
 
 // Collects the copies by prototype; `grow()` adds them to the scene, one
-// b.instances call per prototype.
+// b.instances call per prototype.  A sea fan planted with `sway` is not one
+// of those copies but a thing of its own that bends in the surge (see
+// swayingFan).
 function garden(b) {
   const vary = rng(29); // which prototype each copy gets: kept apart from the layout's random numbers
   const protos = {};
   const beds = new Map();
   return {
-    plant(c, m) {
+    plant(c, m, sway = false) {
       const k = KIND[c.kind];
       let geo, s0 = k.size;
       if (ONE_PER_COPY) {
@@ -1266,6 +1401,8 @@ function garden(b) {
         geo = protos[c.kind][k.variants > 1 ? vary.int(0, k.variants - 1) : 0];
       }
       const pre = k.fit ? k.fit(c.size, s0) : c.pre;
+      if (sway && c.kind === 'fan') { swayingFan(b, geo, m4.mul(m, pre), c.tint); return; }
+      if (sway && c.kind === 'anemone') { swayingAnemone(b, geo, m4.mul(m, pre), c.tint, c.second); return; }
       if (!beds.has(geo)) beds.set(geo, []);
       beds.get(geo).push({ transform: m4.mul(m, pre), tint: c.tint, data: c.second ?? 0 });
     },
@@ -1273,6 +1410,66 @@ function garden(b) {
       for (const [geo, at] of beds) b.instances(geo, at);
     },
   };
+}
+
+// The poses of a swaying copy in its own colours: white parts take `tint`,
+// and parts tagged 3 (an anemone's column) the second colour SECOND[second].
+function painted(poses, tint, second) {
+  const c = hex(tint), c2 = second === undefined ? null : hex(SECOND[second]);
+  return poses.map((g) => {
+    const out = g.clone();
+    for (let i = 0; i < out.vertexCount; i++) {
+      const k = i * 3;
+      if (c2 && out.x[i * 2 + 1] === 3) { out.c[k] = c2[0]; out.c[k + 1] = c2[1]; out.c[k + 2] = c2[2]; out.x[i * 2 + 1] = 0; }
+      else if (out.c[k] + out.c[k + 1] + out.c[k + 2] > 2.99) { out.c[k] = c[0]; out.c[k + 1] = c[1]; out.c[k + 2] = c[2]; }
+    }
+    return out;
+  });
+}
+// When a copy at x is in the surge's round (see swayingFan).
+const surgeStart = (x) => ((x * 0.12 / TAU * 7.5) % 7.5 + 7.5) % 7.5;
+
+// An anemone (a prototype of KIND.anemone) whose tentacles lean to and fro
+// in the surge, the tips 12 cm out either way (at unit size) along the current,
+// which runs east-north-east.  Small and low, it casts no shadow while it moves.
+function swayingAnemone(b, proto, m, tint, second) {
+  const ax = [m[0], m[1], m[2]], ay = [m[4], m[5], m[6]], cur = [Math.cos(0.4), Math.sin(0.4), 0];
+  const along = v3.norm([v3.dot(cur, ax) / v3.dot(ax, ax), v3.dot(cur, ay) / v3.dot(ay, ay), 0]);
+  const poses = painted([0, 1, 0, -1].map((side) => {
+    const g = proto.clone().noShadow();
+    for (let i = 0; i < g.vertexCount; i++) {
+      const f = Math.max(g.p[i * 3 + 2] - 0.45, 0) / 0.9;
+      g.p[i * 3] += side * 0.12 * f * f * along[0];
+      g.p[i * 3 + 1] += side * 0.12 * f * f * along[1];
+    }
+    return g;
+  }), tint, second);
+  b.dynamic((u) => poses[Math.round(u * 4) % 4], {
+    times: [0, P], transform: () => m, caps: 'none', cycle: { period: 7.5, keys: 4, start: surgeStart(m[12]) },
+  });
+}
+
+// A sea fan (a prototype of KIND.fan, white where the copy's colour goes)
+// that bends to and fro across its face in the surge, which passes over the
+// reef as a wave every 7.5 s, in step with the kelp (see "kelp" in build()):
+// four poses of a round, the top 20 cm out either way, the stem still.
+const fanPoses = new Map();
+function swayingFan(b, proto, m, tint) {
+  if (!fanPoses.has(proto)) {
+    const top = proto.bounds().max[2];
+    fanPoses.set(proto, [0, 1, 0, -1].map((side) => {
+      const g = proto.clone();
+      for (let i = 0; i < g.vertexCount; i++) {
+        const f = Math.max(g.p[i * 3 + 2] - 0.15, 0) / (top - 0.15);
+        g.p[i * 3 + 1] += side * 0.2 * f * f;
+      }
+      return g;
+    }));
+  }
+  const poses = painted(fanPoses.get(proto), tint);
+  b.dynamic((u) => poses[Math.round(u * 4) % 4], {
+    times: [0, P], transform: () => m, caps: 'none', cycle: { period: 7.5, keys: 4, start: surgeStart(m[12]) },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1358,24 +1555,6 @@ function fishGeo(f) {
   return g.tag(f.tag);
 }
 
-// The triangles of g for which keep(i) holds, with their vertices.
-function part(g, keep) {
-  const out = new Geo(), map = new Map();
-  for (let i = 0; i < g.idx.length / 3; i++) {
-    if (!keep(i)) continue;
-    for (let k = 0; k < 3; k++) {
-      const v = g.idx[i * 3 + k];
-      if (!map.has(v)) {
-        map.set(v, out.vertexCount);
-        out.p.push(...g.p.slice(v * 3, v * 3 + 3)); out.n.push(...g.n.slice(v * 3, v * 3 + 3)); out.c.push(...g.c.slice(v * 3, v * 3 + 3));
-        out.uv.push(...g.uv.slice(v * 2, v * 2 + 2)); out.a.push(...g.a.slice(v * 4, v * 4 + 4)); out.x.push(...g.x.slice(v * 2, v * 2 + 2));
-      }
-      out.idx.push(map.get(v));
-    }
-  }
-  return out;
-}
-
 // A fish of the kind f beating its tail: fishGeo in two parts, the front,
 // which stays as it is, and the rest, which swings from side to side once
 // every f.beat seconds.  The swing is a cycle of two poses, its two ends (in
@@ -1392,7 +1571,9 @@ function fishSwim(f, amp = 0.11) {
   const off = (y) => (y < y0 ? amp * L * ((y0 - y) / (y0 - yt)) ** 2 : 0);
   const slope = (y) => (y < y0 ? -2 * amp * L * (y0 - y) / (y0 - yt) ** 2 : 0);
   const moves = (i) => [0, 1, 2].some((k) => g0.p[g0.idx[i * 3 + k] * 3 + 1] < y0 - 1e-9);
-  const rest = part(g0, moves);
+  // (the beating part casts no shadow: a tilted slice would otherwise draw
+  // every beat it finds into the shadow maps, and the front's shadow is the fish's)
+  const rest = g0.pick(moves).noShadow();
   const pose = (side) => {
     const g = rest.clone();
     for (let i = 0; i < g.vertexCount; i++) {
@@ -1405,13 +1586,23 @@ function fishSwim(f, amp = 0.11) {
     return g;
   };
   const poses = [pose(1), pose(-1)];
-  return { f, front: part(g0, (i) => !moves(i)), rest: (u) => poses[Math.round(u * 2) % 2] };
+  return { f, front: g0.pick((i) => !moves(i)), rest: (u) => poses[Math.round(u * 2) % 2] };
 }
 // Adds a fish (from fishSwim) that tf takes along: both parts on the same keys
-// (which they then share), the beat starting at a random time of its own.
+// (which they then share), the beat starting at a random time of its own.  A
+// fish that swims goes about two thirds of its length for each beat of its
+// tail, so the beat follows its speed (but no quicker than 0.18 s, and no
+// slower than its kind's own, at which one that hovers fans its tail).
 function addFish(b, swim, tf, times, rand, extra = {}) {
+  const t0 = times[0], t1 = times[times.length - 1];
+  let d = 0;
+  for (let k = 1; k <= 60; k++) {
+    const a = tf(t0 + (t1 - t0) * (k - 1) / 60), c = tf(t0 + (t1 - t0) * k / 60);
+    d += Math.hypot(c[12] - a[12], c[13] - a[13], c[14] - a[14]);
+  }
+  const beat = clamp(0.65 * swim.f.L / Math.max(d / (t1 - t0), 1e-3), 0.18, swim.f.beat);
   b.dynamic(swim.front, { times, transform: tf, caps: 'none', ...extra });
-  b.dynamic(swim.rest, { times, transform: tf, caps: 'none', ...extra, cycle: { period: swim.f.beat, keys: 2, start: rand() * swim.f.beat } });
+  b.dynamic(swim.rest, { times, transform: tf, caps: 'none', ...extra, cycle: { period: beat, keys: 2, start: rand() * beat } });
 }
 
 // Moves a model along a closed path (either way round, by the sign of `speed`)
@@ -1434,6 +1625,18 @@ function nearestOn(path, [x, y]) {
     if (e < bd) { bd = e; best = d; }
   }
   return best;
+}
+
+// The mantas' lap: up the west side of the channel at 13 m and back down the
+// east side, two minutes round, so that the repeat a period later is a second
+// manta half a lap behind.  Where tf puts a manta at time t; the other is at t + P.
+function mantaLap() {
+  const pts = [];
+  for (let y = -58; y <= 6; y += 8) pts.push([chanX(y) - 5, y, 13.2 + 1.2 * Math.sin(y * 0.08)]);
+  for (let y = 6; y >= -58; y -= 8) pts.push([chanX(y) + 7, y, 15 + 1.2 * Math.sin(y * 0.1)]);
+  const loop = new Path(pts, { closed: true, smooth: 6 });
+  const dur = 2 * P;
+  return { dur, tf: laneTf(loop, { speed: loop.length / dur, offset: nearestOn(loop, [chanX(-31) - 5, -31]), span: 6 }) };
 }
 
 // keys for something that tf takes along a path for dur seconds (size: about its radius)
@@ -1609,10 +1812,14 @@ export default {
   skyDistance: 70,
   exposure: 1.0,
   bloom: 0.45,
-  shadowRadii: [15, 70],
+  // (beyond 45 m the haze has taken nearly nine tenths of everything, and no shadow shows)
+  shadowRadii: [14, 45],
   shadowDepth: 120,
   ground: (x, y) => H(x, y),
   ceiling: SURF,
+  // a slimmer swimmer than the usual one (0.45 m), kept 0.4 m off the sand
+  // instead of 0.6 m: close enough to the shells, crabs and garden eels to see them
+  body: { swim: { r: 0.3 }, fly: { r: 0.3 } },
   accel: 0.6,
   wgsl,
 
@@ -1654,9 +1861,11 @@ export default {
     const free = (x, y, r) => taken.every(([a, c, q]) => Math.hypot(x - a, y - c) > r + q);
     // the corals, sponges and rocks, gathered by prototype (see garden())
     const life = garden(b);
+    // the sea fans and anemones that sway: those a swimmer finds round the starting point
+    const swaysHere = (x, y) => Math.hypot(x - chanX(-46), y + 46) < 18;
     const place = (copy, x, y, { r = 0.5, sink = 0.1, rot = rand() * TAU, scale = 1, keep = true } = {}) => {
       const z = floorUnder(x, y, r * scale) - sink * scale;
-      life.plant(copy, m4.mul(m4.translation(x, y, z), m4.rotationZ(rot), m4.scaling(scale)));
+      life.plant(copy, m4.mul(m4.translation(x, y, z), m4.rotationZ(rot), m4.scaling(scale)), swaysHere(x, y));
       if (keep) taken.push([x, y, r * scale]);
     };
 
@@ -1830,8 +2039,8 @@ export default {
       const top = H(x, y) + 1.4;
       life.plant(brain(0.9, rand.pick([PAL.tan, PAL.lime])), m4.translation(x + 0.3, y - 0.2, top));
       life.plant(branch(rand, 1.4, rand.pick([PAL.purple, PAL.blue, PAL.magenta]), PAL.cream), m4.translation(x - 0.8, y + 0.5, top - 0.3));
-      life.plant(fan(rand, 1.1, rand.pick([PAL.red, PAL.orange])), m4.mul(m4.translation(x + 0.9, y + 0.8, top - 0.5), m4.rotationZ(rand() * TAU)));
-      life.plant(anemone(rand, 0.35, '#f0a6c9', PAL.magenta), m4.translation(x - 1.1, y - 0.9, top - 0.6));
+      life.plant(fan(rand, 1.1, rand.pick([PAL.red, PAL.orange])), m4.mul(m4.translation(x + 0.9, y + 0.8, top - 0.5), m4.rotationZ(rand() * TAU)), swaysHere(x, y));
+      life.plant(anemone(rand, 0.35, '#f0a6c9', PAL.magenta), m4.translation(x - 1.1, y - 0.9, top - 0.6), swaysHere(x, y));
     }
 
     // ---- lantern anemones along the foot of both channel walls ---------------
@@ -1851,20 +2060,38 @@ export default {
       if (rand() < 0.5) place(starfish(rand.pick(['#e0533c', '#f08a2c', '#3f6fd0', '#d84a8a'])), x, y, { r: 0.2, sink: 0.01 });
       else place(urchin(rand), x, y, { r: 0.2, sink: 0.04 });
     }
-    // seagrass meadows on the open sand south of the reef and around the wreck
+    // seagrass meadows on the open sand south of the reef and around the wreck.
+    // The meadows a swimmer finds behind the starting point bend in the surge
+    // as the kelp and the fans do, each blade at its own place in the passing
+    // wave, its tip 15 cm out either way along the current (a mesh of their own
+    // with four poses of a round, which casts no shadow); the rest stand still.
     {
       const grass = new Geo();
+      const cur = [Math.cos(0.4), Math.sin(0.4)];
       const meadow = (cx, cy, cr, n) => {
         if (terrain(cx, cy).wall > 0.01) return;
+        const blades = [];
         for (let i = 0; i < n; i++) {
           const a = rand() * TAU, d = Math.sqrt(rand()) * cr;
           const x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
           if (terrain(x, y).reef > 0.3 || !free(x, y, 0.05)) continue;
           const z = H(x, y) - 0.05, h = rand.range(0.4, 1.0) * (1 - 0.5 * d / cr), o = rand() * TAU, w = 0.05;
           const lean = [rand.range(-0.2, 0.2), rand.range(-0.2, 0.2)];
-          grass.add(Geo.triangle([x - Math.cos(o) * w, y - Math.sin(o) * w, z], [x + Math.cos(o) * w, y + Math.sin(o) * w, z],
-            [x + lean[0] * h, y + lean[1] * h, z + h]));
+          blades.push([[x - Math.cos(o) * w, y - Math.sin(o) * w, z], [x + Math.cos(o) * w, y + Math.sin(o) * w, z], [x + lean[0] * h, y + lean[1] * h, z + h], h]);
         }
+        if (Math.hypot(cx - chanX(-46), cy + 46) > 50) {
+          for (const [p0, p1, p2] of blades) grass.add(Geo.triangle(p0, p1, p2));
+          return;
+        }
+        const poses = [0, 1, 2, 3].map((k) => {
+          const g = new Geo();
+          for (const [p0, p1, p2, h] of blades) {
+            const o = 0.15 * h * Math.sin(TAU * k / 4 - p2[0] * 0.12);
+            g.add(Geo.triangle(p0, p1, [p2[0] + cur[0] * o, p2[1] + cur[1] * o, p2[2]]));
+          }
+          return g.color('#86b34c').mat(MAT.KELP).noShadow();
+        });
+        b.dynamic((u) => poses[Math.round(u * 4) % 4], { times: [0, P], caps: 'none', cycle: { period: 7.5, keys: 4 } });
       };
       for (let c = 0; c < 26; c++) meadow(rand.range(-45, 35), rand.range(-104, -58), rand.range(3, 7), rand.int(140, 260));
       for (let c = 0; c < 10; c++) meadow(rand.range(-35, 35), rand.range(70, 112), rand.range(2.5, 5), rand.int(90, 160));
@@ -1961,23 +2188,54 @@ export default {
       }
     }
 
+    // ---- motes: specks of plankton and sand hanging in the water, which
+    // drift past a swimmer and show that there is water at all.  A block of
+    // 4 m with 56 specks (single triangles, 7 to 15 mm, every way about) is
+    // set down over and over along the channel, each copy turned its own way,
+    // and drawn only from near by (see MAT.MOTE).
+    {
+      const mr = rng(5150);
+      const block = new Geo();
+      for (let i = 0; i < 56; i++) {
+        const c = [mr.range(-2, 2), mr.range(-2, 2), mr.range(-2, 2)], r = mr.range(0.004, 0.009);
+        const n = v3.norm([mr() - 0.5, mr() - 0.5, mr() - 0.5]);
+        const e1 = v3.norm(v3.cross(n, Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0])), e2 = v3.cross(n, e1);
+        const corner = (a) => v3.add(c, v3.add(v3.scale(e1, r * Math.cos(a)), v3.scale(e2, r * Math.sin(a))));
+        block.add(Geo.triangle(corner(0), corner(2.1), corner(4.2)));
+      }
+      block.color('#e6f2ee').mat(MAT.MOTE).emissive(1).additive();
+      const at = [];
+      for (let y = -74; y < 114; y += 4) {
+        for (let u = -16; u < 16; u += 4) {
+          const x = chanX(y) + u + 2;
+          for (let z = Math.max(H(x, y), -6) + 2; z < SURF; z += 4) {
+            at.push(m4.mul(m4.translation(x, y, z), m4.rotationZ(mr() * TAU), m4.rotationX(mr() < 0.5 ? 0 : Math.PI)));
+          }
+        }
+      }
+      b.instances(block, at, { within: 8, solid: false });
+    }
+
     // ---- bubbles: rising at a constant speed, two keys each ------------------
-    // small stream bubbles can be coarse; the big ones from the vents need rounder outlines
-    // (the same triangles as Geo.sphere's, without the seam and the poles'
-    // repeated vertices, which every bubble would store at both of its keys)
-    const bubbleSmall = seamlessSphere(6, 4).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
-    const bubbleBig = seamlessSphere(9, 5).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
+    // Small stream bubbles are round and can be coarse (the same triangles as
+    // Geo.sphere's, without the seam and the poles' repeated vertices, which
+    // every bubble would store at both of its keys); the big ones from the
+    // vents and the wreck are caps, each turned its own way.
+    const bubbleSmall = seamlessSphere(6, 3).color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
+    const bubbleBig = capBubble().color('#cdeeff').mat(MAT.BUBBLE).emissive(1).additive();
     const RISE = 0.9;
+    const turnRand = rng(31); // (random numbers of their own, so that nothing else moves)
     const emitBubble = (x, y, z0, te, r, spread) => {
       const z1 = SURF - 0.15;
       const T = (z1 - z0) / RISE;
       const ex = x + rand.range(-spread, spread), ey = y + rand.range(-spread, spread);
-      b.dynamic(r > 0.085 ? bubbleBig : bubbleSmall, {
+      const big = r > 0.085, turn = big ? m4.rotationZ(turnRand() * TAU) : m4.identity();
+      b.dynamic(big ? bubbleBig : bubbleSmall, {
         times: [te, te + T],
         transform: (t) => {
           const f = (t - te) / T;
           const s = r * (0.75 + 0.5 * f);
-          return m4.mul(m4.translation(x + (ex - x) * f, y + (ey - y) * f, z0 + (z1 - z0) * f), m4.scaling(s, s, s * 0.85));
+          return m4.mul(m4.translation(x + (ex - x) * f, y + (ey - y) * f, z0 + (z1 - z0) * f), m4.scaling(s, s, s * 0.85), turn);
         },
         caps: 'none',
       });
@@ -2026,7 +2284,7 @@ export default {
       }
     }
 
-    // ---- garden eels: they duck into the sand in a wave that runs up the channel
+    // ---- garden eels: they duck into the sand as a manta's shadow passes over
     {
       // (painted in `surface`: dark spots down the body, eyes on the head)
       const eel = Geo.tube([[0, 0, -0.85], [0, 0, 0.1], [0.04, 0, 0.45], [0.12, 0, 0.6]], 0.035, 4, { caps: false }).color('#efe6cc').mat(MAT.EEL).tag(1);
@@ -2052,26 +2310,42 @@ export default {
         }
         return g;
       };
+      // Where the mantas' shadows fall on the sand, every tenth of a second of
+      // a period (the second manta is the first a period later).
+      const lap = mantaLap();
+      const shadows = [];
+      for (let k = 0; k < P * 10; k++) {
+        shadows.push([0, P].map((dt) => {
+          const p = m4.point(lap.tf(k / 10 + dt), [0, 0, 0]), h = p[2] - H(p[0], p[1]);
+          return [p[0] - SUN[0] / SUN[2] * h, p[1] - SUN[1] / SUN[2] * h];
+        }));
+      }
       for (let i = 0; i < 46; i++) {
         const y = rand.range(-44, -20), x = chanX(y) + rand.range(-4.5, 4.5);
         if (Math.abs(x - chanX(y)) < 0.8) continue;
         const z = H(x, y) - 0.05, rot = rand() * TAU;
-        // the eels nearest the spawn point duck first, at t = 2 s, and the wave runs north at 4 m/s
-        const phase = 7 + (y + 44) / 4 + rand.range(-0.15, 0.15);
-        // a 12 s cycle: out 7 s, duck 0.5 s, hidden 2.5 s, rise 2 s
-        const kinks = [[0, 0], [7, 0], [7.5, -0.95], [10, -0.95], [12, 0]];
-        const hAt = (t) => {
-          const u = ((t - phase) % 12 + 12) % 12;
-          for (let k = 1; k < kinks.length; k++) {
-            if (u <= kinks[k][0]) {
-              const [t0, h0] = kinks[k - 1], [t1, h1] = kinks[k];
-              return h0 + (h1 - h0) * (u - t0) / (t1 - t0);
-            }
+        // An eel ducks when a shadow comes within 5 m of it (each a little
+        // sooner or later than the next), stays down 3 s and comes up again
+        // over 2.5 s.  The mantas pass up the west side once a minute, so the
+        // eels go down in a wave that follows a manta up the channel.
+        const jitter = rand.range(-0.15, 0.15);
+        const ducks = [];
+        for (let k = 0; k < shadows.length; k++) {
+          for (const j of [0, 1]) {
+            const d = (q) => Math.hypot(shadows[(q + shadows.length) % shadows.length][j][0] - x, shadows[(q + shadows.length) % shadows.length][j][1] - y);
+            if (d(k) < 5 && d(k - 1) >= 5) ducks.push((k / 10 + jitter + P) % P);
           }
-          return 0;
+        }
+        const hAt = (t) => {
+          let h = 0;
+          for (const t0 of ducks) {
+            const u = ((t - t0) % P + P) % P;
+            h = Math.min(h, u < 0.5 ? -0.95 * u / 0.5 : u < 3.5 ? -0.95 : u < 6 ? -0.95 * (6 - u) / 2.5 : 0);
+          }
+          return h;
         };
         const times = new Set([0, P]);
-        for (let c = -2; c < 7; c++) for (const [kt] of kinks) { const tt = phase + c * 12 + kt; if (tt > 0 && tt < P) times.add(+tt.toFixed(6)); }
+        for (const t0 of ducks) for (const kt of [0, 0.5, 3.5, 6]) times.add(+((t0 + kt) % P).toFixed(6));
         const tl = [...times].sort((a, c) => a - c);
         const poses = [0, 1, 2, 3].map((k) => swayed(rot, k));
         b.dynamic((u) => poses[Math.round(u * 4) % 4], {
@@ -2365,12 +2639,7 @@ export default {
 
     // ---- manta rays gliding laps over the channel ----------------------------
     {
-      const pts = [];
-      for (let y = -58; y <= 6; y += 8) pts.push([chanX(y) - 5, y, 13.2 + 1.2 * Math.sin(y * 0.08)]);
-      for (let y = 6; y >= -58; y -= 8) pts.push([chanX(y) + 7, y, 15 + 1.2 * Math.sin(y * 0.1)]);
-      const loop = new Path(pts, { closed: true, smooth: 6 });
-      const dur = 2 * P;
-      const tf = laneTf(loop, { speed: loop.length / dur, offset: nearestOn(loop, [chanX(-31) - 5, -31]), span: 6 });
+      const { tf, dur } = mantaLap();
       // (one wing beat of 6 s as twelve poses)
       b.dynamic((u) => mantaGeo(u * 6), { times: timeRange(0, dur, 0.5), transform: tf, caps: 'none', cycle: { period: 6, keys: 12 } });
     }

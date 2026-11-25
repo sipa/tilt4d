@@ -39,7 +39,37 @@ const SUN = v3.norm([-0.8, -0.35, 0.5]); // towards the sun
 const MAT = {
   PLASTER: 1, FLOOR: 2, WOOD: 3, BRASS: 4, STEEL: 5, DIAL: 6, WHEEL: 7, GLASS: 8, FLAME: 9, BEAM: 10,
   MOTE: 11, BOOK: 12, CLOTH: 13, FUR: 14, PAINT: 15, BLUED: 16, LAMP: 17, RUG: 18, PANEL: 19, SKYWIN: 20, EMBER: 21, LOG: 22,
+  BENCH: 23, DRAWING: 24,
 };
+
+// Where things stand on the bench and on the floor, as [x, y, half width, half
+// depth] (as build() places them): the shader darkens the light from round
+// about close to their feet, which the lamp and the room's own light cast no
+// shadows to do.  (The sun's shadows are real.)
+const BENCH_FEET = [
+  [-1.35, 1.5, 0.13, 0.065], [-2.0, 1.45, 0.1, 0.065], [-0.98, 1.5, 0.1, 0.265], [0, 1.5, 0.11, 0.11], [1.55, 1.45, 0.06, 0.042],
+  [0.76, 1.405, 0.18, 0.08], [1.08, 1.4, 0.08, 0.055], [1.75, 1.72, 0.29, 0.07], [1.75, 1.3, 0.05, 0.03], [1.89, 1.36, 0.05, 0.03],
+  [2.03, 1.3, 0.05, 0.03], [0.35, 1.28, 0.039, 0.034], [1.3, 1.3, 0.039, 0.034], [-0.35, 1.32, 0.039, 0.034], [0.92, 1.22, 0.03, 0.03],
+  [0.42, 1.68, 0.11, 0.025], [2.22, 1.72, 0.075, 0.075], [-0.55, 1.28, 0.1, 0.065], [-1.75, 1.2, 0.035, 0.05], [-0.36, 1.2, 0.03, 0.03],
+  [0.2, 1.8, 0.025, 0.025], [0.28, 1.82, 0.025, 0.025], [-0.3, 1.82, 0.025, 0.025], [1.45, 1.75, 0.03, 0.03], [1.62, 1.25, 0.03, 0.03],
+  [-0.12, 1.24, 0.03, 0.03], [-0.285, 1.205, 0.024, 0.024], [0.06, 1.19, 0.022, 0.022],
+];
+const FLOOR_FEET = [
+  [-0.55, -1.15, 0.3, 0.3], [2.16, -1.05, 0.22, 0.65], [2.26, 0.45, 0.14, 0.24], [-2.23, -1.58, 0.17, 0.29], [1.675, -1.76, 0.425, 0.14],
+  [-1.013, -0.703, 0.03, 0.03], [-1.123, -1.003, 0.03, 0.03], [-1.577, -0.497, 0.03, 0.03], [-1.687, -0.797, 0.03, 0.03],
+  [-2.05, -0.95, 0.18, 0.18], [-0.35, -1.6, 0.13, 0.13], [1.2, -1.5, 0.06, 0.06], [-0.3, 0.85, 0.14, 0.14], [0.25, -1.15, 0.17, 0.12],
+];
+const feetWgsl = (name, list, reach, depth) => `fn ${name}(p: vec2f) -> f32 {
+  var f = array<vec4f, ${list.length}>(${list.map((v) => `vec4f(${v.map((x) => x.toFixed(3)).join(', ')})`).join(', ')});
+  var o = 1.0;
+  for (var i = 0; i < ${list.length}; i++) {
+    let rr = 0.6 * min(f[i].z, f[i].w);
+    let q = abs(p - f[i].xy) - (f[i].zw - vec2f(rr));
+    let d = length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - rr;
+    o = o * (1.0 - ${depth.toFixed(2)} * (1.0 - smoothstep(0.0, ${reach.toFixed(3)}, d)));
+  }
+  return o;
+}`;
 
 // ---- colours
 const COL = {
@@ -54,14 +84,33 @@ const LAMP_POS = vec3f(2.12, 1.58, 1.32);
 
 fn envSun(t: f32) -> Light { return Light(SUN_DIR, SUN_COL); }
 
-// what is seen through the window: a pale afternoon sky over a garden
+// What is seen through the window: a pale afternoon sky over a garden, with
+// the light coming from beyond it.  Against the light, from far to near:
+// roofs and chimneys pale in the haze, a row of trees, the hedge at the end
+// of the garden (some 14 m off, its foot below the eye), and the lawn.
 fn envSky(dir: vec3f, t: f32) -> vec3f {
   let up = dir.z;
   var c = mix(vec3f(1.25, 1.05, 0.82), vec3f(0.42, 0.62, 1.05), smoothstep(0.02, 0.55, up));
-  if (up < 0.03) {
-    // a hedge and the roofs beyond it, dark against the light
-    let h = 0.03 + 0.05 * noise2(vec2f(atan2(dir.y, dir.x) * 9.0, 0.0)) ;
-    c = mix(vec3f(0.20, 0.24, 0.12), c, smoothstep(h - 0.01, h, up));
+  if (up < 0.16) {
+    let az = atan2(dir.y, dir.x);
+    let e = 0.0025;
+    // houses, each its own height, most of them gabled, some with a chimney
+    let k = floor(az / 0.13);
+    let f = fract(az / 0.13);
+    let hh = hash11(k + 17.0);
+    var roof = 0.045 + 0.03 * hh + 0.04 * (0.5 - abs(f - 0.5)) * step(0.3, hh);
+    roof += 0.02 * step(abs(f - 0.25 - 0.5 * hash11(k + 41.0)), 0.03) * step(0.4, hash11(k + 3.0));
+    c = mix(mix(c, vec3f(0.36, 0.38, 0.44), 0.45), c, smoothstep(roof - e, roof + e, up));
+    let tree = 0.03 + 0.09 * smoothstep(0.35, 0.7, fbm2(vec2f(az * 14.0, 1.5))) + 0.008 * noise2(vec2f(az * 90.0, 0.0));
+    c = mix(mix(c, vec3f(0.10, 0.14, 0.08), 0.78), c, smoothstep(tree - e, tree + e, up));
+    let hedge = 0.035 + 0.012 * noise2(vec2f(az * 45.0, 2.0)) + 0.005 * noise2(vec2f(az * 160.0, 5.0));
+    c = mix(vec3f(0.09, 0.14, 0.05), c, smoothstep(hedge - e, hedge + e, up));
+    if (up < -0.1) {
+      // the lawn in the sun, mottled, mown in stripes
+      let g = dir.xy * (1.5 / max(-up, 0.05));
+      let lawn = vec3f(0.30, 0.42, 0.13) * (0.75 + 0.35 * fbm2(g * 0.8)) * (0.92 + 0.12 * step(0.5, fract(g.y * 0.8)));
+      c = mix(c, lawn, smoothstep(-0.1, -0.12, up));
+    }
   }
   let sd = max(dot(dir, SUN_DIR), 0.0);
   c += vec3f(2.0, 1.6, 1.1) * (pow(sd, 900.0) * 40.0 + pow(sd, 12.0) * 0.5);
@@ -89,12 +138,27 @@ fn envReflect(dir: vec3f, t: f32, lit: f32) -> vec3f {
 
 // Is a point in the sunbeam that comes through the window?  (Followed back
 // along the sun's direction to the plane of the window.)
+// And then the window's frame and glazing bars, 12 cm further out: their
+// shadows run through the beam as darker shafts, soft at the edges by as much
+// as a sun half a degree across makes them at that distance.
 fn inBeam(p: vec3f) -> f32 {
   let s = (${(-RX).toFixed(2)} - p.x) / SUN_DIR.x;
   let q = p + SUN_DIR * s;
   let e = min(min(q.y - ${WIN.y0.toFixed(2)}, ${WIN.y1.toFixed(2)} - q.y), min(q.z - ${WIN.z0.toFixed(2)}, ${WIN.z1.toFixed(2)} - q.z));
-  return smoothstep(0.0, 0.04, e) * step(0.0, s);
+  let w = p + SUN_DIR * (s - 0.12 / SUN_DIR.x);
+  let pen = 0.002 + 0.0047 * s;
+  let ym = ${((WIN.y0 + WIN.y1) / 2).toFixed(4)};
+  let yq = ${((WIN.y1 - WIN.y0) / 4).toFixed(4)};
+  let zt = ${((WIN.z1 - WIN.z0) / 3).toFixed(4)};
+  var bars = smoothstep(0.0225 - pen, 0.0225 + pen, abs(w.y - ym));
+  bars = bars * smoothstep(0.011 - pen, 0.011 + pen, min(abs(w.y - ym + yq), abs(w.y - ym - yq)));
+  bars = bars * smoothstep(0.045 - pen, 0.045 + pen, min(w.z - ${WIN.z0.toFixed(2)}, ${WIN.z1.toFixed(2)} - w.z));
+  bars = bars * smoothstep(0.011 - pen, 0.011 + pen, min(abs(w.z - ${WIN.z0.toFixed(2)} - zt), abs(w.z - ${WIN.z0.toFixed(2)} - 2.0 * zt)));
+  return smoothstep(0.0, 0.04, e) * step(0.0, s) * bars;
 }
+
+${feetWgsl('benchFeet', BENCH_FEET, 0.035, 0.55)}
+${feetWgsl('floorFeet', FLOOR_FEET, 0.12, 0.5)}
 
 // the lamps the shader works out for itself: a desk lamp over the right end of
 // the bench, and the light the sunlit patch throws back up
@@ -161,7 +225,47 @@ fn surface(sIn: Surface) -> Surface {
     let gy = abs(fract(along / 1.7) - 0.5) * 1.7;
     let line = max(1.0 - smoothstep(0.0, 0.003 + fw.x, 0.5 * bw - gx), 1.0 - smoothstep(0.0, 0.003 + fw.y, 0.85 - gy));
     s.color = mix(s.color, vec3f(0.03, 0.02, 0.015), line * 0.8);
-    s.gloss = 0.25;
+    // worn paler and duller where the clockmaker stands at the bench
+    let wx = (p.x + 0.3) / 0.45;
+    let wy = (p.y - 0.95) / 0.3;
+    let worn = exp(-wx * wx - wy * wy);
+    s.color = mix(s.color, s.color * 1.25 + vec3f(0.03, 0.025, 0.02), worn * 0.6);
+    s.gloss = 0.25 - 0.15 * worn;
+    // brass filings swept under the vice, glinting
+    let fd = (p.xy - vec2f(-1.75, 1.05)) / vec2f(0.25, 0.18);
+    let fl = step(0.996, hash21(floor(p.xy * 700.0))) * exp(-dot(fd, fd));
+    s.color = mix(s.color, vec3f(0.8, 0.6, 0.25), fl);
+    s.gloss = max(s.gloss, fl);
+    // darker close to the walls, under the bench and round the furniture
+    let dw = min(${RX.toFixed(2)} - abs(p.x), ${RY.toFixed(2)} - abs(p.y));
+    let o = mix(0.55, 1.0, smoothstep(0.02, 0.3, dw)) * mix(1.0, 0.45, smoothstep(${(BENCH_Y0 - 0.15).toFixed(2)}, ${(BENCH_Y0 + 0.25).toFixed(2)}, p.y)) * floorFeet(p.xy);
+    s.ambient = s.ambient * o;
+    s.light = s.light * o;
+  } else if (s.mat == ${MAT.BENCH}u) {
+    // The bench top: oak with its grain along the bench, and the wear of
+    // years.  Darkened along the front edge where hands and arms rest, most
+    // where the work is done (under the loupe, at the vice), and polished
+    // there; fine scratches; the ring an oil can left.  Darker close to the
+    // feet of whatever stands on it.
+    let g = noise2(vec2f(p.x * 1.3, p.y * 160.0)) * 0.6 + noise2(vec2f(p.x * 8.5, p.y * 530.0)) * 0.4;
+    var c = s.color * (0.78 + 0.4 * g);
+    if (s.n.z > 0.5) {
+      let d = max(p.y - ${BENCH_Y0.toFixed(2)}, 0.0);
+      let w1 = (p.x + 0.25) / 0.35;
+      let w2 = (p.x + 1.75) / 0.25;
+      let w3 = (p.x - 0.8) / 0.5;
+      let edge = exp(-d / 0.07) * (0.35 + 0.65 * min(exp(-w1 * w1) + 0.7 * exp(-w2 * w2) + 0.4 * exp(-w3 * w3), 1.0));
+      c = c * (1.0 - 0.35 * edge);
+      s.gloss = 0.2 + 0.35 * edge;
+      let scr = smoothstep(0.88, 0.97, noise2(vec2f(p.x * 9.0 + p.y * 3.0, p.y * 900.0))) * smoothstep(0.4, 0.7, noise2(p.xy * 6.0));
+      c = mix(c, c * 1.35 + vec3f(0.02), scr * 0.5);
+      let ring = length(p.xy - vec2f(1.37, 1.63));
+      c = c * (1.0 - 0.3 * (1.0 - smoothstep(0.0, 0.004, abs(ring - 0.032))) - 0.12 * (1.0 - smoothstep(0.02, 0.034, ring)));
+      let o = benchFeet(p.xy);
+      s.ambient = s.ambient * o;
+      s.light = s.light * o;
+    }
+    s.color = c;
   } else if (s.mat == ${MAT.WOOD}u) {
     // wood: grain along uv.x
     let g = noise2(vec2f(s.uv.x * 6.0, s.uv.y * 120.0)) * 0.6 + noise2(vec2f(s.uv.x * 40.0, s.uv.y * 400.0)) * 0.4;
@@ -248,6 +352,39 @@ fn surface(sIn: Surface) -> Surface {
     let pat = step(0.5, fract((q.x + q.y) * 6.0));
     s.color = mix(mix(vec3f(0.32, 0.06, 0.05), vec3f(0.42, 0.12, 0.06), pat * step(max(q.x, q.y), 0.8)), vec3f(0.6, 0.45, 0.2), border);
     s.color = s.color * (0.85 + 0.2 * noise2(s.uv * 200.0));
+    s.ambient = s.ambient * floorFeet(p.xy);
+  } else if (s.mat == ${MAT.DRAWING}u) {
+    // A drawing of an anchor escapement, framed: the escape wheel with its
+    // hooked teeth, its pitch circle dashed, its rim, spokes and hub, the
+    // anchor over it, centre lines, a border and a title block; brown ink on
+    // paper gone yellow at the edges and spotted with age.
+    let q = (s.uv - vec2f(0.5, 0.47)) * vec2f(0.34, 0.46);
+    let px = length(fu * vec2f(0.34, 0.46)) + 1e-5;
+    let r = length(q);
+    let a = atan2(q.y, q.x);
+    let t = fract(a * 30.0 / TAU);
+    var d = abs(r - (0.085 + 0.025 * t)) * 0.7;
+    d = min(d, min(t, 1.0 - t) * TAU / 30.0 * r + max(0.0, max(0.085 - r, r - 0.11)));
+    d = min(d, min(abs(r - 0.07), min(abs(r - 0.016), abs(r - 0.005))));
+    d = min(d, abs(min(abs(q.x), abs(q.y)) - 0.006) + max(0.0, max(0.016 - r, r - 0.07)));
+    d = min(d, abs(r - 0.098) + step(0.6, fract(a * 40.0 / TAU)));
+    let pv = vec2f(0.0, 0.16);
+    for (var k = -1.0; k < 2.0; k += 2.0) {
+      let pal = vec2f(k * 0.0556, 0.089);
+      d = min(d, abs(sdSegment(q, pv, pal) - 0.004));
+      d = min(d, abs(length(q - pal) - 0.006));
+    }
+    d = min(d, abs(length(q - pv) - 0.01));
+    d = min(d, max(abs(q.x), 0.0) + step(0.55, fract(q.y * 40.0)) + step(0.17, abs(q.y - 0.03)));
+    d = min(d, abs(q.y) + step(0.55, fract(q.x * 40.0)) + step(0.14, abs(q.x)));
+    let bu = min(min(s.uv.x, 1.0 - s.uv.x), min(s.uv.y, 1.0 - s.uv.y));
+    d = min(d, abs(bu - 0.04) * 0.34);
+    d = min(d, abs(s.uv.y - 0.12) * 0.46 + step(0.0, 0.04 - min(s.uv.x, 1.0 - s.uv.x)));
+    let ink = 1.0 - smoothstep(0.0004, 0.0004 + px, d);
+    let txt = step(0.45, noise2(vec2f(s.uv.x * 90.0, floor(s.uv.y * 40.0) * 7.0))) * step(abs(fract(s.uv.y * 40.0) - 0.5), 0.22)
+      * step(0.05, s.uv.y) * step(s.uv.y, 0.105) * step(0.3, s.uv.x) * step(s.uv.x, 0.9);
+    let paper = vec3f(0.86, 0.80, 0.66) * (0.92 + 0.1 * fbm2(s.uv * 9.0)) * (1.0 - 0.18 * smoothstep(0.3, 0.0, bu)) * (1.0 - 0.15 * smoothstep(0.62, 0.8, fbm2(s.uv * 23.0)));
+    s.color = mix(paper, vec3f(0.22, 0.13, 0.08), max(ink, txt * 0.6));
   } else if (s.mat == ${MAT.FUR}u) {
     // fur: tabby stripes across the cat's back and tail (tag 1), and a soft
     // sheen where the surface turns away from the eye
@@ -365,6 +502,16 @@ function wheel(N, rf, ra, { tooth = SPUR, w = 0.0016, bore = 0.0012, rings = 0, 
   if (spokes) g.aux(rim * rf / ra).tag(spokes).cutout();
   return g;
 }
+// A wheel's stand-in in the shadow maps, for a wheel that casts its shadow
+// at many poses a second: a thin disc in its middle plane, hidden inside it,
+// with the same windows between the spokes but only simple pointed teeth
+// (none where the teeth are smaller than a pixel of the shadow map), a fifth
+// of the triangles.  The wheel itself then casts no shadow.  (A little inside
+// the root circle, so as not to show between the teeth; `rim` is made up for
+// that, so that the windows come out the same.)
+function shadowProxy(N, rf, ra, { teeth = true, spokes = 0, rim = 0.78 } = {}) {
+  return wheel(N, rf * 0.97, ra, { tooth: teeth ? [[-0.3, 0], [-0.03, 0.8], [0.03, 0]] : [[-0.5, 0], [0.5, 0]], w: 0.0004, bore: 0.0004, rings: 1, spokes, rim: rim / 0.97 });
+}
 // a spur wheel by its tooth count and module (the pitch radius is m N / 2)
 const spur = (N, m, o = {}) => wheel(N, m * N / 2 - 1.25 * m, m * N / 2 + m, { tooth: N > 30 && m >= 0.0008 ? SPUR : SPUR_SMALL, ...o });
 const pinion = (N, m, o = {}) => wheel(N, m * N / 2 - 1.1 * m, m * N / 2 + 0.9 * m, { tooth: LEAF, bore: 0.0008, ...o });
@@ -404,6 +551,14 @@ function rod(points, r, { seg = 6, step = 0.01, caps = false } = {}) {
   }
   return Geo.tube(pts, r, seg, { caps });
 }
+
+// A long rod (a pendulum's, say) from a to c as n rods of its own, to be given
+// the same movement one by one.  Which steps of a movement are drawn goes by a
+// box round each mesh's own movement, and a view tilted up crosses a rod's
+// height over many seconds (a metre is 12 s at 75 degrees): in pieces, each
+// is drawn for the seconds the slice crosses that piece, and not the whole rod
+// for all of them.
+const rodParts = (a, c, n, r, o) => Array.from({ length: n }, (_, k) => rod([v3.lerp(a, c, k / n), v3.lerp(a, c, (k + 1) / n)], r, o));
 
 // Moving things.  Everything here stays where it is and only has its own
 // movement, so its carrier is the whole period in one stretch.
@@ -614,8 +769,11 @@ function skeletonClock(b, base) {
   const keysE = 60 * BEAT_POSES, keys4 = 120 * BEAT_POSES / 2;
   const escTurn = (u) => escPose(Math.round(u * keysE)) * TAU / 60;
   const turn4 = (u) => -escPose(Math.round(u * keys4) * 2) * TAU / 120;
-  cyc(b, escWheel, at(esc[0], esc[1], 0), 60 * Tb, keysE, (u) => m4.rotationZ(phE + escTurn(u)));
-  cyc(b, fourthWheel, at(fourth[0], fourth[1], 0), 120 * Tb, keys4, (u) => m4.rotationZ(ph4 + turn4(u)));
+  // (these two, with the most poses, cast their shadows through stand-ins: see shadowProxy)
+  const escProxy = Geo.merge(shadowProxy(30, 0.0165, 0.0215, { spokes: 4, rim: 0.82 }), Geo.cylinder(0.0072, 0.0016, 12).translate(0, 0, -0.0048));
+  const fourthProxy = Geo.merge(shadowProxy(48, m * 24 - 1.25 * m, m * 25, { teeth: false, spokes: 4 }), Geo.cylinder(0.0018, 0.002, 8).translate(0, 0, -0.006));
+  for (const g of [unshadowed(escWheel), escProxy]) cyc(b, g, at(esc[0], esc[1], 0), 60 * Tb, keysE, (u) => m4.rotationZ(phE + escTurn(u)));
+  for (const g of [unshadowed(fourthWheel), fourthProxy]) cyc(b, g, at(fourth[0], fourth[1], 0), 120 * Tb, keys4, (u) => m4.rotationZ(ph4 + turn4(u)));
   // the third and centre wheels creep round smoothly (their jerks are a fraction of a degree)
   cyc(b, thirdWheel, at(third[0], third[1], 0), 450, 90, (u) => m4.rotationZ(ph3 + u * TAU));
   cyc(b, centreWheel, at(cen[0], cen[1], 0), 3600, 180, (u) => m4.rotationZ(-u * TAU));
@@ -642,12 +800,11 @@ function skeletonClock(b, base) {
     anchor.add(Geo.cylinder(0.0028, 0.004, 12).translate(0, 0, -0.002));
     anchor.color(COL.steel).gloss(0.8).mat(MAT.STEEL);
   }
-  const pend = new Geo();
-  pend.add(rod([[0, 0, -0.016], [0, -L + 0.004, -0.016]], 0.0014, { seg: 5, step: 0.012 }).color(COL.steel).gloss(0.7).mat(MAT.STEEL));
-  pend.add(lens(0.0225, 0.006, 32).translate(0, -L, -0.016).color(COL.brass).gloss(0.85).mat(MAT.BRASS));
   const pAt = at(anchorAt[0], anchorAt[1], 0);
   cyc(b, anchor, pAt, Tp, 16, swing);
-  cyc(b, pend, pAt, Tp, 16, swing);
+  // the pendulum: its rod in three pieces and its bob, each swinging of its own (see rodParts)
+  for (const piece of rodParts([0, 0, -0.016], [0, -L + 0.004, -0.016], 3, 0.0014, { seg: 5, step: 0.025 })) cyc(b, piece.color(COL.steel).gloss(0.7).mat(MAT.STEEL), pAt, Tp, 16, swing);
+  cyc(b, lens(0.0225, 0.006, 32).translate(0, -L, -0.016).color(COL.brass).gloss(0.85).mat(MAT.BRASS), pAt, Tp, 16, swing);
 }
 
 // a flat ring in the XY plane facing +Z, uv laid out over the outer circle
@@ -684,17 +841,22 @@ function cradle(b, base) {
   frame.color(COL.steel).gloss(0.85).mat(MAT.STEEL);
   b.static(frame, { transform: base, solid: false });
   // a ball and its two strings, hanging from the pivot line (along y) at the origin
-  const ball = Geo.merge(
-    Geo.sphere(r, 12, 8).translate(0, 0, -L).color('#cfd3d8').gloss(0.95).mat(MAT.STEEL),
-    rod([[0, -0.03, 0], [0, 0, -L + r * 0.8]], 0.00035, { seg: 3, step: 0.02 }).color('#e8e4da'),
-    rod([[0, 0.03, 0], [0, 0, -L + r * 0.8]], 0.00035, { seg: 3, step: 0.02 }).color('#e8e4da'),
-  );
+  const sphere = Geo.sphere(r, 12, 8).translate(0, 0, -L).color('#cfd3d8').gloss(0.95).mat(MAT.STEEL);
+  const strings = Geo.merge(
+    rod([[0, -0.03, 0], [0, 0, -L + r * 0.8]], 0.00035, { seg: 3, step: 0.02 }),
+    rod([[0, 0.03, 0], [0, 0, -L + r * 0.8]], 0.00035, { seg: 3, step: 0.02 }),
+  ).color('#e8e4da');
   const xs = [-2, -1, 0, 1, 2].map((i) => i * 2 * r);
-  for (let i = 1; i < 4; i++) b.static(ball, { transform: m4.mul(base, m4.translation(xs[i], 0, H)), solid: false });
+  for (let i = 1; i < 4; i++) b.static(Geo.merge(sphere, strings), { transform: m4.mul(base, m4.translation(xs[i], 0, H)), solid: false });
   // how far out (towards +x) the right ball is, and the left: each swings for half the round
+  // (The strings, thinner than a pixel of the shadow map, cast no shadow.  And
+  // as a mesh apart from them the ball, which keeps low, is drawn in a view
+  // tilted up only for the few seconds that the slice crosses the ball: see rodParts.)
   const out = (u, right) => ((u < 0.5) === right ? A * Math.sin(TAU * u) : 0);
   for (const right of [true, false]) {
-    cyc(b, ball, m4.mul(base, m4.translation(xs[right ? 4 : 0], 0, H)), T, keys, (u) => m4.rotationY(-out(u, right)), { reach: 0.1 });
+    const at = m4.mul(base, m4.translation(xs[right ? 4 : 0], 0, H)), swing = (u) => m4.rotationY(-out(u, right));
+    cyc(b, sphere, at, T, keys, swing, { reach: 0.1 });
+    cyc(b, strings, at, T, keys, swing, { shadow: false });
   }
 }
 
@@ -793,28 +955,44 @@ function orrery(b, base) {
 // dial with a seconds hand that ticks once a second with the beat.
 function longcase(b, at) {
   const g = new Geo();
-  const W = 0.42, D = 0.24;
-  g.add(Geo.box(W + 0.06, D + 0.04, 0.3).translate(0, -0.02, 0.15));          // plinth
-  g.add(Geo.box(W, D, 1.3).translate(0, 0, 0.95));                             // trunk
+  const W = 0.42, D = 0.24, Z0 = 0.3, Z1 = 1.6;
+  const boxAt = (xa, xb, ya, yb, za, zb) => Geo.box(xb - xa, yb - ya, zb - za).translate((xa + xb) / 2, (ya + yb) / 2, (za + zb) / 2);
+  g.add(Geo.box(W + 0.06, D + 0.04, Z0).translate(0, -0.02, Z0 / 2));          // plinth
+  // in this frame the clock faces -y.  The trunk is a hollow case: back, sides,
+  // and a door, a frame round a long glass through which the pendulum is seen
+  const gx = 0.16, gz0 = 0.45, gz1 = 1.45, f = -D / 2;
+  g.add(boxAt(-W / 2, W / 2, D / 2 - 0.02, D / 2, Z0, Z1));
+  for (const sx of [-1, 1]) g.add(boxAt(sx > 0 ? W / 2 - 0.02 : -W / 2, sx > 0 ? W / 2 : -W / 2 + 0.02, f, D / 2, Z0, Z1));
+  for (const sx of [-1, 1]) g.add(boxAt(sx > 0 ? gx : -W / 2, sx > 0 ? W / 2 : -gx, f, f + 0.02, Z0, Z1));
+  g.add(boxAt(-gx, gx, f, f + 0.02, Z0, gz0));
+  g.add(boxAt(-gx, gx, f, f + 0.02, gz1, Z1));
+  // a moulding round the glass
+  for (const sx of [-1, 1]) g.add(boxAt(sx * gx - 0.008, sx * gx + 0.008, f - 0.006, f, gz0 - 0.008, gz1 + 0.008));
+  for (const z of [gz0, gz1]) g.add(boxAt(-gx - 0.008, gx + 0.008, f - 0.006, f, z - 0.008, z + 0.008));
   g.add(Geo.box(W + 0.08, D + 0.06, 0.5).translate(0, -0.01, 1.85));          // hood
   g.add(Geo.box(W + 0.12, D + 0.1, 0.05).translate(0, -0.01, 2.125));
   g.color(COL.walnut).gloss(0.55).mat(MAT.WOOD);
-  // in this frame the clock faces -y: the glass door, the dial
   b.static(subdivide(g, 0.4), { transform: at });
-  const front = -D / 2 - 0.035;
-  const inner = Geo.box(W - 0.08, 0.01, 1.1).translate(0, D / 2 - 0.02, 0.95).color('#1a120c').mat(MAT.WOOD);
-  b.static(inner, { transform: at, solid: false });
-  const glass = Geo.plane(W - 0.1, 1.0).rotateX(Math.PI / 2).translate(0, -D / 2 - 0.002, 0.95).color('#c8d4d8').gloss(0.95).blend(0.1).doubleSided();
-  b.static(glass, { transform: at, solid: false });
-  const dialAt = m4.mul(at, m4.translation(0, front, 1.85), m4.rotationX(Math.PI / 2));
+  // the inside of the case, darker; the glass, which also keeps a flyer out
+  b.static(Geo.box(W - 0.06, 0.005, Z1 - Z0).translate(0, D / 2 - 0.023, (Z0 + Z1) / 2).color('#1a120c').mat(MAT.WOOD), { transform: at, solid: false });
+  const glass = Geo.plane(2 * gx, gz1 - gz0).rotateX(Math.PI / 2).translate(0, f + 0.01, (gz0 + gz1) / 2).color('#c8d4d8').gloss(0.95).blend(0.1).doubleSided();
+  b.static(glass, { transform: at, solid: true });
+  // the hood's front: two turned columns either side, a brass dial plate, the dial on it
+  const front = -D / 2 - 0.04;
+  const hood = new Geo();
+  for (const sx of [-1, 1]) hood.add(Geo.lathe([[0.016, 0], [0.016, 0.02], [0.011, 0.03], [0.011, 0.43], [0.016, 0.44], [0.016, 0.46]], 16).translate(sx * (W / 2 + 0.01), front - 0.012, 1.62).color(COL.walnut).gloss(0.6).mat(MAT.WOOD));
+  hood.add(Geo.box(0.34, 0.003, 0.34).translate(0, front - 0.0015, 1.85).color(COL.brass).gloss(0.75).mat(MAT.BRASS));
+  b.static(hood, { transform: at, solid: false });
+  const dialAt = m4.mul(at, m4.translation(0, front - 0.003, 1.85), m4.rotationX(Math.PI / 2));
   wallClockFace(b, dialAt, { r: 0.15, dial: 0, tick: true });
-  // the pendulum: a long rod in 1 cm pieces and a big brass bob
-  const L = lengthFor(2);
-  const pend = Geo.merge(
-    rod([[0, 0, 0], [0, 0, -L]], 0.003, { seg: 5, step: 0.06 }).color('#3a3632').gloss(0.6).mat(MAT.STEEL),
-    lens(0.07, 0.022, 24).rotateX(Math.PI / 2).translate(0, 0, -L).color(COL.brass).gloss(0.85).mat(MAT.BRASS),
-  );
-  cyc(b, pend, m4.mul(at, m4.translation(0, 0.02, 1.62)), 2, 24, (u) => m4.rotationY(0.06 * Math.sin(TAU * u)));
+  // The pendulum: a rod a metre long and a big brass bob, two seconds there
+  // and back.  Tilted up, the slice crosses the rod's metre in 3.3 s at 45
+  // degrees: its foot is seen that much earlier than its top, and the rod
+  // bends into a snake of more than a whole swing and a half.  So the rod is
+  // in 2 cm lengths, in five pieces of its own (see rodParts).
+  const L = lengthFor(2), pAt = m4.mul(at, m4.translation(0, 0.02, 1.62)), swing = (u) => m4.rotationY(0.06 * Math.sin(TAU * u));
+  for (const piece of rodParts([0, 0, 0], [0, 0, -L], 5, 0.003, { seg: 5, step: 0.02 })) cyc(b, piece.color('#3a3632').gloss(0.6).mat(MAT.STEEL), pAt, 2, 24, swing);
+  cyc(b, lens(0.07, 0.022, 24).rotateX(Math.PI / 2).translate(0, 0, -L).color(COL.brass).gloss(0.85).mat(MAT.BRASS), pAt, 2, 24, swing);
   // the weights on their cables, hanging still (they go down an inch in the hour)
   const wts = new Geo();
   for (const x of [-0.1, 0.1]) {
@@ -831,7 +1009,7 @@ function longcase(b, at) {
 // (`with`, in front of it).  Speeds follow from the tooth counts: a wheel of
 // N teeth driven by one of M turns M/N times as fast, the other way.  Every
 // round must go a whole number of times into the hour.
-function train(b, at, m, list, { T0 = 120, w = 0.004, color = COL.brass, faceZ = 0.0 } = {}) {
+function train(b, at, m, list, { T0 = 120, w = 0.004, color = COL.brass, faceZ = 0.0, board = null } = {}) {
   const gs = [];
   const dirTo = (a, c) => Math.atan2(c[1] - a[1], c[0] - a[0]);
   for (const e of list) {
@@ -862,6 +1040,15 @@ function train(b, at, m, list, { T0 = 120, w = 0.004, color = COL.brass, faceZ =
     if (g.with === undefined) arbors.add(Geo.cylinder(0.0025, g.z + 0.012, 12).translate(g.pos[0], g.pos[1], -0.004).color(COL.steel).gloss(0.8).mat(MAT.STEEL));
   }
   b.static(arbors, { transform: at, solid: false });
+  if (board) {
+    // the board they are mounted on, [colour, thickness]: 5 cm bigger all round than the wheels on it
+    const e = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const g of gs) {
+      const r = m * g.N / 2 + m + 0.05;
+      e[0] = Math.min(e[0], g.pos[0] - r); e[1] = Math.min(e[1], g.pos[1] - r); e[2] = Math.max(e[2], g.pos[0] + r); e[3] = Math.max(e[3], g.pos[1] + r);
+    }
+    b.static(Geo.box(e[2] - e[0], e[3] - e[1], board[1]).translate((e[0] + e[2]) / 2, (e[1] + e[3]) / 2, -board[1] / 2).color(board[0]).mat(MAT.WOOD), { transform: at, solid: false });
+  }
   return gs;
 }
 
@@ -873,13 +1060,17 @@ function steamEngine(b, at) {
   const Tc = 6, keys = 48;
   const zc = 0.075, R = 0.018, l = 0.085, xc = 0.07; // shaft height, crank throw, rod length, shaft position
   const g = new Geo();
-  g.add(Geo.box(0.36, 0.13, 0.015).translate(-0.02, 0, 0.0075).color(COL.walnut).gloss(0.5).mat(MAT.WOOD));
-  // the cylinder, lagged in wood with brass bands, on its saddle
-  g.add(Geo.cylinder(0.026, 0.09, 32).rotateY(Math.PI / 2).translate(-0.19, 0, zc).color('#6b4a2e').mat(MAT.WOOD));
-  for (const x of [-0.19, -0.1]) g.add(Geo.cylinder(0.0275, 0.006, 32).rotateY(Math.PI / 2).translate(x - 0.003, 0, zc).color(COL.brass).gloss(0.85).mat(MAT.BRASS));
-  g.add(Geo.box(0.07, 0.05, zc - 0.015).translate(-0.145, 0, (zc - 0.015) / 2 + 0.015).color('#3b3430'));
-  // the guide bars for the crosshead
-  for (const dz of [-0.009, 0.009]) g.add(Geo.box(0.07, 0.008, 0.003).translate(-0.065, 0, zc + dz).color(COL.steel).gloss(0.8).mat(MAT.STEEL));
+  // (the line of the engine, cylinder, crosshead, connecting rod and crank, is at y = yl, in front of the bearings)
+  const yl = -0.055;
+  g.add(Geo.box(0.36, 0.16, 0.015).translate(-0.02, -0.015, 0.0075).color(COL.walnut).gloss(0.5).mat(MAT.WOOD));
+  // the cylinder, lagged in wood with brass bands, on its saddle, and its covers
+  g.add(Geo.cylinder(0.026, 0.09, 32).rotateY(Math.PI / 2).translate(-0.19, yl, zc).color('#6b4a2e').mat(MAT.WOOD));
+  for (const x of [-0.19, -0.1]) g.add(Geo.cylinder(0.0275, 0.006, 32).rotateY(Math.PI / 2).translate(x - 0.003, yl, zc).color(COL.brass).gloss(0.85).mat(MAT.BRASS));
+  g.add(Geo.cylinder(0.006, 0.012, 16).rotateY(Math.PI / 2).translate(-0.103, yl, zc).color(COL.brass).gloss(0.85).mat(MAT.BRASS));   // the gland the piston rod slides through
+  g.add(Geo.box(0.07, 0.05, zc - 0.015).translate(-0.145, yl, (zc - 0.015) / 2 + 0.015).color('#3b3430'));
+  // the guide bars for the crosshead, on a stand of their own, as long as its travel
+  for (const dz of [-0.009, 0.009]) g.add(Geo.box(0.115, 0.008, 0.003).translate(-0.0425, yl, zc + dz).color(COL.steel).gloss(0.8).mat(MAT.STEEL));
+  g.add(Geo.box(0.012, 0.012, zc - 0.024).translate(-0.06, yl, (zc - 0.024) / 2 + 0.015).color('#3b3430'));
   // the bearings for the shaft, the shaft (it turns about itself: it may stand still)
   for (const y of [-0.035, 0.035]) g.add(Geo.box(0.022, 0.012, zc).translate(xc, y, zc / 2 + 0.008).color('#3b3430'));
   g.add(Geo.cylinder(0.004, 0.11, 12).rotateX(Math.PI / 2).translate(xc, 0.055, zc).color(COL.steel).gloss(0.8).mat(MAT.STEEL));
@@ -901,13 +1092,13 @@ function steamEngine(b, at) {
   cyc(b, crankDisc, m4.mul(at, m4.translation(xc, -0.045, zc)), Tc, keys, (u) => m4.rotationY(-crank(u)));
   // the connecting rod, from the crosshead to the pin, in pieces
   const conrod = Geo.merge(rod([[0, 0, 0], [l, 0, 0]], 0.003, { seg: 8, step: 0.01 }), Geo.box(0.012, 0.008, 0.012), Geo.box(0.01, 0.008, 0.01).translate(l, 0, 0)).color(COL.steel).gloss(0.8).mat(MAT.STEEL);
-  cyc(b, conrod, m4.mul(at, m4.translation(0, -0.055, 0)), Tc, keys, (u) => {
+  cyc(b, conrod, m4.mul(at, m4.translation(0, yl, 0)), Tc, keys, (u) => {
     const [px, pz] = pin(u), hx = head(u);
     return m4.mul(m4.translation(hx, 0, zc), m4.rotationY(-Math.atan2(pz - zc, px - hx)));
   });
   // the crosshead and the piston rod, sliding back and forth
   const slide = Geo.merge(Geo.box(0.014, 0.012, 0.014), rod([[-0.11, 0, 0], [0, 0, 0]], 0.0025, { seg: 8, step: 0.012 })).color(COL.steel).gloss(0.85).mat(MAT.STEEL);
-  cyc(b, slide, m4.mul(at, m4.translation(0, -0.055, zc)), Tc, keys, (u) => m4.translation(head(u), 0, 0));
+  cyc(b, slide, m4.mul(at, m4.translation(0, yl, zc)), Tc, keys, (u) => m4.translation(head(u), 0, 0));
   // the governor: two balls on arms, spun at twice the shaft's speed, standing out at 35 degrees
   const gov = new Geo();
   gov.add(rod([[0, 0, 0], [0, 0, 0.06]], 0.0018, { seg: 6, step: 0.01 }).color(COL.steel).mat(MAT.STEEL));
@@ -946,7 +1137,8 @@ function carriageClock(b, at, { start = 0 } = {}) {
   const bal = Geo.merge(Geo.torus(0.0085, 0.0007, 32, 4), ...[0, 1, 2].map((k) => Geo.box(0.0085, 0.0007, 0.0005).translate(0.0042, 0, 0).rotateZ(k * TAU / 3)),
     ...[0, 1, 2, 3, 4, 5].map((k) => Geo.box(0.0012, 0.0012, 0.0012).translate(0.0092, 0, 0).rotateZ(k * TAU / 6 + 0.5))).color(COL.brass).gloss(0.9).mat(MAT.BRASS);
   // 115 degrees each way, 24 poses to the swing
-  cyc(b, bal, m4.mul(at, m4.translation(0.012, 0.005, H + 0.0005)), 0.5, 24, (u) => m4.rotationZ(2.0 * Math.sin(TAU * u)), { start });
+  // (its shadow would fall inside the case, where nobody sees it)
+  cyc(b, bal, m4.mul(at, m4.translation(0.012, 0.005, H + 0.0005)), 0.5, 24, (u) => m4.rotationZ(2.0 * Math.sin(TAU * u)), { start, shadow: false });
   b.static(Geo.box(0.03, 0.03, 0.003).translate(0.012, 0.005, H - 0.003).color(COL.brass).mat(MAT.BRASS), { transform: at, solid: false });
 }
 
@@ -997,21 +1189,34 @@ function dust(b) {
 
 // A curtain beside the window: a sheet hanging in soft pleats, stirred by
 // the draught in a wave that runs across it (an eight-second round of 16 poses).
+// It hangs beside the light, not in it, and casts no shadow.  It is four
+// bands, one above the other, each moving of its own: a view tilted up
+// crosses the curtain's height over many seconds (1.5 m is 19 s at 75
+// degrees), and draws each band only for the seconds it crosses that band.
+// Their normals come from the shape itself, so that the bands meet without
+// a seam in the shading.
 function curtain(b, at, { w = 0.34, h = 1.55, start = 0 } = {}) {
-  const nx = 16, nz = 40;
-  const shape = (u) => {
-    const g = Geo.plane(w, h, nx, nz).rotateX(Math.PI / 2);
-    for (let i = 0; i < g.vertexCount; i++) {
-      const x = g.p[i * 3], z = g.p[i * 3 + 2] + h / 2;
-      const down = 1 - z / h; // 0 at the rail, 1 at the hem
-      const pleat = 0.025 * Math.sin(x / w * 5 * TAU);
-      const wave = 0.03 * down * down * Math.sin(TAU * (u - x / w * 0.6 - down * 0.3)) + 0.012 * down * Math.sin(TAU * (2 * u + x / w));
-      g.p[i * 3 + 1] = pleat + wave;
-      g.p[i * 3 + 2] = z;
-    }
-    return g.computeNormals().doubleSided().color('#7a2e26').mat(MAT.CLOTH);
+  const nx = 16, nz = 40, bands = 4;
+  // how far the cloth stands out from its rail at x across it, z up from its hem
+  const off = (x, z, u) => {
+    const down = 1 - z / h; // 0 at the rail, 1 at the hem
+    const pleat = 0.025 * Math.sin(x / w * 5 * TAU);
+    return pleat + 0.03 * down * down * Math.sin(TAU * (u - x / w * 0.6 - down * 0.3)) + 0.012 * down * Math.sin(TAU * (2 * u + x / w));
   };
-  b.dynamic(shape, { times: [0, P], transform: () => at, caps: 'none', cycle: { period: 8, keys: 16, start } });
+  for (let k = 0; k < bands; k++) {
+    const shape = (u) => {
+      const g = Geo.plane(w, h / bands, nx, nz / bands).rotateX(Math.PI / 2);
+      for (let i = 0; i < g.vertexCount; i++) {
+        const x = g.p[i * 3], z = g.p[i * 3 + 2] + h / bands * (k + 0.5), y = off(x, z, u), e = 1e-4;
+        const n = v3.norm([(off(x + e, z, u) - y) / e, -1, (off(x, z + e, u) - y) / e]);
+        g.p[i * 3 + 1] = y;
+        g.p[i * 3 + 2] = z;
+        for (let c = 0; c < 3; c++) g.n[i * 3 + c] = n[c];
+      }
+      return g.doubleSided().color('#7a2e26').mat(MAT.CLOTH).noShadow();
+    };
+    b.dynamic(shape, { times: [0, P], transform: () => at, caps: 'none', cycle: { period: 8, keys: 16, start } });
+  }
 }
 
 // A candle: wax, wick, and a flame that leans, stretches and flickers on a
@@ -1290,14 +1495,23 @@ function fishbowl(b, at) {
   const rand = rng(9), peb = new Geo();
   for (let i = 0; i < 40; i++) { const a = rand.range(0, TAU), d = rand.range(0, 0.06); peb.add(Geo.sphere(rand.range(0.004, 0.008), 8, 6).scale(1, 1, 0.6).translate(d * Math.cos(a), d * Math.sin(a), 0.02 + 0.006 * (1 - d / 0.06)).color(rand.pick(['#8a7f70', '#b0a48f', '#6a6258', '#c8b8a0']))); }
   b.static(peb, { transform: at, solid: false });
-  const fish = Geo.merge(Geo.sphere(1, 18, 12).scale(0.016, 0.006, 0.009), Geo.cone(0.004, 0.006, 8).rotateY(-Math.PI / 2).translate(-0.014, 0, 0.002).scale(1, 0.4, 1),
-    Geo.sphere(0.0015, 6, 4).translate(0.012, 0.004, 0.003).color('#111')).color('#e8701e').gloss(0.6).mat(MAT.PAINT);
-  const tailFin = Geo.merge(Geo.triangle([0, 0, 0], [-0.014, 0, 0.007], [-0.012, 0, -0.006]), Geo.triangle([0, 0, 0], [-0.012, 0, -0.006], [-0.014, 0, 0.007])).color('#f08a30').doubleSided().mat(MAT.PAINT);
+  // A goldfish: a turned body, deep and narrow, paler underneath, eyes, a
+  // dorsal fin; and its forked tail fin, a mesh of its own.  As the tail
+  // beats, the body sways a little the other way about a point behind its head.
+  const prof = [[0, 0], [0.0022, 0.002], [0.0048, 0.008], [0.0068, 0.016], [0.0066, 0.023], [0.0046, 0.029], [0.0015, 0.0318], [0, 0.032]];
+  const fish = Geo.lathe(prof, 16).rotateY(Math.PI / 2).translate(-0.017, 0, 0).scale(1, 0.55, 1.1)
+    .colorBy((q) => (q[2] < -0.002 ? '#f4b070' : '#e8701e'));
+  fish.add(Geo.triangle([-0.007, 0, 0.006], [0.004, 0, 0.0068], [-0.01, 0, 0.0125]).doubleSided().color('#f08a30'));
+  for (const sy of [-1, 1]) fish.add(Geo.sphere(0.0014, 8, 5).translate(0.009, sy * 0.0031, 0.0018).color('#111'));
+  fish.gloss(0.6).mat(MAT.PAINT);
+  const tailFin = Geo.merge(Geo.triangle([0, 0, 0], [-0.015, 0, 0.009], [-0.009, 0, 0.0015]), Geo.triangle([0, 0, 0], [-0.009, 0, 0.0015], [-0.009, 0, -0.0005]),
+    Geo.triangle([0, 0, 0], [-0.009, 0, -0.0005], [-0.015, 0, -0.007])).color('#f08a30').doubleSided().mat(MAT.PAINT);
   for (const [Tr, rr, z, dir, ph] of [[12, 0.055, R + 0.0, 1, 0], [15, 0.035, R - 0.035, -1, 2.0]]) {
-    const pos = (u) => { const a = dir * TAU * u + ph; return m4.mul(m4.translation(rr * Math.cos(a), rr * Math.sin(a), z + 0.008 * Math.sin(2 * TAU * u)), m4.rotationZ(a + dir * Math.PI / 2)); };
-    cyc(b, fish, at, Tr, Tr * 4, pos, { shadow: false });
     const beats = Tr * 2;
-    cyc(b, tailFin, at, Tr, beats * 8, (u) => m4.mul(pos(u), m4.translation(-0.016, 0, 0.001), m4.rotationZ(0.5 * Math.sin(TAU * beats * u))), { shadow: false });
+    const pos = (u) => { const a = dir * TAU * u + ph; return m4.mul(m4.translation(rr * Math.cos(a), rr * Math.sin(a), z + 0.008 * Math.sin(2 * TAU * u)), m4.rotationZ(a + dir * Math.PI / 2)); };
+    const body = (u) => m4.mul(pos(u), m4.translation(0.007, 0, 0), m4.rotationZ(-0.12 * Math.sin(TAU * beats * u)), m4.translation(-0.007, 0, 0));
+    cyc(b, fish, at, Tr, beats * 8, body, { shadow: false });
+    cyc(b, tailFin, at, Tr, beats * 8, (u) => m4.mul(body(u), m4.translation(-0.0165, 0, 0.0005), m4.rotationZ(0.5 * Math.sin(TAU * beats * u))), { shadow: false });
   }
 }
 
@@ -1310,10 +1524,10 @@ function drinkingBird(b, at) {
   b.static(g.color('#3a7ab0').gloss(0.5), { transform: at, solid: false });
   b.static(Geo.cylinder(0.018, 0.03, 24).translate(0.07, 0, 0).color('#cfe0e8').gloss(0.9).blend(0.3), { transform: at, solid: false });
   const bird = Geo.merge(
-    Geo.sphere(0.014, 18, 12).translate(0, 0, -0.03).color('#c03020').gloss(0.9),
-    rod([[0, 0, -0.03], [0, 0, 0.07]], 0.003, { seg: 8, step: 0.01 }).color('#d8e8ec').gloss(0.9),
-    Geo.sphere(0.011, 16, 10).translate(0, 0, 0.075).color('#c03020').gloss(0.8),
-    Geo.cylinder(0.012, 0.004, 16).translate(0, 0, 0.083).color('#2a5a9a'),
+    Geo.sphere(0.014, 14, 10).translate(0, 0, -0.03).color('#c03020').gloss(0.9),
+    rod([[0, 0, -0.03], [0, 0, 0.07]], 0.003, { seg: 6, step: 0.025 }).color('#d8e8ec').gloss(0.9),
+    Geo.sphere(0.011, 12, 8).translate(0, 0, 0.075).color('#c03020').gloss(0.8),
+    Geo.cylinder(0.012, 0.004, 12).translate(0, 0, 0.083).color('#2a5a9a'),
     Geo.cone(0.003, 0.016, 8).rotateY(Math.PI / 2).translate(0.008, 0, 0.074).color('#e8e0c8'),
   ).mat(MAT.PAINT);
   // leaning angle over a round: slowly over (12 s), a quick dip and back (2 s), with a damped rock after it
@@ -1381,7 +1595,9 @@ function shelfRailway(b) {
     }
     return keyed.get(k);
   };
-  const run = (geo, back, len, o = {}) => b.dynamic(geo, { times: timesFor(back, len), transform: carAt(back, len), caps: 'none', ...o });
+  // (The shelf runs above the window, where no sunlight reaches: nothing on it
+  // casts a shadow, which keeps the train out of the shadow maps.)
+  const run = (geo, back, len, o = {}) => b.dynamic(unshadowed(geo), { times: timesFor(back, len), transform: carAt(back, len), caps: 'none', ...o });
   // the engine: boiler, smokebox, chimney, dome, cab, in its frame (+Y forward, axles across)
   const eng = new Geo();
   eng.add(Geo.box(0.04, 0.15, 0.012).translate(0, 0, 0.018).color('#1c1c1c'));
@@ -1567,6 +1783,91 @@ function clutter(b) {
     g.add(Geo.cylinder(0.006, 0.05, 10).translate(x, RY - 0.025, 1.15).color(rand.pick(['#7a3a20', '#2a4a7a', '#3a5a2a', '#6a5a3a'])));
   }
   b.static(g, { solid: false });
+  // the loupe's lens
+  b.static(Geo.disc(0.021, 32).rotateX(Math.PI / 2 - 0.4).translate(-0.29, 1.19, BENCH + 0.155).color('#e4ecec').gloss(0.95).blend(0.12).doubleSided(), { solid: false });
+  benchWork(b);
+}
+
+// Where the clockmaker was working, under the loupe: a watch movement open in
+// its holder on a square of baize, its balance going, and the tools put down
+// round it.  Small things, drawn only from near by: the tools from 4 m (a
+// screwdriver's handle is then two pixels across), and the movement's parts
+// each from where it is about that size (see below).
+function benchWork(b) {
+  const at = (x, y, a = 0) => m4.mul(m4.translation(x, y, BENCH), m4.rotationZ(a));
+  const rand = rng(57);
+  b.static(Geo.box(0.15, 0.1, 0.002).translate(-0.235, 1.215, BENCH + 0.001).color('#2f4a34').mat(MAT.CLOTH), { solid: false });
+  // The movement, going.  Its fourth wheel (60 teeth) turns once a minute and
+  // drives the escape pinion (6), so that the escape wheel (15 teeth) turns
+  // in 6 s, half a tooth at each beat; the pallet fork flicks over at every
+  // beat, as the balance swings through the middle (it swings 150 degrees
+  // each way and back 2.5 times a second, a watch's 18,000 beats an hour).
+  // What is always there: the holder, the plate and the bridges; the wheels
+  // and the balance from 4.5 m, where the balance's rim is two pixels across;
+  // jewels, screws and the hairspring, a millimetre or so, from 1.5 m.
+  const mv = [-0.285, 1.205, BENCH + 0.014], mm = 0.00024;
+  const inMv = (x, y, z) => m4.translation(mv[0] + x, mv[1] + y, mv[2] + z);
+  const QB = [0.009, 0.004], QE = [0.0005, 0.0005], Q4 = [QE[0] + mm * 33 * Math.cos(3.75), QE[1] + mm * 33 * Math.sin(3.75)];
+  const QF = [(QE[0] + QB[0]) / 2 + 0.0004, (QE[1] + QB[1]) / 2 - 0.0003];
+  const plain = new Geo();
+  plain.add(Geo.lathe([[0, 0], [0.024, 0], [0.024, 0.004], [0.021, 0.006], [0.021, 0.012], [0, 0.012]], 40).translate(0, 0, -0.014).color(COL.brass).gloss(0.7).mat(MAT.BRASS));
+  plain.add(Geo.cylinder(0.0195, 0.002, 48, { caps: true }).color('#d4c9a8').gloss(0.75).mat(MAT.BRASS));
+  // the bridges, a little above the wheels: the barrel's, the train's over the fourth and escape arbors, the balance cock
+  const bridge = (len, wd, a, x, y) => Geo.box(len, wd, 0.0012).translate(len / 2 - 0.003, 0, 0).rotateZ(a).translate(x, y, 0.0052).color('#d9cfa8').gloss(0.8).mat(MAT.BRASS);
+  plain.add(bridge(0.018, 0.007, 0.2, -0.011, 0.006));
+  plain.add(bridge(0.014, 0.0045, Math.atan2(QE[1] - Q4[1], QE[0] - Q4[0]), Q4[0], Q4[1]));
+  const E = [QB[0] + 0.009 * Math.cos(-0.64), QB[1] + 0.009 * Math.sin(-0.64)];
+  plain.add(bridge(0.015, 0.0045, Math.atan2(QB[1] - E[1], QB[0] - E[0]), E[0], E[1]));
+  b.static(plain, { transform: m4.translation(...mv), solid: false });
+  const fine = new Geo();
+  for (const [x, y] of [Q4, QE, QB, [-0.0095, 0.0075]]) fine.add(Geo.cylinder(0.0008, 0.0006, 10).translate(x, y, 0.0058).color('#a0141c').gloss(0.95).mat(MAT.PAINT));
+  for (const [x, y] of [[-0.017, 0.004], [-0.003, 0.0105], [Q4[0] - 0.002, Q4[1] - 0.0015], [E[0], E[1]]]) fine.add(Geo.cylinder(0.0011, 0.0006, 12).translate(x, y, 0.0058).color('#1d2a4a').gloss(0.8).mat(MAT.BLUED));
+  // the hairspring over the balance: a flat spiral, its outer end fixed
+  const hs = [];
+  for (let k = 0; k <= 72; k++) { const a = k * TAU / 12, r = 0.0007 + 0.0035 * k / 72; hs.push([QB[0] + r * Math.cos(a), QB[1] + r * Math.sin(a), 0.0043]); }
+  fine.add(Geo.tube(hs, 0.00012, 3).color('#3a4a6a').gloss(0.8).mat(MAT.STEEL));
+  b.static(fine, { transform: m4.translation(...mv), solid: false, within: 1.5 });
+  const dirTo = (p, q) => Math.atan2(q[1] - p[1], q[0] - p[0]);
+  const phE = dirTo(QE, Q4) - (0 - dirTo(Q4, QE)) * 60 / 6 + Math.PI / 6;
+  const four = spur(60, mm, { spokes: 4, w: 0.0004, bore: 0.0003 });
+  cyc(b, four, inMv(Q4[0], Q4[1], 0.0025), 60, 120, (u) => m4.rotationZ(-u * TAU), { shadow: false, within: 4.5 });
+  const escW = Geo.merge(pinion(6, mm, { w: 0.0005, bore: 0.0002 }), wheel(15, 0.0019, 0.0026, { tooth: ESCAPE, w: 0.0003, bore: 0.0002, rings: 1 }).translate(0, 0, 0.0005));
+  cyc(b, escW, inMv(QE[0], QE[1], 0.0025), 6, 30 * BEAT_POSES, (u) => m4.rotationZ(phE + escPose(Math.round(u * 30 * BEAT_POSES)) * TAU / 30), { shadow: false, within: 4.5 });
+  // the pallet fork: towards the escape wheel its two pallets, towards the balance its fork
+  const fa = dirTo(QF, QE), fork = new Geo();
+  fork.add(Geo.box(0.0055, 0.0005, 0.0003).translate(0.0005, 0, 0));
+  fork.add(Geo.box(0.0004, 0.0032, 0.0003).translate(0.0026, 0, 0));
+  for (const s of [-1, 1]) fork.add(Geo.box(0.0007, 0.0003, 0.0003).translate(-0.0025, s * 0.0004, 0));
+  cyc(b, fork.color(COL.steel).gloss(0.85).mat(MAT.STEEL), inMv(QF[0], QF[1], 0.003), 0.4, 40, (u) => m4.rotationZ(fa + 0.2 * Math.max(-1, Math.min(1, 6 * Math.sin(TAU * u)))), { shadow: false, within: 4.5 });
+  const bal = Geo.merge(Geo.torus(0.0052, 0.00045, 32, 4), Geo.box(0.0104, 0.0007, 0.0004),
+    ...[0, 1, 2, 3, 4, 5, 6, 7].map((k) => Geo.cylinder(0.0005, 0.0006, 6).translate(0.0057, 0, -0.0003).rotateZ(k * TAU / 8 + 0.2))).color(COL.brass).gloss(0.9).mat(MAT.BRASS);
+  cyc(b, bal, inMv(QB[0], QB[1], 0.0036), 0.4, 40, (u) => m4.rotationZ(2.6 * Math.sin(TAU * u)), { shadow: false, within: 4.5 });
+
+  // The tools: tweezers, three screwdrivers, a hammer, an oiler and its pot, a bench block
+  const t = new Geo();
+  const steel = (g) => g.color(COL.steel).gloss(0.85).mat(MAT.STEEL);
+  const tweezers = new Geo();
+  for (const s of [-1, 1]) tweezers.add(Geo.box(0.11, 0.0022, 0.0009).translate(0.055, 0, 0).rotateZ(s * 0.03).translate(0, 0, 0.0006));
+  t.add(steel(tweezers).transform(at(-0.305, 1.252, 0.04)));
+  [['#7a1a14', 0.05, 1.29, 0.2], ['#1d4d2e', 0.03, 1.31, 0.35], ['#2a3a6a', 0.04, 1.275, 0.05]].forEach(([col, len, y, a], i) => {
+    const sd = new Geo();
+    sd.add(Geo.cylinder(0.0042, len, 12).rotateY(Math.PI / 2).translate(-len, 0, 0.0042).color(col).gloss(0.4));
+    sd.add(Geo.cylinder(0.0045, 0.006, 12).rotateY(Math.PI / 2).translate(-len - 0.006, 0, 0.0042).color(COL.brass).gloss(0.8).mat(MAT.BRASS));
+    sd.add(steel(rod([[0, 0, 0.0042], [0.03, 0, 0.0042]], 0.0011, { seg: 6, step: 0.1 })));
+    t.add(sd.transform(at(-0.07 + i * 0.03, y + 0.06, a + 1.4)));
+  });
+  const hammer = new Geo();
+  hammer.add(rod([[0, 0, 0.004], [0.13, 0, 0.004]], 0.0032, { seg: 10, step: 0.2 }).color('#6a4a2a').mat(MAT.WOOD));
+  hammer.add(Geo.cylinder(0.0055, 0.032, 16, { caps: true }).rotateX(Math.PI / 2).translate(0.135, 0.016, 0.0055).color(COL.brass).gloss(0.8).mat(MAT.BRASS));
+  t.add(hammer.transform(at(0.02, 1.32, -0.2)));
+  t.add(Geo.lathe([[0, 0], [0.011, 0], [0.012, 0.004], [0.009, 0.014], [0, 0.014]], 24).translate(-0.06, 1.185, BENCH).color(COL.brass).gloss(0.8).mat(MAT.BRASS));
+  t.add(Geo.cylinder(0.008, 0.004, 24).translate(-0.06, 1.185, BENCH + 0.009).color('#3a2a10').gloss(0.95));
+  t.add(steel(rod([[-0.04, 1.172, BENCH + 0.003], [0.0, 1.19, BENCH + 0.003]], 0.0007, { seg: 4, step: 0.1 })));
+  t.add(Geo.cylinder(0.022, 0.009, 32, { caps: true }).translate(0.06, 1.19, BENCH).color(COL.brass).gloss(0.7).mat(MAT.BRASS));
+  // a few screws and a spare wheel lying about
+  for (let i = 0; i < 9; i++) t.add(Geo.cylinder(0.0009, 0.002, 8).rotateX(rand() < 0.5 ? Math.PI / 2 : 0).translate(-0.215 + rand.range(-0.03, 0.03), 1.215 + rand.range(-0.02, 0.02), BENCH + 0.0029).color(rand() < 0.5 ? '#1d2a4a' : COL.steel).gloss(0.8).mat(MAT.STEEL));
+  t.add(spur(40, 0.0003, { spokes: 4, w: 0.0006, bore: 0.0004 }).clone().translate(-0.18, 1.18, BENCH + 0.0023));
+  b.static(t, { solid: false, within: 4 });
 }
 
 // ---------------------------------------------------------------- the watch case
@@ -1785,9 +2086,10 @@ function regulator(b, at, { start = 0 } = {}) {
   const face = m4.mul(at, m4.translation(0, -0.12, -0.05));
   b.static(Geo.disc(0.1, 64).color(COL.enamel).gloss(0.35).mat(MAT.DIAL), { transform: face, solid: false });
   wallClockFace(b, face, { r: 0.09, bezel: false, tick: false });
-  const L = lengthFor(1.8);
-  const pend = Geo.merge(rod([[0, 0, 0], [0, -L, 0]], 0.0016, { seg: 5, step: 0.05 }).color('#2a2a2a'), lens(0.045, 0.012, 32).translate(0, -L, 0).color(COL.brass).gloss(0.9).mat(MAT.BRASS));
-  cyc(b, pend, m4.mul(at, m4.translation(0, -0.2, -0.085)), 1.8, 24, (u) => m4.rotationZ(0.04 * Math.sin(TAU * u)), { start, shadow: false });
+  // (the rod in four pieces of its own: see rodParts)
+  const L = lengthFor(1.8), pAt = m4.mul(at, m4.translation(0, -0.2, -0.085)), swing = (u) => m4.rotationZ(0.04 * Math.sin(TAU * u));
+  for (const piece of rodParts([0, 0, 0], [0, -L, 0], 4, 0.0016, { seg: 5, step: 0.025 })) cyc(b, piece.color('#2a2a2a'), pAt, 1.8, 24, swing, { start, shadow: false });
+  cyc(b, lens(0.045, 0.012, 32).translate(0, -L, 0).color(COL.brass).gloss(0.9).mat(MAT.BRASS), pAt, 1.8, 24, swing, { start, shadow: false });
   const w = new Geo();
   for (const sx of [-1, 1]) {
     w.add(Geo.lathe([[0, 0], [0.018, 0], [0.018, 0.14], [0.012, 0.15], [0, 0.15]], 32).translate(sx * 0.075, -0.6, -0.06));
@@ -1812,34 +2114,56 @@ function turretClock(b, at) {
     iron.add(boxAt(-Lf / 2, Lf / 2, sy * 0.1 - 0.012, sy * 0.1 + 0.012, Z, Z + 0.03));
     for (const x of [-0.22, 0.0, 0.2]) iron.add(Geo.extrude([[-0.05, 0], [0.05, 0], [0.012, 0.24], [-0.012, 0.24]], 0.024).rotateX(Math.PI / 2).translate(x, sy * 0.1 + 0.012, Z + 0.03));
   }
-  iron.add(boxAt(-0.04, 0.04, -0.13, 0.13, Z + 0.27, Z + 0.3));     // the cock carrying the pendulum
+  iron.add(boxAt(-0.04, 0.04, -0.22, 0.13, Z + 0.27, Z + 0.3));     // the cock carrying the pendulum, out in front
   b.static(subdivide(iron, 0.2).color('#2a3a34').gloss(0.4).mat(MAT.PAINT), { transform: at });
+  // The train, laid out so that it meshes: the great wheel (90, once an
+  // hour) drives a pinion of 12 on the second arbor (8 minutes), whose wheel
+  // (64, a finer module, in front) drives the escape pinion of 8 (a minute);
+  // the escape wheel is in front of that again.  Each arbor is as far from the
+  // last as their pitch circles say, and each pair in one plane.  In this
+  // frame the wheels stand across y, x along the frame and z up; y = 0 is the
+  // great wheel's plane, the front (the pendulum's side) is towards -y, and
+  // the barrel is behind.
+  const m2 = 0.002;
+  const step = (p, d, deg) => [p[0] + d * Math.cos(deg * Math.PI / 180), p[1] + d * Math.sin(deg * Math.PI / 180)];
+  const P0 = [-0.2, Z + 0.15], P1 = step(P0, m * (90 + 12) / 2, 10), P2 = step(P1, m2 * (64 + 8) / 2, 25);
+  const piv = [P2[0], P2[1] + 0.078];   // the anchor's and the pendulum's arbor, in the cock
   // arbors (static), the barrel's cable going down through the floor
   const fix = new Geo();
-  const arb = [[-0.2, Z + 0.15], [-0.045, Z + 0.17], [0.1, Z + 0.2]];
-  for (const [x, z] of arb) fix.add(Geo.cylinder(0.006, 0.26, 12).rotateX(Math.PI / 2).translate(x, 0.13, z).color(COL.steel).gloss(0.7).mat(MAT.STEEL));
-  fix.add(rod([[-0.2 - 0.07, 0.04, Z + 0.15], [-0.2 - 0.07, 0.04, 0.05]], 0.0025, { seg: 6, step: 0.5 }).color('#6a6a68'));
+  for (const [x, z] of [P0, P1, P2, piv]) fix.add(Geo.cylinder(0.006, z === piv[1] ? 0.35 : 0.26, 12).rotateX(Math.PI / 2).translate(x, 0.13, z).color(COL.steel).gloss(0.7).mat(MAT.STEEL));
+  fix.add(rod([[P0[0] - 0.07, 0.04, P0[1]], [P0[0] - 0.07, 0.04, 0.05]], 0.0025, { seg: 6, step: 0.5 }).color('#6a6a68'));
   b.static(fix, { transform: at, solid: false });
-  // the train: great wheel 90 -> pinion 12 (second arbor, 8 minutes), second wheel 64 -> escape pinion 8 (a minute)
-  const place = (x, z) => m4.mul(at, m4.translation(x, 0, z), m4.rotationX(-Math.PI / 2));
-  const great = Geo.merge(spur(90, m, { w: 0.008, spokes: 6, bore: 0.006, color: '#8a6a3a' }), Geo.cylinder(0.07, 0.08, 48).translate(0, 0, -0.09).color('#3a3a38'));
-  const second = Geo.merge(spur(64, m * 0.8, { w: 0.006, spokes: 5, bore: 0.005, color: '#8a6a3a' }), pinion(12, m, { w: 0.012, color: COL.steel }).translate(0, 0, -0.02));
-  const escape = Geo.merge(wheel(30, 0.05, 0.062, { tooth: ESCAPE, w: 0.005, spokes: 4, rim: 0.85, bore: 0.005, color: '#9a7a4a' }), pinion(8, m * 0.8, { w: 0.01, color: COL.steel }).translate(0, 0, -0.02));
+  // (a wheel's own frame: z its axle, towards the back, and y down the frame's z)
+  const place = (p, y) => m4.mul(at, m4.translation(p[0], y, p[1]), m4.rotationX(-Math.PI / 2));
+  const great = Geo.merge(spur(90, m, { w: 0.008, spokes: 6, bore: 0.006, color: '#8a6a3a' }), Geo.cylinder(0.07, 0.08, 48).translate(0, 0, 0.01).color('#3a3a38'));
+  const second = Geo.merge(pinion(12, m, { w: 0.012, color: COL.steel }), spur(64, m2, { w: 0.006, spokes: 5, bore: 0.005, color: '#8a6a3a' }).translate(0, 0, -0.03));
+  const escape = Geo.merge(pinion(8, m2, { w: 0.01, color: COL.steel }).translate(0, 0, -0.03), wheel(30, 0.05, 0.062, { tooth: ESCAPE, w: 0.005, spokes: 4, rim: 0.85, bore: 0.005, color: '#9a7a4a' }).translate(0, 0, -0.06));
+  // their phases, teeth in gaps (worked out in the wheels' own frame, where z goes down)
+  const own = (p) => [p[0], -p[1]];
   const dirTo = (a, c) => Math.atan2(c[1] - a[1], c[0] - a[0]);
-  // (in the wheels' own plane: x along the frame, y up)
-  const P0 = [arb[0][0], arb[0][1]], P1 = [arb[1][0], arb[1][1]], P2 = [arb[2][0], arb[2][1]];
-  const ph1 = dirTo(P1, P0) - (0 - dirTo(P0, P1)) * 90 / 12 + Math.PI / 12;
+  const meshed = (alpha, pa, Na, pb, Nb) => dirTo(own(pb), own(pa)) - (alpha - dirTo(own(pa), own(pb))) * Na / Nb + Math.PI / Nb;
+  const ph1 = meshed(0, P0, 90, P1, 12), phE = meshed(ph1, P1, 64, P2, 8);
   // the escape wheel moves half a tooth each beat (a second), in jerks; the rest creep round
   const keysE = 60 * BEAT_POSES;
-  cyc(b, great, place(...arb[0]), 3600, 120, (u) => m4.rotationZ(-u * TAU), { shadow: false });
-  cyc(b, second, place(...arb[1]), 480, 96, (u) => m4.rotationZ(ph1 + u * TAU), { shadow: false });
-  cyc(b, escape, place(...arb[2]), 60, keysE, (u) => m4.rotationZ(-escPose(Math.round(u * keysE)) * TAU / 60), { shadow: false });
-  // the anchor and the pendulum, from the cock
-  const L = lengthFor(2);
-  const pend = Geo.merge(rod([[0, 0, 0], [0, 0, -L]], 0.004, { seg: 6, step: 0.05 }).color('#3a3632'),
-    Geo.cylinder(0.06, 0.05, 40).rotateX(Math.PI / 2).translate(0, 0.025, -L).color('#5a5a58').gloss(0.5),
-    rod([[-0.05, 0, -0.12], [0, 0, -0.07], [0.05, 0, -0.12]], 0.004, { seg: 6, step: 0.02 }).color(COL.steel).gloss(0.7).mat(MAT.STEEL));
-  cyc(b, pend, m4.mul(at, m4.translation(0.1, -0.13, Z + 0.33)), 2, 24, (u) => m4.rotationY(0.05 * Math.sin(TAU * u)), { shadow: false });
+  cyc(b, great, place(P0, 0), 3600, 120, (u) => m4.rotationZ(-u * TAU), { shadow: false });
+  cyc(b, second, place(P1, 0), 480, 96, (u) => m4.rotationZ(ph1 + u * TAU), { shadow: false });
+  cyc(b, escape, place(P2, 0), 60, keysE, (u) => m4.rotationZ(phE - escPose(Math.round(u * keysE)) * TAU / 60), { shadow: false });
+  // The anchor, in the escape wheel's plane, and the pendulum out in front of
+  // the frame, rocking together on one arbor: the anchor's pallets reach down
+  // to the escape wheel's teeth either side of its top.  (The rod in five
+  // pieces of its own: see rodParts.)
+  const L = lengthFor(2), pAt = m4.mul(at, m4.translation(piv[0], 0, piv[1])), swing = (u) => m4.rotationY(0.05 * Math.sin(TAU * u));
+  const anchor = new Geo();
+  for (const sx of [-1, 1]) {
+    const a = 0.6, tip = [sx * 0.062 * Math.sin(a), 0, P2[1] - piv[1] + 0.062 * Math.cos(a)];
+    anchor.add(rod([[0, 0, 0], [tip[0] * 0.75, 0, tip[2] * 0.35], tip], 0.003, { seg: 6, step: 0.012 }));
+    anchor.add(Geo.box(0.006, 0.006, 0.012).rotateY(-sx * a).translate(tip[0], 0, tip[2]));
+  }
+  anchor.add(Geo.cylinder(0.012, 0.008, 16).rotateX(Math.PI / 2).translate(0, 0.004, 0));
+  cyc(b, anchor.translate(0, -0.06, 0).color(COL.steel).gloss(0.7).mat(MAT.STEEL), pAt, 2, 24, swing, { shadow: false });
+  const pend = [...rodParts([0, -0.205, 0], [0, -0.205, -L], 5, 0.004, { seg: 6, step: 0.025 }).map((g) => g.color('#3a3632')),
+    Geo.cylinder(0.06, 0.05, 40).rotateX(Math.PI / 2).translate(0, -0.18, -L).color('#5a5a58').gloss(0.5)];
+  for (const piece of pend) cyc(b, piece, pAt, 2, 24, swing, { shadow: false });
   // a setting dial on the frame's end, its minute hand driven from the great wheel
   const dialAt = m4.mul(at, m4.translation(Lf / 2 + 0.01, 0, Z + 0.16), m4.rotationZ(Math.PI / 2), m4.rotationX(Math.PI / 2));
   b.static(Geo.disc(0.07, 48).color(COL.enamel).mat(MAT.DIAL), { transform: dialAt, solid: false });
@@ -1897,7 +2221,8 @@ function beamEngine(b, at) {
   // (two meshes: each is drawn at the steps that its own depth asks for)
   const fly = wheel(40, 0.095, 0.095, { tooth: [[-0.25, 0], [0.25, 0]], w: 0.01, bore: 0.006, rings: 6, spokes: 6, rim: 0.82, color: '#6a2218', gloss: 0.6 }).rotateX(Math.PI / 2);
   cyc(b, fly, piv(xc, zc).map((v, i) => (i === 13 ? v + 0.045 : v)), T, keys, (u) => m4.rotationY(-crank(u)), { shadow: false });
-  const crankArm = subdivide(Geo.merge(Geo.box(R + 0.012, 0.006, 0.016).translate(R / 2, 0, 0), Geo.cylinder(0.004, 0.02, 10).rotateX(Math.PI / 2).translate(R, 0, 0)).color('#6a2218'), 0.01);
+  // (its pin points forward, to the connecting rod)
+  const crankArm = subdivide(Geo.merge(Geo.box(R + 0.012, 0.006, 0.016).translate(R / 2, 0, 0), Geo.cylinder(0.004, 0.02, 10).rotateX(-Math.PI / 2).translate(R, 0, 0)).color('#6a2218'), 0.01);
   cyc(b, crankArm, piv(xc, zc).map((v, i) => (i === 13 ? v - 0.03 : v)), T, keys, (u) => m4.rotationY(-crank(u)), { shadow: false });
 }
 
@@ -1907,8 +2232,15 @@ function beamEngine(b, at) {
 // its own (7, 9 and 11 s round), its wings beating eight times a second.
 function moths(b) {
   const c = [2.12, 1.52, 1.2];
-  const body = Geo.merge(Geo.sphere(1, 7, 4).scale(0.0025, 0.009, 0.0025), Geo.sphere(0.0025, 6, 4).translate(0, 0.008, 0.0005)).color('#6a5a48').mat(MAT.FUR);
-  const wing = (side) => Geo.merge(Geo.triangle([0, 0.004, 0], [side * 0.012, 0.0, 0], [side * 0.011, -0.006, 0]), Geo.triangle([0, 0.004, 0], [side * 0.011, -0.006, 0], [0, -0.004, 0])).doubleSided().color('#a89880').mat(MAT.FUR);
+  // a furry body with a head and feelers, and each wing (fore and hind as one) a fan of five triangles, pale buff
+  const body = Geo.merge(Geo.sphere(1, 8, 5).scale(0.003, 0.011, 0.003), Geo.sphere(0.0028, 8, 5).translate(0, 0.01, 0.0006),
+    ...[-1, 1].map((sx) => rod([[sx * 0.001, 0.012, 0.001], [sx * 0.003, 0.016, 0.003], [sx * 0.006, 0.019, 0.003]], 0.00025, { seg: 3, step: 0.01 }))).color('#6a5a48').mat(MAT.FUR);
+  const wing = (side) => {
+    const rim = [[0.0, 0.006], [0.005, 0.008], [0.013, 0.006], [0.017, 0.0], [0.013, -0.006], [0.006, -0.01], [0.0, -0.006]];
+    const g = new Geo();
+    for (let k = 0; k + 1 < rim.length; k++) g.add(Geo.triangle([0, 0.001, 0], [side * rim[k][0], rim[k][1], 0], [side * rim[k + 1][0], rim[k + 1][1], 0]));
+    return g.doubleSided().color('#c8b48e').mat(MAT.FUR);
+  };
   const wings = [wing(1), wing(-1)];
   [[7, 0.09, 0.0], [9, 0.07, 2.0], [11, 0.11, 4.1]].forEach(([T, R, ph], i) => {
     const flaps = 8 * T, keys = flaps * 4;
@@ -1959,7 +2291,8 @@ function cuckooClock(b, at) {
   b.static(g, { transform: at, solid: false });
   const face = m4.mul(at, m4.translation(0, -0.03, 0.002));
   b.static(Geo.disc(0.07, 48).color('#f0e6d0').mat(MAT.DIAL), { transform: face, solid: false });
-  wallClockFace(b, face, { r: 0.065, bezel: false, tick: true });
+  // (no seconds hand: a cuckoo clock has none)
+  wallClockFace(b, face, { r: 0.065, bezel: false, seconds: false });
   // weights on chains, and the pendulum (a carved leaf on a rod: 0.9 s there and back)
   const w = new Geo();
   for (const sx of [-0.05, 0.05]) {
@@ -2004,6 +2337,33 @@ function hearthSide(b) {
   const scuttle = Geo.lathe([[0, 0], [0.12, 0], [0.13, 0.02], [0.13, 0.2], [0.115, 0.26], [0.12, 0.28], [0, 0.28]], 64).color(COL.copper).gloss(0.7);
   scuttle.add(Geo.torus(0.1, 0.008, 48, 8).rotateX(Math.PI / 2).translate(0, 0, 0.3).color(COL.brass).gloss(0.8).mat(MAT.BRASS));
   b.static(scuttle, { transform: m4.translation(-0.35, -RY + 0.3, 0.0) });
+}
+
+// A stool at the bench, where the clockmaker sits to work under the loupe:
+// a turned seat on three splayed legs, with a ring between them.  The seat
+// is solid; the legs are not (they would only snag a walker).
+function stool(b, x, y) {
+  const H = 0.6, at = m4.translation(x, y, 0);
+  b.static(Geo.lathe([[0, 0], [0.165, 0], [0.175, 0.012], [0.175, 0.028], [0.165, 0.04], [0, 0.04]], 48).translate(0, 0, H - 0.04).color(COL.walnut).gloss(0.45).mat(MAT.WOOD), { transform: at });
+  const legs = new Geo();
+  for (let k = 0; k < 3; k++) {
+    const a = k * TAU / 3 + 0.4;
+    legs.add(rod([[0.1 * Math.cos(a), 0.1 * Math.sin(a), H - 0.04], [0.19 * Math.cos(a), 0.19 * Math.sin(a), 0]], 0.015, { seg: 10, step: 0.2 }));
+  }
+  legs.add(Geo.torus(0.158, 0.007, 48, 6).translate(0, 0, 0.2));
+  b.static(legs.color(COL.walnut).gloss(0.45).mat(MAT.WOOD), { transform: at, solid: false });
+}
+
+// A framed drawing of an anchor escapement, under glass (the shader draws
+// it: see MAT.DRAWING).  Faces +Z.
+function drawing(b, at) {
+  const W = 0.34, H = 0.46, f = 0.03;
+  b.static(Geo.plane(W, H, 4, 6).translate(0, 0, 0.008).color('#ffffff').mat(MAT.DRAWING), { transform: at, solid: false });
+  const fr = new Geo();
+  for (const sy of [-1, 1]) fr.add(Geo.box(W + 2 * f, f, 0.022).translate(0, sy * (H + f) / 2, 0.011));
+  for (const sx of [-1, 1]) fr.add(Geo.box(f, H, 0.022).translate(sx * (W + f) / 2, 0, 0.011));
+  b.static(fr.color('#3a2416').gloss(0.5).mat(MAT.WOOD), { transform: at, solid: false });
+  b.static(Geo.plane(W, H).translate(0, 0, 0.017).color('#dfe8e4').gloss(0.9).blend(0.06), { transform: at, solid: false });
 }
 
 // A cabinet of little drawers for parts, against the left-hand wall by the
@@ -2119,11 +2479,15 @@ export default {
     {
       const g = new Geo();
       const boxAt = (x0, x1, y0, y1, z0, z1) => Geo.box(x1 - x0, y1 - y0, z1 - z0).translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
-      g.add(boxAt(-RX + 0.05, RX - 0.05, BENCH_Y0, RY, BENCH - 0.05, BENCH));
       g.add(boxAt(-RX + 0.05, RX - 0.05, BENCH_Y0 + 0.01, BENCH_Y0 + 0.03, BENCH - 0.2, BENCH - 0.05));
       for (const x of [-RX + 0.1, -0.8, 0.8, RX - 0.1]) for (const y of [BENCH_Y0 + 0.05, RY - 0.05]) g.add(boxAt(x - 0.04, x + 0.04, y - 0.04, y + 0.04, 0, BENCH - 0.05));
-      b.static(subdivide(g, 0.5).color(COL.oak).mat(MAT.WOOD));
+      g.color(COL.oak).mat(MAT.WOOD);
+      // (the top has a material of its own, for its wear: see MAT.BENCH in the shader)
+      g.add(boxAt(-RX + 0.05, RX - 0.05, BENCH_Y0, RY, BENCH - 0.05, BENCH).color(COL.oak).mat(MAT.BENCH));
+      b.static(subdivide(g, 0.5));
     }
+    stool(b, -0.3, 0.85);
+    drawing(b, onWall('right', [RX - 0.012, -0.22, 1.5]));
     // wall clocks over the bench
     wallClock(b, onWall('back', [-1.75, RY - 0.07, 1.78]), { r: 0.13 });
     wallClock(b, onWall('back', [-0.55, RY - 0.07, 1.86]), { r: 0.1, dial: 1, tick: false });
@@ -2131,7 +2495,6 @@ export default {
     // a second board of wheels on the back wall, over the lamp
     {
       const at = onWall('back', [0, RY - 0.02, 0]);
-      b.static(Geo.box(1.0, 0.46, 0.018).translate(1.8, 1.95, -0.009).color('#7a5a40').mat(MAT.WOOD), { transform: at, solid: false });
       train(b, at, 0.003, [
         { N: 60, pos: [1.5, 1.95], T: 120, sense: -1 },
         { N: 20, on: 0, dir: 0 },
@@ -2142,7 +2505,7 @@ export default {
         { N: 45, on: 5, dir: -20 },
         { N: 20, on: 6, dir: 40 },
         { N: 36, on: 0, dir: 200 },
-      ], { faceZ: 0.006 });
+      ], { faceZ: 0.006, board: ['#7a5a40', 0.018] });
     }
     // the skeleton clock, in the sun
     skeletonClock(b, place([-1.35, 1.5, BENCH]));
@@ -2154,8 +2517,6 @@ export default {
     // the wheel board on the back wall, between the clocks
     {
       const at = onWall('back', [0, RY - 0.02, 0]);
-      const boardG = Geo.box(1.0, 0.44, 0.018).translate(0.75, 1.33, -0.009).color('#7a5a40').mat(MAT.WOOD);
-      b.static(boardG, { transform: at, solid: false });
       train(b, at, 0.003, [
         { N: 60, pos: [0.42, 1.36], T: 120, sense: -1 },
         { N: 20, on: 0, dir: -25 },
@@ -2170,9 +2531,7 @@ export default {
         { N: 40, on: 7, dir: 40 },
         { N: 24, on: 10, dir: -10 },
         { N: 60, on: 11, dir: 15 },
-        { N: 20, on: 12, dir: -25 },
-        { N: 40, on: 13, dir: 30 },
-      ], { faceZ: 0.006 });
+      ], { faceZ: 0.006, board: ['#7a5a40', 0.018] });
     }
     deskLamp(b);
     hearthSide(b);
@@ -2216,7 +2575,6 @@ export default {
     {
       // a wall of wheels, a metre and a third across, driven round once in four minutes
       const at = onWall('front', [0, -RY + 0.02, 0]);
-      b.static(Geo.box(1.35, 1.2, 0.02).translate(1.275, 1.6, -0.01).color('#6a4a32').mat(MAT.WOOD), { transform: at, solid: false });
       train(b, at, 0.004, [
         { N: 80, pos: [0.85, 1.25], T: 240, sense: 1 },
         { N: 20, on: 0, dir: 40 },
@@ -2240,7 +2598,7 @@ export default {
         { N: 64, on: 18, dir: -100 },
         { N: 24, on: 19, dir: 180 },
         { N: 48, on: 20, dir: 170 },
-      ], { faceZ: 0.008, w: 0.006 });
+      ], { faceZ: 0.008, w: 0.006, board: ['#6a4a32', 0.02] });
       dropDial(b, onWall('front', [-2.2, -RY + 0.03, 1.85]), { r: 0.1, start: 0.3 });
       regulator(b, onWall('front', [-0.3, -RY + 0.13, 2.2]), { start: 0.4 });
     }

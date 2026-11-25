@@ -365,6 +365,33 @@ export class Geo {
     return this;
   }
 
+  // A new mesh of some of this one's triangles: those for which
+  // keep(i, middle) holds (i: the triangle's number, middle: the middle of
+  // its corners).  The vertices come in the order they had, which matters
+  // for a mesh that moves: what a moving triangle sweeps from key to key is
+  // split by the order of its corners among the mesh's vertices (see
+  // _tetLists in builder.js), and a thin thing that turns is drawn true only
+  // if that order runs along it, as it does in the shapes made here (a tube's
+  // vertices go ring by ring).  Numbered any other way, such a thing opens
+  // into a sheet in a tilted view.
+  pick(keep) {
+    const p = this.p, idx = this.idx, used = new Uint8Array(this.vertexCount), tris = [];
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i] * 3, b = idx[i + 1] * 3, c = idx[i + 2] * 3;
+      if (!keep(i / 3, [(p[a] + p[b] + p[c]) / 3, (p[a + 1] + p[b + 1] + p[c + 1]) / 3, (p[a + 2] + p[b + 2] + p[c + 2]) / 3])) continue;
+      tris.push(i);
+      used[idx[i]] = used[idx[i + 1]] = used[idx[i + 2]] = 1;
+    }
+    const out = new Geo(), at = new Int32Array(this.vertexCount);
+    for (let v = 0; v < used.length; v++) {
+      if (!used[v]) continue;
+      at[v] = out.p.length / 3;
+      for (const [arr, w] of [['p', 3], ['n', 3], ['c', 3], ['uv', 2], ['a', 4], ['x', 2]]) for (let k = 0; k < w; k++) out[arr].push(this[arr][v * w + k]);
+    }
+    for (const i of tris) out.idx.push(at[idx[i]], at[idx[i + 1]], at[idx[i + 2]]);
+    return out;
+  }
+
   clone() {
     const g = new Geo();
     for (const k of ['p', 'n', 'c', 'uv', 'a', 'x', 'idx']) g[k] = this[k].slice();

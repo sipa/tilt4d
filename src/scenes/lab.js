@@ -13,7 +13,8 @@ import { Path, follow, timeRange, rng } from '../util.js';
 
 const PERIOD = 60; // every moving thing repeats after this many seconds
 const MAT_GROUND = 1, MAT_CLOCK = 2, MAT_DIAL = 3, MAT_STENCIL = 4, MAT_CAR = 5, MAT_CAB = 6, MAT_WHEEL = 7,
-  MAT_TRAM = 8, MAT_PLATE = 9, MAT_STRIPES = 10, MAT_SCALE = 11;
+  MAT_TRAM = 8, MAT_PLATE = 9, MAT_STRIPES = 10, MAT_SCALE = 11, MAT_BEAM = 12, MAT_STAFF = 13, MAT_CONCRETE = 14,
+  MAT_BLOCK = 15, MAT_COUNT = 16;
 
 // The cars' loop, and how often their wheels turn on it in one period (the shader turns them).
 const LOOP = new Path([[-70, 50, 0], [70, 50, 0], [70, 90, 0], [-70, 90, 0]], { closed: true, smooth: 8 });
@@ -51,7 +52,8 @@ fn cutout(s: Surface) -> f32 {
 fn surface(sIn: Surface) -> Surface {
   var s = sIn;
   // Derivatives must be taken before any branching.
-  let fw = fwidth(s.pos.xy);
+  let fw3 = fwidth(s.pos);
+  let fw = fw3.xy;
   let u = s.uv;
   if (s.mat == ${MAT_GROUND}u) {
     // metre grid, bolder every ten metres, plus the runway markings
@@ -79,6 +81,17 @@ fn surface(sIn: Surface) -> Surface {
     if (abs(s.pos.y - 140.0) < 1.5) {   // ballast and sleepers under the tram's rails
       s.color = mix(vec3f(0.3, 0.28, 0.25), vec3f(0.16, 0.11, 0.08), step(fract(s.pos.x / 0.7), 0.3) * step(abs(s.pos.y - 140.0), 1.2));
     }
+    if (abs(s.pos.y - 2.0) < 0.5 && abs(s.pos.x - 17.1) < 8.0) {
+      // under the row of pendulums, a line along it and a tick where each bob hangs at rest: in
+      // step, every bob is as far from its tick; tilted, they make a wave along the line
+      let tick = step(abs(fract((s.pos.x - 10.5) / 2.2 + 0.5) - 0.5) * 2.2, 0.05) * step(abs(s.pos.y - 2.0), 0.45);
+      s.color = mix(s.color, vec3f(0.85, 0.82, 0.7), max(tick, step(abs(s.pos.y - 2.0), 0.04)));
+    }
+    let pad = length(s.pos.xy - vec2f(-20.0, -24.0));
+    if (pad < 5.0) {
+      // a concrete pad round the stencil clock, plain for the time in its shadow to be read on
+      s.color = mix(s.color, vec3f(0.3, 0.3, 0.28), 1.0 - smoothstep(4.85, 5.0, pad));
+    }
   } else if (s.mat == ${MAT_CLOCK}u) {
     // a digital clock showing the time at which this surface is being seen, in a thin frame
     let on = clock7((u - vec2f(0.06, 0.12)) / vec2f(0.88, 0.76), s.t);
@@ -93,22 +106,28 @@ fn surface(sIn: Surface) -> Surface {
     let a = atan2(q.x, q.y) / TAU;
     let hours = step(abs(fract(a * 12.0 + 0.5) - 0.5), 0.045) * step(0.7, r) * step(r, 0.9);
     let mins = step(abs(fract(a * 60.0 + 0.5) - 0.5), 0.1) * step(0.84, r) * step(r, 0.9);
-    s.color = mix(vec3f(0.92, 0.9, 0.84), vec3f(0.05), max(max(hours, mins), step(0.96, r)));
+    let ink = max(max(hours, mins), step(0.96, r));
+    s.color = mix(vec3f(0.92, 0.9, 0.84), vec3f(0.05), ink);
+    // lit from within after dark (envDaylight comes with the built-in sky: 1 by day, 0 at night)
+    s.emissive = (1.0 - ink) * (1.0 - envDaylight(s.t)) * 0.7;
   } else if (s.mat == ${MAT_CAR}u) {
     // a car's body, a box with uv 0..1 across each face.  Its .aux() is 1 on the
-    // front face and -1 on the back one, its .tag() the car's number.
+    // front face and -1 on the back one, its .tag() the car's number.  The lamps
+    // are switched on after sunset (by the time at which they are seen), so that
+    // at dusk a tilted view has the cars on its later side lit and the others not.
     let lamps = step(abs(abs(u.x - 0.5) - 0.34), 0.11) * step(abs(u.y - 0.62), 0.14);
     let bumper = step(u.y, 0.33);   // a dark strip where the bumpers are (modelled from near by)
+    let on = step(envDaylight(s.t), 0.5);
     if (s.aux > 0.5) {         // front: a grille between white headlamps
       let grille = step(abs(u.x - 0.5), 0.17) * step(abs(u.y - 0.62), 0.16) * step(0.4, fract(u.y * 10.0));
       s.color = mix(mix(s.color, vec3f(0.03), max(grille, bumper)), vec3f(1.0, 0.96, 0.85), lamps);
-      s.emissive = lamps * 6.0;
+      s.emissive = lamps * mix(0.3, 8.0, on);
     } else if (s.aux < -0.5) { // back: red tail lamps, and a plate with the number
       let plate = step(abs(u.x - 0.5), 0.14) * step(abs(u.y - 0.47), 0.13);
       let digits = number7((u - vec2f(0.38, 0.36)) / vec2f(0.24, 0.22), f32(s.tag), 2);
       s.color = mix(mix(s.color, vec3f(0.9, 0.85, 0.45), plate), vec3f(0.02), max(digits, bumper));
-      s.color = mix(s.color, vec3f(1.0, 0.04, 0.02), lamps);
-      s.emissive = lamps * 4.0;
+      s.color = mix(s.color, mix(vec3f(0.45, 0.03, 0.02), vec3f(1.0, 0.04, 0.02), on), lamps);
+      s.emissive = lamps * 5.0 * on;
     } else if (abs(s.n.z) < 0.5) {  // sides, in metres: wheel arches, and the number on a disc
       let p = (u - 0.5) * vec2f(4.2, 0.55);
       let arch = step(length(vec2f(abs(p.x) - 1.3, p.y + 0.24)), 0.43);
@@ -148,17 +167,22 @@ fn surface(sIn: Surface) -> Surface {
       s.emissive = max(lamp, route) * 5.0;
       s.gloss = mix(s.gloss, 0.95, screen);
     } else if (abs(s.n.z) < 0.5) {
-      // a side, in metres: a row of windows, two doors and a stripe
+      // a side, in metres: a row of windows, lit from inside after sunset, two doors and a stripe
       let p = u * vec2f(12.0, 2.6);
       let door = step(abs(abs(p.x - 6.0) - 2.25), 0.6) * step(0.1, p.y) * step(p.y, 2.25);
       let win = step(abs(fract(p.x / 1.5) - 0.5), 0.42) * step(abs(p.y - 1.75), 0.45);
+      let lit = win * step(envDaylight(s.t), 0.5);
       s.color = mix(s.color, vec3f(0.12, 0.45, 0.4), step(abs(p.y - 0.5), 0.12) * (1.0 - door));
-      s.color = mix(mix(s.color, vec3f(0.3, 0.32, 0.35), door), vec3f(0.03, 0.045, 0.06), win);
-      s.gloss = mix(s.gloss, 0.95, win);
+      s.color = mix(mix(mix(s.color, vec3f(0.3, 0.32, 0.35), door), vec3f(0.03, 0.045, 0.06), win), vec3f(1.0, 0.86, 0.62), lit);
+      s.gloss = mix(s.gloss, 0.95, win - lit);
+      s.emissive = lit * 1.4;
     }
   } else if (s.mat == ${MAT_PLATE}u) {
-    // the plate under a pylon's clocks: each copy's own number (its data, s.inst.w)
-    let d = number7((u - vec2f(0.1, 0.18)) / vec2f(0.8, 0.64), s.inst.w, 3);
+    // the plate under a pylon's clocks: each copy's own number (its data, s.inst.w).  The height
+    // plates on the frame of clocks are plain static geometry, which has no data: they carry
+    // their number as .tag() instead, in two digits.
+    let tagged = s.tag > 0u;
+    let d = number7((u - vec2f(0.1, 0.18)) / vec2f(0.8, 0.64), select(s.inst.w, f32(s.tag), tagged), select(3, 2, tagged));
     s.color = mix(s.color, vec3f(0.02), d * step(0.5, abs(s.n.y)));
   } else if (s.mat == ${MAT_STRIPES}u) {
     // stripes on a sphere, whose uv.x goes round it and uv.y from pole to pole: .tag() 0
@@ -174,6 +198,57 @@ fn surface(sIn: Surface) -> Surface {
     let major = step(abs(fract(deg / 15.0 + 0.5) - 0.5), 0.014);
     let ink = select(vec3f(0.05), vec3f(0.75, 0.08, 0.05), abs(abs(deg) - 40.0) < 0.25);
     s.color = mix(s.color, ink, tick * step(0.5 - 0.5 * major, u.y));
+  } else if (s.mat == ${MAT_BEAM}u) {
+    // The lighthouse's beam: a cone drawn as added light, both of its sides.  To look like lit
+    // haze rather than a sheet, it is bright where a line of sight crosses much of it (through
+    // its middle, where the cone faces the eye; at its edges the eye only grazes it) and near
+    // the lamp (its uv.y is 0 there and 1 at the far end), and fainter by day than by night.
+    let across = abs(dot(s.n, s.view));
+    s.emissive = across * (1.0 - u.y) * mix(1.2, 0.4, envDaylight(s.t));
+  } else if (s.mat == ${MAT_STAFF}u) {
+    // the posts of the frame of clocks, painted like a surveyor's pole: red and white a metre
+    // each, from the ground up, with a black line at every 10 m
+    let z = s.pos.z;
+    let ten = 1.0 - smoothstep(0.05, 0.05 + fw3.z, abs(z - 10.0 * round(z / 10.0)));
+    s.color = mix(select(vec3f(0.78, 0.78, 0.76), vec3f(0.6, 0.05, 0.035), fract(z * 0.5) < 0.5), vec3f(0.02), ten);
+  } else if (s.mat == ${MAT_CONCRETE}u) {
+    // cast concrete: the joints its formwork left, panels 2.4 m long and a metre high (so that a
+    // wall along the ramp is lined at every metre of height), a mottle, and a darker top
+    let alongY = abs(s.n.x) > 0.5;
+    let q = abs(fract(vec2f(select(s.pos.x, s.pos.y, alongY) / 2.4, s.pos.z) + 0.5) - 0.5) * vec2f(2.4, 1.0);
+    let px = q / max(vec2f(select(fw.x, fw.y, alongY), fw3.z), vec2f(1e-4));
+    let joint = (1.0 - saturate(min(px.x, px.y) - 0.5)) * step(abs(s.n.z), 0.5);
+    let mottle = 0.9 + 0.18 * noise2(vec2f(select(s.pos.x, s.pos.y, alongY), s.pos.z) * 1.7);
+    s.color *= mottle * (1.0 - 0.4 * joint) * select(1.0, 0.78, s.n.z > 0.5);
+  } else if (s.mat == ${MAT_BLOCK}u && abs(s.n.z) < 0.5) {
+    // The scattered blocks are buildings: on their walls a window every 2.8 m along and 3.2 m up,
+    // laid out in world coordinates (a copy's uv runs 0..1 across a face however it is scaled).
+    // After sunset each window lights at a moment of its own, from a hash of the window and of
+    // its copy's tint, which differs from block to block; some stay dark.  So at dusk a view
+    // tilted sideways has more windows lit on its later side.  A hangar (its copy's number,
+    // s.inst.w, is 1) has one row of windows high up, and below them doors in panels 1.4 m wide.
+    let along = select(s.pos.x, s.pos.y, abs(s.n.x) > 0.5);
+    let hangar = s.inst.w > 0.5;
+    let cell = vec2f(along / 2.8, s.pos.z / 3.2);
+    let f = fract(cell);
+    let win = step(abs(f.x - 0.5), 0.26) * select(step(abs(f.y - 0.55), 0.2), step(abs(s.pos.z - 9.3), 0.5), hangar);
+    let seam = select(0.0, step(0.93, fract(along / 1.4)) * step(s.pos.z, 7.5), hangar);
+    let h = hash21(floor(cell) + s.inst.x * 97.0);
+    let lit = win * step(h, 0.75) * step(0.15 + h, 1.0 - envDaylight(s.t));
+    s.color = mix(mix(s.color * (1.0 - 0.5 * seam), vec3f(0.05, 0.06, 0.075), win), vec3f(1.0, 0.72, 0.4), lit);
+    s.gloss = 0.7 * win;
+    s.emissive = lit * 1.5;
+  } else if (s.mat == ${MAT_COUNT}u && abs(s.n.z) < 0.5) {
+    // The monoliths and the cube that come and go count down on each side the whole seconds
+    // they have left: a monolith (.tag() its number k) is there from 2k to 2k + 6 s of every 12,
+    // the cube (.tag() 9) from 10 to 30 s of every 60.  So a player can see one coming to its
+    // end, and in a tilted view watch the cut that takes it away pass across it after its 1.
+    let cube = s.tag == 9u;
+    let left = select(6.0 - fract((s.t - 2.0 * f32(s.tag)) / 12.0) * 12.0, 20.0 - fract((s.t - 10.0) / 60.0) * 60.0, cube);
+    let box = select(vec4f(0.2, 0.55, 0.6, 0.25), vec4f(0.15, 0.3, 0.7, 0.4), cube);
+    let d = number7((u - box.xy) / box.zw, ceil(left), select(1, 2, cube));
+    s.color = mix(s.color, vec3f(0.95), d);
+    s.emissive = d * 0.5;
   }
   return s;
 }
@@ -181,6 +256,15 @@ fn surface(sIn: Surface) -> Surface {
 
 // A vertical panel of size w x h whose front faces -Y, standing on z = 0.
 const panel = (w, h) => Geo.plane(w, h).rotateX(Math.PI / 2).translate(0, 0, h / 2);
+
+// A bar from p to q (a strut, a rail, a post), `size` across: a tube of four sides without ends,
+// built along +Z, laid along +Y and then turned by `m4.facing` to point from p to q.  A box would
+// take 24 vertices, this takes 10, and every vertex of static geometry is 44 bytes to store and
+// to load; as thin as these are, its smooth normals make it pass for round.
+function bar(p, q, size) {
+  const d = [0, 1, 2].map((k) => q[k] - p[k]);
+  return Geo.cylinder(size / 2, Math.hypot(...d), 4, { caps: false }).rotateX(-Math.PI / 2).transform(m4.facing(p, d));
+}
 
 // A car, built with +Y forward (the way `follow` carries it).  Moving meshes cost three tetrahedra
 // per triangle per key time, so lamps, windows, number and hubs are painted on by the shader.
@@ -346,7 +430,9 @@ export default {
     {
       const [fx, fy] = [-41, 39.6];
       const g = new Geo();
-      for (const x of [-3.45, 3.45]) g.add(Geo.box(0.4, 0.4, 34).translate(x, 0, 17).color('#8b939c'));
+      // The posts are measuring poles (MAT_STAFF paints them by height), and at every 10 m a plate
+      // beside the right one gives the height in metres.  Between the clocks, cross-bracing.
+      for (const x of [-3.45, 3.45]) g.add(Geo.box(0.4, 0.4, 34).translate(x, 0, 17).mat(MAT_STAFF));
       g.add(Geo.box(7.3, 0.4, 0.4).translate(0, 0, 34.2).color('#8b939c'));
       for (let k = 0; k < 4; k++) {
         const z = EYE + 10 * k;
@@ -354,6 +440,10 @@ export default {
         g.add(Geo.box(6.7, 0.7, 0.06).translate(0, 0, z + 1.53).color('#22262c'));  // a hood over the displays
         g.add(panel(6, 2.6).translate(0, -0.16, z - 1.3).mat(MAT_CLOCK));
         g.add(panel(6, 2.6).rotateZ(Math.PI).translate(0, 0.16, z - 1.3).mat(MAT_CLOCK));
+        if (k === 0) continue;
+        g.add(Geo.box(1.7, 0.08, 1.0).translate(4.5, 0, 10 * k).color('#e8e4d8').tag(10 * k).mat(MAT_PLATE));
+        const [lo, hi] = [z - 8.4, z - 1.55];
+        for (const s of [-1, 1]) g.add(bar([-3.25 * s, 0, lo], [3.25 * s, 0, hi], 0.18).color('#8b939c'));
       }
       g.add(Geo.sphere(0.3, 8, 4).translate(0, 0, 34.7).color('#ff4a36').emissive(6)); // a lamp on top
       b.static(g.translate(fx, fy, 0));
@@ -369,7 +459,24 @@ export default {
       walls.add(Geo.box(d.x1 - r.x1 + w, w, top).translate((r.x1 - w + d.x1) / 2, d.y0 + w / 2, top / 2));
       walls.add(Geo.box(w, d.y1 - d.y0, top).translate(d.x1 - w / 2, (d.y0 + d.y1) / 2, top / 2));
       walls.add(Geo.box(d.x1 - d.x0, w, top).translate((d.x0 + d.x1) / 2, d.y1 - w / 2, top / 2));
-      b.static(walls.color('#a4a59e'));
+      b.static(walls.color('#9e9d94').mat(MAT_CONCRETE));
+      // A handrail along the middle of each wall's top, 0.45 m above it, on posts about 2.5 m apart.
+      // `at` is a point that far above the top of the wall at (x, y), which climbs with the ramp.
+      const rails = new Geo(), RAIL = 0.45;
+      const at = (x, y, dz) => [x, y, (y >= d.y0 ? top : 0.6 + d.z * (y - r.y0) / (r.y1 - r.y0)) + dz];
+      const runs = [[r.x0 + w / 2, r.y0, r.x0 + w / 2, d.y1], [r.x1 - w / 2, r.y0, r.x1 - w / 2, r.y1],
+        [r.x1 - w, d.y0 + w / 2, d.x1, d.y0 + w / 2], [d.x1 - w / 2, d.y0, d.x1 - w / 2, d.y1], [d.x0, d.y1 - w / 2, d.x1, d.y1 - w / 2]];
+      for (const [x0, y0, x1, y1] of runs) {
+        // the rail is straight from end to end, but bends where a wall along the ramp levels off
+        const corners = [[x0, y0], ...(y0 < d.y0 && y1 > d.y0 ? [[x0, d.y0]] : []), [x1, y1]];
+        for (let i = 1; i < corners.length; i++) rails.add(bar(at(...corners[i - 1], RAIL), at(...corners[i], RAIL), 0.07));
+        const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 2.5);
+        for (let i = 0; i <= n; i++) {
+          const [x, y] = [x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n];
+          rails.add(bar(at(x, y, 0), at(x, y, RAIL), 0.06));
+        }
+      }
+      b.static(rails.color('#8f969d').gloss(0.5));
       const floor = Geo.quad([r.x0, r.y0, 0], [r.x1, r.y0, 0], [r.x1, r.y1, d.z], [r.x0, r.y1, d.z]);
       floor.add(Geo.plane(d.x1 - d.x0, d.y1 - d.y0).translate((d.x0 + d.x1) / 2, (d.y0 + d.y1) / 2, d.z));
       b.static(floor.color('#8e928c').mat(MAT_GROUND));
@@ -408,7 +515,10 @@ export default {
       const tram = Geo.box(2.6, 12, 2.6).aux((p, n) => n[1]).translate(0, 0, 1.9).color('#d8d2c4').gloss(0.5).mat(MAT_TRAM);
       for (const y of [-3.8, 3.8]) tram.add(Geo.box(2.2, 2.6, 0.6).translate(0, y, 0.32).color('#30343a')); // bogies
       tram.add(Geo.box(1.4, 3.4, 0.3).translate(0, 1.5, 3.35).color('#8a9099'));                           // roof gear
-      const xs = [[0, -120], [26, 120], [30, 120], [56, -120], [60, -120]];
+      // a pantograph on the roof gear, its head pressed up against the overhead wire
+      const pan = Geo.merge(bar([0, 0.3, 3.5], [0, 2.2, 4.4], 0.08), bar([0, 2.2, 4.4], [0, 1.0, 5.46], 0.06), bar([-0.75, 1.0, 5.48], [0.75, 1.0, 5.48], 0.06));
+      tram.add(pan.color('#2b2e33'));
+      const xs =[[0, -120], [26, 120], [30, 120], [56, -120], [60, -120]];
       const xAt = (t) => {
         for (let i = 1; i < xs.length; i++) {
           if (t <= xs[i][0]) return xs[i - 1][1] + (xs[i][1] - xs[i - 1][1]) * (t - xs[i - 1][0]) / (xs[i][0] - xs[i - 1][0]);
@@ -423,6 +533,15 @@ export default {
       const rails = new Geo();
       for (const y of [139.28, 140.72]) for (const x of [-65, 65]) rails.add(Geo.box(130, 0.08, 0.12).translate(x, y, 0.06));
       b.static(rails.color('#8d9299').gloss(0.8));
+      // the overhead line: masts beside the track (none on the runway), each with an arm over it,
+      // and the wire hung from arm to arm at the height of the pantograph's head
+      const line = new Geo(), masts = [-128, -100, -70, -40, -12, 12, 40, 70, 100, 128];
+      masts.forEach((x, i) => {
+        line.add(bar([x, 142.4, 0], [x, 142.4, 5.8], 0.2));
+        line.add(bar([x, 142.5, 5.6], [x, 139.8, 5.6], 0.08));
+        if (i > 0) line.add(bar([masts[i - 1], 140, 5.53], [x, 140, 5.53], 0.03));
+      });
+      b.static(line.color('#4d535a'));
     }
 
     // bouncing balls, each over and over in one place: a cycle again, of one bounce in twelve
@@ -435,6 +554,10 @@ export default {
       const ball = Geo.sphere(0.6, 8, 5).color(['#e4572e', '#17bebb', '#ffc914', '#76b041'][i]).gloss(0.6).mat(MAT_STRIPES);
       const hop = (u) => m4.translation(0, 0, height * 4 * u * (1 - u)); // u: how much of the bounce is done
       b.dynamic(ball, { times: [0, PERIOD], transform: () => m4.translation(x, 20, 0.6), caps: 'none', cycle: { period: bounce, keys: 12, transform: hop } });
+      // behind it a measuring pole as tall as its bounce, painted as the frame of clocks' posts
+      // are, with an arm that the top of the ball just reaches
+      const top = height + 1.2;
+      b.static(Geo.merge(bar([x, 21.2, 0], [x, 21.2, top + 0.05], 0.14).mat(MAT_STAFF), bar([x, 21.25, top + 0.03], [x, 20.45, top + 0.03], 0.06).color('#22262c')));
     }
 
     // windmill
@@ -469,7 +592,11 @@ export default {
     {
       const [px, py, top] = [14, 40, 9], pivot = top - 0.45;
       const g = new Geo();
-      for (const x of [-5.4, 5.4]) g.add(Geo.box(0.4, 0.4, top).translate(x, 0, top / 2));
+      // A-frames of tube at the ends, with a tie between the legs at the height of the scale's ends
+      for (const x of [-5.4, 5.4]) {
+        for (const y of [-1.8, 1.8]) g.add(bar([x, y, 0], [x, y * 0.05, top], 0.3));
+        g.add(bar([x, -1.26, 2.7], [x, 1.26, 2.7], 0.16));
+      }
       g.add(Geo.box(11.2, 0.4, 0.4).translate(0, 0, top));
       for (const y of [-0.09, 0.09]) g.add(Geo.box(0.3, 0.05, 0.5).translate(0, y, pivot));
       g.add(Geo.cylinder(0.04, 0.3, 6).rotateX(Math.PI / 2).translate(0, 0.15, pivot));
@@ -480,7 +607,7 @@ export default {
         const a = scale.p[i] * 84 * Math.PI / 180, r = 7.85 + 0.5 * (0.5 - scale.p[i + 2]);
         scale.p[i] = r * Math.sin(a); scale.p[i + 2] = pivot - r * Math.cos(a);
       }
-      b.static(g.color('#59606a').add(scale.color('#e9e6dc').mat(MAT_SCALE)).translate(px, py, 0));
+      b.static(g.color('#4a6380').add(scale.color('#e9e6dc').mat(MAT_SCALE)).translate(px, py, 0));
       const bob = new Geo();
       // the rod in three lengths: a long triangle that turns comes out bent between poses, more so
       // the more its ends move from one pose to the next
@@ -508,9 +635,12 @@ export default {
       const bob = Geo.tube([[0, 0, 0], [0, 0, -L / 2], [0, 0, -L]], 0.025, 3, { caps: false }).color('#c9ccd1');
       bob.add(Geo.sphere(0.28, 8, 5).translate(0, 0, -L).color('#d4a017').gloss(0.9).mat(MAT_STRIPES).tag(1));
       const frame = new Geo();
-      for (const x of [x0 - 1.2, x0 + (n - 1) * gap + 1.2]) frame.add(Geo.box(0.25, 0.25, pivot + 0.3).translate(x, y0, (pivot + 0.3) / 2));
+      for (const x of [x0 - 1.2, x0 + (n - 1) * gap + 1.2]) {
+        for (const y of [-1.2, 1.2]) frame.add(bar([x, y0 + y, 0], [x, y0 + y * 0.05, pivot + 0.25], 0.2));
+        frame.add(bar([x, y0 - 0.85, 1.4], [x, y0 + 0.85, 1.4], 0.1));
+      }
       frame.add(Geo.box((n - 1) * gap + 2.65, 0.25, 0.25).translate(x0 + (n - 1) * gap / 2, y0, pivot + 0.125));
-      b.static(frame.color('#59606a'));
+      b.static(frame.color('#4a6380'));
       for (let i = 0; i < n; i++) {
         b.dynamic(bob, {
           times: [0, PERIOD],
@@ -522,14 +652,15 @@ export default {
       }
     }
 
-    // monoliths that exist for only part of the time: a tilted slice cuts them open
+    // monoliths that exist for only part of the time, each counting down the seconds it has left
+    // (MAT_COUNT): a tilted slice cuts them open
     for (let i = 0; i < 5; i++) {
       const g = Geo.box(3, 3, 9).translate(20 + i * 7, 10, 4.5).color(['#6c5ce7', '#00b894', '#e17055', '#0984e3', '#fdcb6e'][i]);
-      b.static(g, { from: i * 2, to: i * 2 + 6, period: 12 });
+      b.static(g.mat(MAT_COUNT).tag(i), { from: i * 2, to: i * 2 + 6, period: 12 });
     }
 
-    // a cube that pops into existence, drifts and pops out again (sealed with caps)
-    b.dynamic(Geo.box(4).color('#e84393').gloss(0.4), {
+    // a cube that pops into existence, drifts and pops out again (sealed with caps), counting down
+    b.dynamic(Geo.box(4).color('#e84393').gloss(0.4).mat(MAT_COUNT).tag(9), {
       times: [10, 30],
       transform: (t) => m4.translation(-26 + (t - 10) * 0.6, 45, 2 + (t - 10) * 0.1),
     });
@@ -540,11 +671,32 @@ export default {
       caps: 'none',
     });
 
-    // lighthouse beam: additive geometry sweeping round every 10 s
+    // a lighthouse, and its beam: additive geometry sweeping round every 10 s
     {
-      const [lx, ly] = [-60, 20];
-      b.static(Geo.cylinder(1.4, 14, 12, { r2: 1.0 }).translate(lx, ly, 0).color('#f1ece2'));
-      b.static(Geo.sphere(1.0, 12, 8).translate(lx, ly, 14.6).color('#fff2b0').emissive(10));
+      const [lx, ly, lz] = [-60, 20, 14.9];
+      // the tower, with two red bands a hair proud of it (so that the two do not fight over the
+      // same pixels), a gallery with a rail round it, and the lantern: glazing bars round the
+      // lamp under a roof
+      const g = Geo.cylinder(1.4, 14, 12, { r2: 1.0 }).color('#f1ece2');
+      const radius = (z) => 1.412 - 0.4 * z / 14;
+      for (const z of [3.5, 8.5]) g.add(Geo.cylinder(radius(z), 2.2, 12, { r2: radius(z + 2.2), caps: false }).translate(0, 0, z).color('#b3271e'));
+      const iron = new Geo();
+      iron.add(Geo.cylinder(1.65, 0.2, 16).translate(0, 0, 13.95));
+      iron.add(Geo.torus(1.6, 0.035, 16, 4).translate(0, 0, 15.0));
+      for (let i = 0; i < 10; i++) {
+        const [c, s] = [Math.cos(i * Math.PI / 5), Math.sin(i * Math.PI / 5)];
+        iron.add(bar([1.6 * c, 1.6 * s, 14.15], [1.6 * c, 1.6 * s, 15.0], 0.05));
+      }
+      for (let i = 0; i < 8; i++) {
+        const [c, s] = [Math.cos((i + 0.5) * Math.PI / 4), Math.sin((i + 0.5) * Math.PI / 4)];
+        iron.add(bar([0.75 * c, 0.75 * s, 14.15], [0.75 * c, 0.75 * s, 15.6], 0.09));
+      }
+      iron.add(Geo.cylinder(0.82, 0.12, 8).rotateZ(Math.PI / 8).translate(0, 0, 15.55));
+      iron.add(Geo.sphere(0.12, 6, 4).translate(0, 0, 16.45));
+      g.add(iron.color('#33383e'));
+      g.add(Geo.cone(0.95, 0.8, 8).rotateZ(Math.PI / 8).translate(0, 0, 15.67).color('#7a3b2e'));
+      g.add(Geo.sphere(0.5, 12, 8).translate(0, 0, lz).color('#fff2b0').emissive(10));
+      b.static(g.translate(lx, ly, 0));
       // The beam is stiff and goes round six times in the period, yet it stays on plain keys (one
       // every 0.125 s, 481 matrices).  A cycle of one turn would keep a sixth of that, but would
       // cost more to draw: which of a cycle's poses a slice can touch is worked out from the box
@@ -553,26 +705,43 @@ export default {
       // tools/cost.mjs, the view from the start tilted 75 degrees drew nearly a third more
       // tetrahedra.  So for a thing that goes far for its size, measure both: the balls' bounces,
       // 13 m tall, draw a tenth more in a view tilted 75 degrees up, which their saving is worth.
-      const beam = Geo.cylinder(0.3, 60, 8, { r2: 5, caps: false }).rotateX(-Math.PI / 2).color('#fff2b0').emissive(0.35).additive();
-      b.dynamic(beam, {
+      // Between two keys the beam turns 4.5 degrees and its far end moves 4.7 m.  A long triangle
+      // that turns folds between keys by about a quarter of that, and in a tilted view the folds
+      // of a sheet of added light show as bright seams across it; so the cone is made of three
+      // lengths, each of which folds a third as much (their uv.y runs on from 0 to 1 over all
+      // three).  It has no emissive of its own: the shader (MAT_BEAM) sets how bright it is.
+      const beam = new Geo(), r = (z) => 0.3 + 4.7 * z / 60;
+      for (const z of [0, 20, 40]) beam.add(Geo.cylinder(r(z), 20, 8, { r2: r(z + 20), caps: false }).uvTransform(1, 1 / 3, 0, z / 60).translate(0, 0, z));
+      b.dynamic(beam.rotateX(-Math.PI / 2).color('#fff2b0').additive().mat(MAT_BEAM), {
         times: timeRange(0, PERIOD, 0.125),
-        transform: (t) => m4.mul(m4.translation(lx, ly, 14.6), m4.rotationZ(-t / 10 * 2 * Math.PI)),
+        // it points west at the start, away from the runway: the first picture of the scene, which
+        // is the first a visitor sees, is clear of it
+        transform: (t) => m4.mul(m4.translation(lx, ly, lz), m4.rotationZ(Math.PI / 2 - t / 10 * 2 * Math.PI)),
         caps: 'none',
       });
     }
 
-    // scattered blocks for parallax: copies of one unit box, each placed, stretched
-    // and tinted.  The tint multiplies the mesh's colour, so the box is made white
-    // (a new mesh is light grey).
+    // The buildings round the range: copies of one unit box, each placed, stretched and tinted,
+    // with windows painted on (MAT_BLOCK).  The tint multiplies the mesh's colour, so the box is
+    // made white (a new mesh is light grey).  A town beyond the far end of the runway, on a grid
+    // of plots and tallest round its middle; hangars along the east side, whose own number
+    // (`data`) is 1 so that the shader gives them doors and one high row of windows; sheds to the
+    // west; and open land behind the start, with a few low roofs far off.
     const blocks = [];
-    for (let i = 0; i < 60; i++) {
-      const x = rand.range(-300, 300), y = rand.range(-120, 520);
-      if (Math.abs(x) < 16 && y > -50) continue;
-      if (Math.abs(x) < 130 && y > 0 && y < 170) continue;
-      const w = rand.range(4, 14), h = rand.range(3, 22);
+    const put = (x, y, w, d, h, hangar = 0) => {
       const tone = rand.range(0.45, 0.8);
-      blocks.push({ transform: m4.mul(m4.translation(x, y, 0), m4.scaling(w, rand.range(4, 14), h)), tint: [tone, tone * 0.97, tone * 0.92] });
+      blocks.push({ transform: m4.mul(m4.translation(x, y, 0), m4.scaling(w, d, h)), tint: [tone, tone * 0.97, tone * 0.92], data: hangar });
+    };
+    for (let x = -250; x <= 250; x += 36) {
+      for (let y = 240; y <= 520; y += 40) {
+        if (Math.abs(x) < 30 || rand() < 0.35) continue;   // the runway runs on into the town
+        const core = Math.max(0, 1 - Math.hypot(x, (y - 420) * 1.3) / 240);
+        put(x + rand.range(-5, 5), y + rand.range(-5, 5), rand.range(12, 24), rand.range(12, 24), 9 + 38 * core * rand.range(0.6, 1) + rand.range(0, 8));
+      }
     }
-    b.instances(Geo.box(1, 1, 1).translate(0, 0, 0.5).color('#ffffff'), blocks);
+    for (const y of [-70, -25, 20, 65]) put(150, y, 28, 36, 11, 1);
+    for (let i = 0; i < 8; i++) put(rand.range(-300, -150), rand.range(-90, 200), rand.range(10, 30), rand.range(10, 24), rand.range(5, 12));
+    for (const x of [-210, -120, 110, 230]) put(x + rand.range(-15, 15), rand.range(-290, -230), rand.range(16, 34), rand.range(12, 24), rand.range(4, 8));
+    b.instances(Geo.box(1, 1, 1).translate(0, 0, 0.5).color('#ffffff').mat(MAT_BLOCK), blocks);
   },
 };

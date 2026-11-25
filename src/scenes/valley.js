@@ -1,10 +1,10 @@
 // Winter Valley: a high alpine valley on a winter afternoon running into
 // night.  A lantern path leads through a hamlet to a frozen lake; a chairlift
-// and an aerial tram climb the slopes, skiers come down, skaters circle the
-// ice and smoke rises from the chimneys.  The light is the clock: the low sun
-// sweeps the shadow of the western ridge across the valley and leaves the
-// peaks glowing, so when you move, the mountains ahead are lit by an earlier
-// sun than the ones behind you.
+// and an aerial tram climb the slopes, skiers come down (under floodlights
+// after dark), skaters circle the ice and smoke rises from the chimneys.
+// The light is the clock: the low sun sweeps the shadow of the western ridge
+// across the valley and leaves the peaks glowing, so when you move, the
+// mountains ahead are lit by an earlier sun than the ones behind you.
 //
 // This is the detailed scene, written for desktop graphics cards: about a
 // million static triangles, smooth and bevelled shapes, and materials with
@@ -483,6 +483,105 @@ function pisteDist(x, y) {
   return Math.sqrt(best);
 }
 
+// The groomed width of a piste: half of it, at a distance along it (the
+// shader has the same formula)
+const pisteHalf = (along, k) => 12 + 2.5 * Math.sin(along / 47 + 1.3 * k);
+// red for the steeper run, blue for the one that winds
+const PISTE_COLORS = [[0.75, 0.1, 0.08], [0.1, 0.25, 0.7]];
+
+// For the shader, a table over the pistes (4 m to an entry): how far a point
+// lies across the nearest piste (to the left of its fall line positive), how
+// far along it from the top, and which one it is.  The mesh's cells are too
+// coarse for a piste's edge, its lanes and its marker poles to line up.  (The
+// distance along is kept as a whole multiple of 64 m and the rest, in two
+// entries: a table keeps three digits or so, and the skiers' tracks want
+// centimetres.)
+const PISTE_MAP = { x0: 100, y0: 260, s: 4, w: 171, h: 166 };
+function pisteTable() {
+  const { x0, y0, s, w, h } = PISTE_MAP, R = 32;
+  const data = new Float32Array(w * h * 4), best = new Float32Array(w * h).fill(R);
+  for (let i = 0; i < w * h; i++) data[i * 4] = 99;
+  PISTES.forEach((pp, k) => {
+    for (let d = 0; d < pp.length; d += 2) {
+      const a = pp.at(d).p, b2 = pp.at(Math.min(pp.length, d + 2)).p;
+      const ex = b2[0] - a[0], ey = b2[1] - a[1], el = Math.hypot(ex, ey) || 1, ux = ex / el, uy = ey / el;
+      const i0 = Math.max(0, Math.floor((Math.min(a[0], b2[0]) - R - x0) / s)), i1 = Math.min(w - 1, Math.ceil((Math.max(a[0], b2[0]) + R - x0) / s));
+      const j0 = Math.max(0, Math.floor((Math.min(a[1], b2[1]) - R - y0) / s)), j1 = Math.min(h - 1, Math.ceil((Math.max(a[1], b2[1]) + R - y0) / s));
+      for (let j = j0; j <= j1; j++) {
+        for (let i = i0; i <= i1; i++) {
+          const dx = x0 + i * s - a[0], dy = y0 + j * s - a[1];
+          const t = Math.max(0, Math.min(el, dx * ux + dy * uy));
+          const dist = Math.hypot(dx - ux * t, dy - uy * t), o = j * w + i;
+          if (dist >= best[o]) continue;
+          best[o] = dist;
+          const along = d + t, hi = Math.floor(along / 64) * 64;
+          data[o * 4] = -dx * uy + dy * ux; data[o * 4 + 1] = hi; data[o * 4 + 2] = k; data[o * 4 + 3] = along - hi;
+        }
+      }
+    }
+  });
+  return data;
+}
+
+// Floodlights along the red piste, which is skied after dark: masts on
+// alternate sides every 48 m, their lamps 12.5 m up and aimed across the
+// piste: [x, y, z of the lamps, the direction they face].  They all come on
+// at one moment at dusk, so a view tilted up shows them on up the slope
+// while they are still off at the bottom.
+const FLOODS = (() => {
+  const pp = PISTES[0], out = [];
+  for (let d = 16, i = 0; d < pp.length - 12; d += 48, i++) {
+    const q = pp.smoothAt(d, 6), side = i % 2 ? 1 : -1, off = side * (pisteHalf(d, 0) + 3.5);
+    const x = q.p[0] - q.dir[1] * off, y = q.p[1] + q.dir[0] * off;
+    const aim = Math.atan2(-side * q.dir[0], side * q.dir[1]);
+    out.push([x + Math.cos(aim) * 0.7, y + Math.sin(aim) * 0.7, ground(x, y) + 12.4, aim, x, y]);
+  }
+  return out;
+})();
+
+// A floodlight mast (the lamps towards +x): a tapering steel pole on a
+// footing, a cross-arm with two lamps tilted down, snow on the arm
+function floodMast() {
+  const g = new Geo();
+  g.add(aoColor(Geo.cylinder(0.16, 13, 8, { r2: 0.09, caps: false }).translate(0, 0, -0.3), '#8a9196', (p) => 0.6 + 0.4 * sstep(0, 3, p[2])).gloss(0.4).mat(MAT.METAL));
+  g.add(aoColor(cbox(0.7, 0.7, 0.5, 0.04).translate(0, 0, 0.05), '#7d7a74', () => 0.7).mat(MAT.STONE));
+  g.add(aoColor(Geo.box(0.12, 2.0, 0.12).translate(0.25, 0, 12.6), '#5d6d7e', () => 0.85).mat(MAT.METAL));
+  for (const y of [-0.75, 0.75]) {
+    const M = m4.mul(m4.translation(0.55, y, 12.4), m4.rotationY(0.5));
+    g.add(aoColor(cbox(0.5, 0.42, 0.24, 0.03).transform(M), '#3b3f45', () => 0.85).mat(MAT.METAL));
+    const lens = Geo.quad([0.26, -0.18, -0.1], [0.26, 0.18, -0.1], [0.26, 0.18, 0.1], [0.26, -0.18, 0.1]);
+    if (lens.n[0] < 0) lens.flip();
+    g.add(dataColor(lens.transform(m4.mul(M, m4.translation(0.005, 0, 0))), () => [1, 0, 0]).mat(MAT.LANTERN).tag(3));
+  }
+  g.add(snowData(Geo.box(0.16, 2.0, 0.06).translate(0.25, 0, 12.69)));
+  return g;
+}
+
+// Marker poles along both edges of the pistes, every 30 m or so, in the
+// piste's colour (drawn only from near by: a pole is a few pixels wide at
+// 40 m and nothing at all from the valley), and the floodlight masts.
+function pisteMarkers(b) {
+  const pole = new Geo();
+  pole.add(Geo.box(0.05, 0.05, 2.0).translate(0, 0, 0.7).color('#ffffff'));
+  pole.add(Geo.box(0.07, 0.07, 0.06).translate(0, 0, 1.72).color('#1a1a1a').untinted());
+  pole.mat(MAT.WOOD);
+  pole.add(snowData(Geo.box(0.08, 0.08, 0.04).translate(0, 0, 1.77)).untinted());
+  const places = [];
+  PISTES.forEach((pp, k) => {
+    for (let d = 14; d < pp.length - 10; d += 31) {
+      const q = pp.smoothAt(d, 6);
+      for (const side of [-1, 1]) {
+        const off = side * (pisteHalf(d, k) + 0.9);
+        const x = q.p[0] - q.dir[1] * off, y = q.p[1] + q.dir[0] * off;
+        places.push({ transform: m4.mul(m4.translation(x, y, ground(x, y)), m4.rotationZ(d)), tint: PISTE_COLORS[k] });
+      }
+    }
+  });
+  b.instances(pole, places, { solid: false, within: 160 });
+  b.instances(floodMast(), FLOODS.map(([, , , aim, x, y]) => m4.mul(m4.translation(x, y, ground(x, y)), m4.rotationZ(aim))));
+  for (const f of FLOODS) stampAO(f[4], f[5], 0.8, 0.3);
+}
+
 // ---------------------------------------------------------------------------
 // distant spruce trees (lod 2 and 3; near ones are spruceNear): unit height,
 // tiers of branches that droop and are cut into lobes.  Vertex colour carries
@@ -884,24 +983,30 @@ function addRepeats(b) {
   b.instances(board, REP.boards, { solid: false });
 }
 
-function chalet(b, cx, cy, rot, kind, rand) {
-  const W = [9.0, 10.6, 8.4, 13.5][kind], D = [11, 12.4, 9.8, 17][kind], floors = [1, 2, 1, 2][kind];
-  const hs = 2.5, ht = 2.7 * floors, zTop = hs + ht;
-  const pitch = 0.40 + rand() * 0.06, tp = Math.tan(pitch);
-  const eave = 1.35, gover = 1.7;
-  const rise = (W / 2) * tp;
-  const tint = rand();
-  const shutter = SHUTTER_COLORS[Math.floor(rand() * SHUTTER_COLORS.length)];
+// A chalet's size and where it stands: { W, D, gmin (the lowest ground
+// under it), MZ (its frame, on the highest ground under it, less 15 cm) }
+function chaletFrame(cx, cy, rot, kind) {
+  const W = [9.0, 10.6, 8.4, 13.5][kind], D = [11, 12.4, 9.8, 17][kind];
   const M = m4.mul(m4.translation(cx, cy, 0), m4.rotationZ(rot));
-  // ground under the footprint
   let gmin = Infinity, gmax = -Infinity;
   for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, 0]]) {
     const w = m4.point(M, [u * W / 2, v * D / 2, 0]);
     const gz = ground(w[0], w[1]);
     gmin = Math.min(gmin, gz); gmax = Math.max(gmax, gz);
   }
-  const z0 = gmax - 0.15;
-  const MZ = m4.mul(m4.translation(cx, cy, z0), m4.rotationZ(rot));
+  return { W, D, gmin, MZ: m4.mul(m4.translation(cx, cy, gmax - 0.15), m4.rotationZ(rot)) };
+}
+
+function chalet(b, cx, cy, rot, kind, rand) {
+  const { W, D, gmin, MZ } = chaletFrame(cx, cy, rot, kind);
+  const floors = [1, 2, 1, 2][kind];
+  const hs = 2.5, ht = 2.7 * floors, zTop = hs + ht;
+  const pitch = 0.40 + rand() * 0.06, tp = Math.tan(pitch);
+  const eave = 1.35, gover = 1.7;
+  const rise = (W / 2) * tp;
+  const tint = rand();
+  const shutter = SHUTTER_COLORS[Math.floor(rand() * SHUTTER_COLORS.length)];
+  const z0 = MZ[14];
   const sink = z0 - gmin + 0.6;
   const solid = new Geo(), deco = new Geo();
 
@@ -1057,6 +1162,12 @@ function chalet(b, cx, cy, rot, kind, rand) {
   stampAO(cx, cy, Math.max(W, D) * 0.62, 0.45);
 }
 const CHIMNEYS = [];
+// The lamps by the chalets' doors (see the door in chalet()), which light the
+// snow in front of them after dusk: [x, y, z]
+const DOOR_LAMPS = [...CHALETS, [LODGE.x, LODGE.y, LODGE.rot, 3]].map(([x, y, rot, kind]) => {
+  const { W, D, MZ } = chaletFrame(x, y, rot, kind);
+  return m4.point(MZ, [-W / 2 - 0.05 - 0.12, D * 0.12 + 0.85, 2.18]);
+});
 let HOUSE_NO = 0;
 
 // A chalet's small parts (its local frame; the door on the -x wall at
@@ -1339,10 +1450,15 @@ function doorTrack(a, out) {
   const b2 = [a[0] + out[0] * 2.5, a[1] + out[1] * 2.5];
   const to = [b2[0] - best.p[0], b2[1] - best.p[1]], tl = Math.hypot(to[0], to[1]) || 1;
   const c = [best.p[0] + to[0] / tl * (PATH_HALF + 0.35), best.p[1] + to[1] / tl * (PATH_HALF + 0.35)];
-  const line = new Path([a, b2, c], { smooth: 4 });
+  return trackGeo(new Path([a, b2, c], { smooth: 4 }), 0.6);
+}
+
+// A narrow trodden track along a line, every `step` metres, with one
+// walker's footprints (pathSurf, tag 1)
+function trackGeo(line, step) {
   const g = new Geo();
   const cross = [[-0.9, 0.0], [-0.42, 0.045], [0, 0.03], [0.42, 0.045], [0.9, 0.0]];
-  const n = Math.max(2, Math.ceil(line.length / 0.6));
+  const n = Math.max(2, Math.ceil(line.length / step));
   for (let k = 0; k <= n; k++) {
     const dd = k / n * line.length;
     const { p, dir } = line.at(dd);
@@ -1358,6 +1474,68 @@ function doorTrack(a, out) {
   g.computeNormals(true);
   g.orientByNormals();
   return dataColor(g, () => [1, 0, 0]).mat(MAT.PATH).tag(1);
+}
+
+// A marked winter trail from the lantern path near the start, east across
+// the valley floor and up the slope opposite to a viewpoint some 55 m above
+// the hamlet: somewhere close by to climb, and so, in a view tilted up, to
+// walk into a later hour.
+// It leaves the path through a gap in the fences by the signpost and passes
+// the deer at some 15 m; up the slope it is laid out step by step, 3 m at a
+// time in whichever direction climbs nearest 17 degrees, turning back at the
+// edges of a band 70 m wide.
+const TRAIL = (() => {
+  const pts = [[4, -54], [60, -40], [140, -18], [212, -8]];
+  let [x, y] = pts[pts.length - 1], z = ground(x, y), sy = 1;
+  for (let i = 0; i < 400 && z < 57; i++) {
+    let best = null;
+    for (let a = 0.1; a < 1.5; a += 0.05) {
+      const nx = x + 3 * Math.cos(a), ny = y + sy * 3 * Math.sin(a), nz = ground(nx, ny);
+      const err = Math.abs((nz - z) / 3 - 0.3);
+      if (!best || err < best.err) best = { err, nx, ny, nz };
+    }
+    [x, y, z] = [best.nx, best.ny, best.nz];
+    if ((sy > 0 && y > 50) || (sy < 0 && y < -20)) sy = -sy;
+    if (i % 3 === 2) pts.push([x, y]);
+  }
+  return new Path(pts, { smooth: 3 });
+})();
+const TRAIL_TOP = (() => { const p = TRAIL.points[TRAIL.points.length - 1], q = TRAIL.at(TRAIL.length - 6).p; return [2 * p[0] - q[0], 2 * p[1] - q[1]]; })();
+const TRAIL_SAMPLES = Array.from({ length: Math.ceil(TRAIL.length / 4) + 1 }, (_, i) => TRAIL.at(i * 4).p);
+function trailDist(x, y) {
+  let best = 1e9;
+  for (const p of TRAIL_SAMPLES) best = Math.min(best, (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y));
+  return Math.sqrt(best);
+}
+
+// the trail's track, its pink-topped marker poles every 25 m or so, and at
+// the top a bench looking down on the hamlet and a wooden summit cross
+function trail(b) {
+  b.static(trackGeo(TRAIL, 0.9), { solid: false });
+  const pole = new Geo();
+  pole.add(Geo.box(0.05, 0.05, 1.9).translate(0, 0, 0.65).color('#f2efe8'));
+  pole.add(Geo.box(0.055, 0.055, 0.32).translate(0, 0, 1.45).color('#e0408a'));
+  pole.mat(MAT.WOOD);
+  pole.add(snowData(Geo.box(0.07, 0.07, 0.04).translate(0, 0, 1.62)));
+  const places = [];
+  for (let d = 30, i = 0; d < TRAIL.length - 4; d += 25, i++) {
+    const q = TRAIL.smoothAt(d, 4), off = (i % 2 ? 1 : -1) * 1.3;
+    const x = q.p[0] - q.dir[1] * off, y = q.p[1] + q.dir[0] * off;
+    places.push(m4.mul(m4.translation(x, y, ground(x, y)), m4.rotationZ(d)));
+  }
+  b.instances(pole, places, { solid: false });
+  const [tx, ty] = TRAIL_TOP, tz = ground(tx, ty);
+  const cross = new Geo();
+  cross.add(aoColor(cbox(0.16, 0.16, 3.6, 0.02).translate(0, 0, 1.5), '#6b4a30', (q) => 0.6 + 0.4 * sstep(0, 1, q[2])));
+  cross.add(aoColor(cbox(1.5, 0.14, 0.14, 0.02).translate(0, 0, 2.6), '#6b4a30', () => 0.85));
+  cross.add(aoColor(Geo.box(0.6, 0.2, 0.08).transform(m4.mul(m4.translation(0, 0, 3.38), m4.rotationY(0.5))), '#4a3020', () => 0.8));
+  cross.add(aoColor(Geo.box(0.6, 0.2, 0.08).transform(m4.mul(m4.translation(0, 0, 3.38), m4.rotationY(-0.5))), '#4a3020', () => 0.8));
+  cross.mat(MAT.WOOD);
+  cross.add(snowData(cbox(1.5, 0.17, 0.05, 0.02).translate(0, 0, 2.69)));
+  cross.add(drift(1.6, 1.6, 0.3));
+  b.static(cross, { transform: m4.mul(m4.translation(tx + 2.5, ty + 1.5, tz - 0.1), m4.rotationZ(Math.PI / 2)) });
+  stampAO(tx + 2.5, ty + 1.5, 0.6, 0.3);
+  bench(b, tx - 1.5, ty - 1.5, Math.PI / 2 + 0.2);
 }
 
 // the trodden path: a ribbon over the snow with low banks either side.
@@ -2185,6 +2363,20 @@ function tramStation(b, p, d, n, zr, top) {
       deco.add(snowData(cbox(0.2, 2.2, 0.08, 0.035).translate(sx * (W / 2 - 0.05), y, hs + 2.03)));
     }
   }
+  // and the same windows across the end that faces away from the line (at
+  // the bottom, the way in from the lantern path: a hall that lights up at
+  // dusk, not a blind wall)
+  {
+    const sy = top ? 1 : -1, ye = back + sy * Dp / 2;
+    for (let k = 0; k < 5; k++) {
+      const x = -6 + 3 * k;
+      const gl = Geo.quad([-1.0, 0, 0], [1.0, 0, 0], [1.0, 0, 1.6], [-1.0, 0, 1.6]);
+      if (gl.n[1] * sy < 0) gl.flip();
+      deco.add(dataColor(gl.translate(x, ye - sy * 0.17, hs + 2.2), () => [1, 0.13 + 0.17 * k + (top ? 0.4 : 0), 0]).mat(MAT.GLASS));
+      deco.add(aoColor(cbox(2.3, 0.14, 0.1, 0.03).translate(x, ye - sy * 0.12, hs + 2.12), '#d8d0c0', () => 0.8).mat(MAT.WOOD));
+      deco.add(snowData(cbox(2.2, 0.2, 0.08, 0.035).translate(x, ye - sy * 0.05, hs + 2.03)));
+    }
+  }
   const roofM = m4.mul(m4.translation(0, back, H + 0.25), m4.rotationX(top ? -0.1 : 0.1));
   deco.add(aoColor(rbox(W + 2.4, Dp + 2.4, 0.4, 0.1, 1).transform(roofM), '#3b3f45', (q, nn) => (nn[2] < 0 ? 0.6 : 0.9)).mat(MAT.METAL));
   deco.add(snowData(rbox(W + 2.0, Dp + 2.0, 0.62, 0.29, 2, [4, 3, 1]).transform(m4.mul(roofM, m4.translation(0, 0, 0.46)))));
@@ -2412,6 +2604,12 @@ function skateHut(b, x, y, facing) {
   stampAO(x, y, 2.5, 0.4);
 }
 
+// Each skater's loop on the rink: [half-axes ra, rb, which way round,
+// where they are at t = 0], about a centre of its own (skateCentre), in the
+// rink's frame.  Their blades wear the loops into the ice (see terrainSurf).
+const SKATE_LOOPS = [[36, 23, 1, 0], [28, 18, 1, 1.3], [20, 13, -1, 2.0], [42, 27, 1, 3.1], [14, 9, 1, 0.6], [32, 21, -1, 4.4], [24, 20, 1, 5.2], [38, 25, 1, 2.6], [18, 15, -1, 3.7]];
+const skateCentre = (i) => [(i % 3 - 1) * 6, ((i * 7) % 5 - 2) * 4];
+
 // brooms and a shovel stuck in the rink's bank beside its opening
 function rinkTools(b) {
   const c = Math.cos(LAKE.a), sn = Math.sin(LAKE.a);
@@ -2439,12 +2637,11 @@ function skaters(b) {
   bench(b, 81, 453.5, Math.PI / 2 + 0.2);
   const rand = rng(57);
   const c = Math.cos(LAKE.a), sn = Math.sin(LAKE.a);
-  const rinks = [[36, 23, 1, 0], [28, 18, 1, 1.3], [20, 13, -1, 2.0], [42, 27, 1, 3.1], [14, 9, 1, 0.6], [32, 21, -1, 4.4], [24, 20, 1, 5.2], [38, 25, 1, 2.6], [18, 15, -1, 3.7]];
-  rinks.forEach(([ra, rb, dir, ph], i) => {
+  SKATE_LOOPS.forEach(([ra, rb, dir, ph], i) => {
     const per = 2 * Math.PI * Math.sqrt((ra * ra + rb * rb) / 2);
     const laps = 1;
     const w = dir * laps * 2 * Math.PI / P;
-    const ox = (i % 3 - 1) * 6, oy = ((i * 7) % 5 - 2) * 4;
+    const [ox, oy] = skateCentre(i);
     const tf = (t) => {
       const a = ph + w * t;
       const lx = Math.cos(a) * ra + ox, ly = Math.sin(a) * rb + oy;
@@ -2547,45 +2744,59 @@ function snowKeys(tf, pos, t0, t1) {
   return out;
 }
 
-function skiers(b) {
-  const rand = rng(91);
+// Three skiers to a piste, each carving S-turns down it, the same line every
+// time: { pi (the piste), k, speed, t0 (when they set off), amp, wl (the
+// carve's sideways reach and its wavelength), ph }.  The shader draws the
+// tracks of these lines on the pistes.
+const SKI_RUNS = (() => {
+  const rand = rng(91), out = [];
   PISTES.forEach((piste, pi) => {
-    const L = piste.length;
     for (let k = 0; k < 3; k++) {
-      const speed = 7 + rand() * 3, dur = L / speed;
+      const speed = 7 + rand() * 3;
       const t0 = k * P / 3 + rand() * 6, amp = 4 + rand() * 3, wl = 46 + rand() * 16, ph = rand() * TAU;
-      // (looks from a stream of their own; the five draws the old skier
-      // made are still made, so that every run keeps its timing)
-      const poses = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => skierGeo(rng(9100 + pi * 10 + k), i / 8));
-      const geo = poses[0];
+      // (the five draws the old skier made for its looks are still made, so
+      // that every run keeps its timing)
       for (let i = 0; i < 5; i++) rand();
-      const pos = (t) => {
-        const dd = Math.min(L, Math.max(0, (t - t0) * speed));
-        const q = piste.smoothAt(dd, 6);
-        const off = amp * Math.sin(dd / wl * TAU + ph) * sstep(0, 40, dd) * sstep(L, L - 40, dd);
-        const x = q.p[0] - q.dir[1] * off, y = q.p[1] + q.dir[0] * off;
-        return [x, y, ground(x, y) + 0.02];
-      };
-      const tf = (t) => {
-        const p0 = pos(t - 0.4), p1 = pos(t + 0.4), p = pos(t);
-        // along the slope, so that the skis lie on it
-        const fwd = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-        // lean into the turn: the side the carve bends towards
-        const dd = (t - t0) * speed;
-        const lean = -Math.sin(dd / wl * TAU + ph) * 0.35 * sstep(0, 40, dd) * sstep(L, L - 40, dd);
-        return m4.mul(m4.facing(p, fwd), m4.rotationY(lean));
-      };
-      const times = snowKeys(tf, pos, t0, t0 + dur);
-      addMoving(b, geo.far, { times, transform: tf });
-      addMoving(b, geo.base, { times, transform: tf, within: FAR_PEOPLE });
-      addMoving(b, geo.detail, { times, transform: tf, within: NEAR_PEOPLE });
-      // the arms and poles: a round for every S of the carving, which starts
-      // (the lean changing from right to left) where its phase is a whole turn
-      const cycle = { period: wl / speed, keys: 8, start: t0 - ph / TAU * wl / speed };
-      addCycle(b, (u) => poses[Math.round(u * 8) % 8].limb.base, { times, transform: tf, within: FAR_PEOPLE, cycle });
-      addCycle(b, (u) => poses[Math.round(u * 8) % 8].limb.detail, { times, transform: tf, within: NEAR_PEOPLE, cycle });
+      out.push({ pi, k, speed, t0, amp, wl, ph });
     }
   });
+  return out;
+})();
+// how far a skier's line lies from the middle of the piste, at a distance along it
+const skiOff = (r, dd) => r.amp * Math.sin(dd / r.wl * TAU + r.ph) * sstep(0, 40, dd) * sstep(PISTES[r.pi].length, PISTES[r.pi].length - 40, dd);
+
+function skiers(b) {
+  for (const r of SKI_RUNS) {
+    const { pi, k, speed, t0, wl, ph } = r;
+    const piste = PISTES[pi], L = piste.length, dur = L / speed;
+    // (looks from a stream of their own)
+    const poses = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => skierGeo(rng(9100 + pi * 10 + k), i / 8));
+    const geo = poses[0];
+    const pos = (t) => {
+      const dd = Math.min(L, Math.max(0, (t - t0) * speed));
+      const q = piste.smoothAt(dd, 6), off = skiOff(r, dd);
+      const x = q.p[0] - q.dir[1] * off, y = q.p[1] + q.dir[0] * off;
+      return [x, y, ground(x, y) + 0.02];
+    };
+    const tf = (t) => {
+      const p0 = pos(t - 0.4), p1 = pos(t + 0.4), p = pos(t);
+      // along the slope, so that the skis lie on it
+      const fwd = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+      // lean into the turn: the side the carve bends towards
+      const dd = (t - t0) * speed;
+      const lean = -Math.sin(dd / wl * TAU + ph) * 0.35 * sstep(0, 40, dd) * sstep(L, L - 40, dd);
+      return m4.mul(m4.facing(p, fwd), m4.rotationY(lean));
+    };
+    const times = snowKeys(tf, pos, t0, t0 + dur);
+    addMoving(b, geo.far, { times, transform: tf });
+    addMoving(b, geo.base, { times, transform: tf, within: FAR_PEOPLE });
+    addMoving(b, geo.detail, { times, transform: tf, within: NEAR_PEOPLE });
+    // the arms and poles: a round for every S of the carving, which starts
+    // (the lean changing from right to left) where its phase is a whole turn
+    const cycle = { period: wl / speed, keys: 8, start: t0 - ph / TAU * wl / speed };
+    addCycle(b, (u) => poses[Math.round(u * 8) % 8].limb.base, { times, transform: tf, within: FAR_PEOPLE, cycle });
+    addCycle(b, (u) => poses[Math.round(u * 8) % 8].limb.detail, { times, transform: tf, within: NEAR_PEOPLE, cycle });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2866,7 +3077,12 @@ function snowman(b, x, y, facing) {
   const z = ground(x, y);
   const g = new Geo();
   const balls = [[0.46, 0.38], [0.33, 1.0], [0.23, 1.47]];
-  for (const [r, zc] of balls) g.add(snowData(Geo.sphere(r, 12, 8).scale(1, 1, 0.94).translate(0, 0, zc), 0.95));
+  // (packed snow, matte: see SNOWSLAB with tag 1; darker where the bottom
+  // ball meets the ground and under each ball)
+  for (const [r, zc] of balls) {
+    const ball = Geo.sphere(r, 12, 8).scale(1, 1, 0.94).translate(0, 0, zc);
+    g.add(dataColor(ball, (p, n) => [0.95 * (0.72 + 0.28 * Math.max(0, n[2])) * (0.55 + 0.45 * sstep(-0.05, 0.55, p[2])), 0, 0]).mat(MAT.SNOWSLAB).tag(1));
+  }
   const coal = (geo) => aoColor(geo, '#121212', () => 1).gloss(0.3).mat(MAT.METAL);
   for (const s of [-1, 1]) g.add(coal(Geo.sphere(0.025, 5, 4).translate(s * 0.08, 0.2, 1.53)));
   for (let k = -2; k <= 2; k++) g.add(coal(Geo.sphere(0.016, 4, 3).translate(k * 0.04, 0.205 - 0.006 * k * k, 1.39 + 0.007 * k * k)));
@@ -2943,7 +3159,7 @@ function signpost(b, x, y) {
   const g = new Geo();
   g.add(aoColor(cbox(0.1, 0.1, 2.5, 0.02).translate(0, 0, 1.0), '#6b5038', (p) => 0.6 + 0.4 * sstep(0, 1, p[2])).mat(MAT.WOOD));
   g.add(snowData(cbox(0.14, 0.14, 0.07, 0.03).translate(0, 0, 2.27)));
-  const signs = [[2.0, 0.1, 9], [1.72, -0.3, 22], [1.44, 0.45, 38]];
+  const signs = [[2.0, 0.1, 9], [1.72, -0.3, 22], [1.44, 0.45, 38], [1.16, -0.05, 25]];
   for (const [zc, ang, mins] of signs) {
     const arrow = Geo.extrude([[0, -0.1], [0.62, -0.1], [0.74, 0], [0.62, 0.1], [0, 0.1]], 0.03).rotateX(Math.PI / 2).translate(0.06, 0.015, zc - 0.0);
     const a = aoColor(arrow, '#e8c21a', () => 0.95).mat(MAT.WOOD);
@@ -2974,7 +3190,10 @@ function placeTrees() {
     const lod = pd < 50 ? 0 : pd < 150 ? 1 : pd < 480 ? 2 : 3;
     if (lod === 3 && rand() > 0.62) return;
     const h = (lod === 0 ? 13 : 11) + rand() * (lod === 0 ? 13 : 10);
-    out.push({ x, y, h, lod, rot: rand() * TAU, proto: Math.floor(rand() * 6), lean: (rand() - 0.5) * 0.04 });
+    const rot = rand() * TAU, proto = Math.floor(rand() * 6), lean = (rand() - 0.5) * 0.04;
+    // (the trail's clearing is checked last, so that every other tree keeps its draws)
+    if (trailDist(x, y) < 4.5 + 0.3 * h || Math.hypot(x - TRAIL_TOP[0], y - TRAIL_TOP[1]) < 12) return;
+    out.push({ x, y, h, lod, rot, proto, lean });
   };
   for (let gy = -1000; gy < 1900; gy += 13) {
     for (let gx = -1150; gx < 1150; gx += 13) {
@@ -3313,6 +3532,70 @@ fn rockSurf(sIn: Surface, pf: f32, ao: f32) -> Surface {
   return s;
 }
 
+// Where a point lies on the nearest piste (see pisteTable): x across it,
+// y along it from the top, z which one, w its half-width there
+fn pisteOf(xy: vec2f) -> vec4f {
+  let q = (xy - vec2f(${f(PISTE_MAP.x0)}, ${f(PISTE_MAP.y0)}) + ${f(PISTE_MAP.s / 2)}) / vec2f(${f(PISTE_MAP.w * PISTE_MAP.s)}, ${f(PISTE_MAP.h * PISTE_MAP.s)});
+  if (q.x < 0.0 || q.y < 0.0 || q.x > 1.0 || q.y > 1.0) { return vec4f(99.0, 0.0, 0.0, 12.0); }
+  let t = pisteMap(q);
+  let along = t.y + t.w;
+  return vec4f(t.x, along, t.z, 12.0 + 2.5 * sin(along / 47.0 + 1.3 * round(t.z)));
+}
+
+// The marks of the skates on the rink, at a point lq in the rink's frame:
+// (how worn the ice is there, how marked)
+fn skateMarks(lq: vec2f, pf: f32) -> vec2f {
+  var K = SKATES;
+  let fine = 1.0 - smoothstep(0.02, 0.12, pf);
+  var worn = 0.0;
+  var blade = 0.0;
+  for (var i = 0; i < ${SKATE_LOOPS.length}; i++) {
+    let k = K[i];
+    let e = (lq - k.zw) / k.xy;
+    let le = max(length(e), 1e-4);
+    let dist = (le - 1.0) * le / max(length(e / k.xy), 1e-6);
+    worn = max(worn, 1.0 - smoothstep(0.25, 1.5, abs(dist)));
+    if (fine > 0.0 && abs(dist) < 0.6) {
+      let w = abs(abs(dist + 0.12 * sin(atan2(e.y, e.x) * 3.0 + f32(i))) - 0.1);
+      blade = max(blade, (1.0 - smoothstep(0.004, 0.012 + pf, w)) * fine);
+    }
+  }
+  // (long arcs: the lines of a noise stretched one way, and another the other)
+  var sc = 0.0;
+  if (fine > 0.0) {
+    let r1 = vec2f(lq.x * 0.8 + lq.y * 0.6, lq.y * 0.8 - lq.x * 0.6);
+    sc = ((1.0 - smoothstep(0.0, 0.004 + pf * 0.25, abs(noise2(r1 * vec2f(0.09, 1.3) + 4.0) - 0.5))) * 0.5
+      + (1.0 - smoothstep(0.0, 0.004 + pf * 0.25, abs(noise2(lq * vec2f(1.1, 0.07) + 9.0) - 0.5))) * 0.5) * fine;
+  }
+  return vec2f(worn, max(worn * 0.3, max(blade, sc * 0.7)));
+}
+
+// The skiers' tracks at a point of a piste (pq, see pisteOf): two grooves
+// 20 cm apart along the line each of them carves (see SKI_RUNS)
+fn skiTracks(pq: vec4f, pf: f32) -> f32 {
+  var R = SKI;
+  var trk = 0.0;
+  for (var i = 0; i < ${SKI_RUNS.length}; i++) {
+    let r = R[i];
+    if (abs(r.w - pq.z) > 0.5) { continue; }
+    let len = select(${f(PISTES[0].length)}, ${f(PISTES[1].length)}, r.w > 0.5);
+    let off = r.x * sin(pq.y / r.y * TAU + r.z) * smoothstep(0.0, 40.0, pq.y) * smoothstep(len, len - 40.0, pq.y);
+    trk = max(trk, 1.0 - smoothstep(0.012, 0.03 + pf, abs(abs(pq.x - off) - 0.1)));
+  }
+  return trk * (1.0 - smoothstep(0.04, 0.12, pf));
+}
+
+// How much a steep face is rock along a world-aligned plane (q = across,
+// up): ribs and couloirs that run down the fall line, broad ones, then
+// narrower ones and streaks of snow between them as they come within the
+// size of a pixel (each faded to its mean before it can shimmer)
+fn ribAt(q: vec2f, k: f32, pf: f32) -> f32 {
+  var r = noise2(vec2f(q.x / 34.0, q.y / 190.0) + k) * 0.5;
+  r += mix(0.5, noise2(vec2f(q.x / 12.0, q.y / 70.0) + k + 7.0), 1.0 - smoothstep(2.0, 6.0, pf)) * 0.3;
+  r += mix(0.5, noise2(vec2f(q.x / 3.6, q.y / 26.0) + k + 3.0), 1.0 - smoothstep(0.7, 2.2, pf)) * 0.2;
+  return r;
+}
+
 fn terrainSurf(sIn: Surface, pf: f32) -> Surface {
   var s = sIn;
   let p = s.pos;
@@ -3325,11 +3608,35 @@ fn terrainSurf(sIn: Surface, pf: f32) -> Surface {
   // rock ribs and snow-filled couloirs running down the steep faces (on
   // world-aligned planes, blended by the normal: see rockSurf)
   let wr = smoothstep(0.3, 0.7, abs(n0.y) / max(abs(n0.x) + abs(n0.y), 1e-4));
-  let fine = 1.0 - smoothstep(1.0, 3.0, pf);
-  var rib = 0.0;
-  if (wr < 0.999) { rib += (1.0 - wr) * (noise2(vec2f(p.y / 34.0, p.z / 190.0)) * 0.65 + noise2(vec2f(p.y / 12.0, p.z / 70.0) + 7.0) * 0.35 * fine); }
-  if (wr > 0.001) { rib += wr * (noise2(vec2f(p.x / 34.0, p.z / 190.0) + 3.0) * 0.65 + noise2(vec2f(p.x / 12.0, p.z / 70.0) + 9.0) * 0.35 * fine); }
-  let rockAmt = smoothstep(0.50, 0.56 + pf * 0.01, rocky + (rib - 0.5) * 0.55 + (m1 - 0.5) * 0.12 + (steep - 0.35) * 0.3);
+  // (The ribs can raise what follows by 0.27 at most and the ragged edge by
+  // 0.15: below 0.07 there is no rock to work out, as on the valley floor.)
+  let rockBase = rocky + (m1 - 0.5) * 0.12 + (steep - 0.35) * 0.3;
+  var rockAmt = 0.0;
+  if (rockBase > 0.07) {
+    var rib = 0.0;
+    if (wr < 0.999) { rib += (1.0 - wr) * ribAt(vec2f(p.y, p.z), 0.0, pf); }
+    if (wr > 0.001) { rib += wr * ribAt(vec2f(p.x, p.z), 3.0, pf); }
+    let pre = rockBase + (rib - 0.56) * 0.62;
+    // The edge between rock and snow is ragged at every scale a pixel can
+    // show (the occlusion and exposure the mesh carries are smooth across
+    // its cells of 10 to 100 metres, and would otherwise draw it in straight
+    // lines); it moves it by 0.15 either way, so only near the edge
+    var rag = 0.5;
+    if (pre > 0.34 && pre < 0.69 + pf * 0.012) {
+      rag = mix(0.5, noise3(p / 9.0), 1.0 - smoothstep(3.0, 9.0, pf)) * 0.6 + mix(0.5, noise3(p / 2.8 + 7.0), 1.0 - smoothstep(1.0, 3.0, pf)) * 0.4;
+    }
+    rockAmt = smoothstep(0.50, 0.53 + pf * 0.012, pre + (rag - 0.5) * 0.3);
+  }
+  // snow lying on a ledge of the strata here and there: one band in three
+  // or so, broken off along its length, never where it is steepest
+  if (rockAmt > 0.001 && pf < 6.0) {
+    let band = dot(p, vec3f(0.28, -0.2, 0.94)) / 11.0 + noise3(p / 45.0) * 2.5;
+    let bi = floor(band);
+    let keep = step(0.62, hash11(bi * 1.37 + 0.5)) * smoothstep(0.45, 0.6, noise3(p / 17.0 + vec3f(bi * 3.1, 0.0, 0.0)));
+    let w = 0.1 + 0.16 * hash11(bi * 2.1 + 3.3) - 0.2 * smoothstep(0.55, 0.8, steep);
+    let ledge = (1.0 - smoothstep(w, w + 0.06 + pf * 0.03, fract(band))) * keep * (1.0 - smoothstep(2.5, 6.0, pf));
+    rockAmt *= 1.0 - ledge;
+  }
   if (rockAmt < 0.999) {
     s = snowSurf(s, pf, ao);
   }
@@ -3352,26 +3659,66 @@ fn terrainSurf(sIn: Surface, pf: f32) -> Surface {
       let ice = (1.0 - drift) * (1.0 - smoothstep(0.92, 1.0, lr));
       let iceA = max(ice, rink);
       let crack = (1.0 - smoothstep(0.0, 0.02 + pf * 0.3, abs(noise2(p.xy * 0.18) - 0.5))) * (1.0 - smoothstep(0.1, 0.8, pf));
-      let iceCol = mix(vec3f(0.035, 0.065, 0.085), vec3f(0.11, 0.16, 0.19), noise2(p.xy * 0.4)) + crack * 0.25;
+      var iceCol = mix(vec3f(0.035, 0.065, 0.085), vec3f(0.11, 0.16, 0.19), noise2(p.xy * 0.4)) + crack * 0.25;
+      var iceGloss = 0.92;
+      if (rink > 0.001) {
+        // the skaters' loops (see SKATE_LOOPS) worn into frosted bands, with
+        // the lines of the blades in them, and scratches all over the rink
+        let wm = skateMarks(vec2f(rq.x * ca + rq.y * sa, -rq.x * sa + rq.y * ca), pf);
+        let mark = wm.y * rink;
+        iceCol = mix(iceCol, vec3f(0.46, 0.5, 0.54), mark);
+        iceGloss = 0.92 - 0.3 * wm.x * rink - 0.4 * mark;
+      }
       s.color = mix(s.color, iceCol, iceA);
-      s.gloss = mix(s.gloss, 0.92, iceA);
+      s.gloss = mix(s.gloss, iceGloss, iceA);
       s.n = normalize(mix(s.n, vec3f(0.0, 0.0, 1.0), iceA));
     }
   }
   // forest seen from afar: the canopy as a tone on the ground (the trees
   // themselves are sparser than a real forest)
   let forest = saturate((0.5 - gch) * 3.4) * smoothstep(70.0, 220.0, s.dist);
-  // groomed pistes: smooth, a little brighter, with corduroy across the fall line
-  let piste = saturate((gch - 0.5) * 2.0);
+  // groomed pistes (see pisteTable): smooth and silky, laid in the long
+  // lanes of the grooming machine (a shade lighter or darker each, changing
+  // every 150 m or so where it turned), with corduroy along them, and a
+  // crisp edge where the loose snow beside them stands a little higher
+  let pq = pisteOf(p.xy);
+  let pe = abs(pq.x) - pq.w;
+  let piste = 1.0 - smoothstep(-0.25, 0.25 + pf, pe);
   if (piste > 0.001) {
     var fall = vec2f(n0.x, n0.y);
     fall = fall / max(length(fall), 1e-3);
-    let cq = dot(p.xy, fall) * 0.0 + dot(p.xy, vec2f(-fall.y, fall.x)) / 0.07;
+    let cq = dot(p.xy, vec2f(-fall.y, fall.x)) / 0.07;
     let fc = 1.0 - smoothstep(0.004, 0.02, pf);
     let cord = (abs(fract(cq) - 0.5) * 2.0 - 0.5) * fc;
-    s.n = normalize(mix(s.n, n0, piste * 0.7) + vec3f(-fall.y, fall.x, 0.0) * cord * 0.25 * piste);
-    s.color = mix(s.color, s.color * (1.02 + 0.06 * cord), piste);
-    s.gloss = mix(s.gloss, 0.3, piste);
+    let lane = floor(pq.x / 4.3 + 0.5);
+    let lt = hash21(vec2f(lane, pq.z * 7.0 + floor(pq.y / 150.0 + hash11(lane + pq.z * 3.0))));
+    let seam = (1.0 - smoothstep(0.03, 0.12 + pf * 1.5, abs(fract(pq.x / 4.3 + 0.5) - 0.5) * 4.3 - 2.0)) * (1.0 - smoothstep(0.3, 1.2, pf));
+    s.n = normalize(mix(s.n, n0, piste * 0.85) + vec3f(-fall.y, fall.x, 0.0) * cord * 0.25 * piste);
+    s.color = mix(s.color, s.color * (1.03 + 0.06 * cord + 0.07 * (lt - 0.5) - 0.05 * seam), piste);
+    s.gloss = mix(s.gloss, 0.34, piste);
+    // the skiers' tracks (see SKI_RUNS): two grooves 20 cm apart along the
+    // line each of them carves, the same S every run
+    if (pf < 0.12) {
+      let trk = skiTracks(pq, pf) * piste;
+      s.color *= 1.0 - 0.2 * trk;
+      s.gloss = mix(s.gloss, 0.1, trk);
+    }
+  }
+  // off the pistes, on the slopes: drifts and scoured hollows of a few
+  // metres, laid out by the wind from the north-west, which a low sun picks out
+  let wind = (1.0 - piste) * smoothstep(0.04, 0.14, steep) * (1.0 - rockAmt) * (1.0 - smoothstep(1.2, 4.0, pf));
+  if (wind > 0.001) {
+    let wq = vec2f(dot(p.xy, vec2f(0.6, 0.8)) / 2.6, dot(p.xy, vec2f(-0.8, 0.6)) / 7.5);
+    let g = ngrad(wq, 0.08);
+    s.n = normalize(s.n - vec3f((vec2f(0.6, 0.8) * g.x / 2.6 + vec2f(-0.8, 0.6) * g.y / 7.5) * 1.15 * wind, 0.0) * s.n.z);
+  }
+  // the loose snow's edge beside a piste
+  if (pe > -0.2 && pe < 1.4 && pf < 0.6) {
+    let ax = pisteOf(p.xy + vec2f(0.6, 0.0)).x - pq.x;
+    let ay = pisteOf(p.xy + vec2f(0.0, 0.6)).x - pq.x;
+    let outw = normalize(vec2f(ax, ay) + vec2f(1e-5, 0.0)) * sign(pq.x);
+    let k = (smoothstep(-0.2, 0.25, pe) - smoothstep(0.25, 1.4, pe) * 1.6) * (1.0 - smoothstep(0.2, 0.6, pf));
+    s.n = normalize(s.n - vec3f(outw * k * 0.55, 0.0));
   }
   if (forest > 0.001) {
     let cn = noise2(p.xy * 0.09) * 0.6 + noise2(p.xy * 0.4) * 0.4 * (1.0 - smoothstep(0.3, 1.5, pf));
@@ -3557,6 +3904,12 @@ fn lanternSurf(sIn: Surface) -> Surface {
   if (s.tag == 1u) {
     // a lantern on the path: its distance along it is the copy's number
     lev = lampLevel(s.inst.w, s.t, nightOf(s.t));
+  } else if (s.tag == 3u) {
+    // a floodlight over the piste
+    s.color = vec3f(1.0, 0.94, 0.84);
+    s.emissive = 0.1 + floodOn(s.t) * 12.0;
+    s.gloss = 0.6;
+    return s;
   } else {
     let k = s.color.g;
     lev = lanternOn(s.t, k) * (0.9 + 0.1 * sin(s.t * 11.0 + k * 40.0) * sin(s.t * 7.3 + k * 17.0));
@@ -3947,6 +4300,11 @@ const NLAMP = ${LAMPS.length};
 const LAMPS = array<vec4f, ${LAMPS.length}>(${LAMPS.map((l) => `vec4f(${f(l[0])}, ${f(l[1])}, ${f(l[2])}, ${f(l[3])})`).join(', ')});
 const LAMP_BOX = vec4f(${f(Math.min(...LAMPS.map((l) => l[0])) - 25)}, ${f(Math.min(...LAMPS.map((l) => l[1])) - 25)}, ${f(Math.max(...LAMPS.map((l) => l[0])) + 25)}, ${f(Math.max(...LAMPS.map((l) => l[1])) + 25)});
 const PATH_LEN = ${f(PATH.length)};
+const SKATES = array<vec4f, ${SKATE_LOOPS.length}>(${SKATE_LOOPS.map((l, i) => `vec4f(${f(l[0])}, ${f(l[1])}, ${f(skateCentre(i)[0])}, ${f(skateCentre(i)[1])})`).join(', ')});
+const SKI = array<vec4f, ${SKI_RUNS.length}>(${SKI_RUNS.map((r) => `vec4f(${f(r.amp)}, ${f(r.wl)}, ${f(r.ph)}, ${f(r.pi)})`).join(', ')});
+const NDOOR = ${DOOR_LAMPS.length};
+const DOORS = array<vec3f, ${DOOR_LAMPS.length}>(${[...DOOR_LAMPS].sort((a, b2) => a[1] - b2[1]).map((l) => `vec3f(${f(l[0])}, ${f(l[1])}, ${f(l[2])})`).join(', ')});
+const DOOR_BOX = vec4f(${f(Math.min(...DOOR_LAMPS.map((l) => l[0])) - 10)}, ${f(Math.min(...DOOR_LAMPS.map((l) => l[1])) - 10)}, ${f(Math.max(...DOOR_LAMPS.map((l) => l[0])) + 10)}, ${f(Math.max(...DOOR_LAMPS.map((l) => l[1])) + 10)});
 
 // how bright the lantern at a distance along the path is: switched on in a
 // wave up the path at dusk, with a pulse of light running up it every 7 s
@@ -3962,16 +4320,72 @@ fn lampLight(p: vec3f, n: vec3f, t: f32) -> vec3f {
   if (p.x < LAMP_BOX.x || p.y < LAMP_BOX.y || p.x > LAMP_BOX.z || p.y > LAMP_BOX.w) { return vec3f(0.0); }
   let night = nightOf(t);
   if (night <= 0.08) { return vec3f(0.0); }
+  var c = vec3f(1.0, 0.58, 0.26) * lanternSum(p, n, t, night);
+  // and the small lamps by the chalets' doors, each a warm pool on the snow
+  // before its door
+  let don = lanternOn(t, 0.5);
+  if (don > 0.0 && p.x > DOOR_BOX.x && p.y > DOOR_BOX.y && p.x < DOOR_BOX.z && p.y < DOOR_BOX.w) {
+    c += vec3f(1.0, 0.6, 0.3) * doorSum(p, n) * don;
+  }
+  return c;
+}
+// (the lanterns run up the path, from south to north, never stepping back by
+// more than 2 m: once one is 26 m further north, so are all the rest)
+fn lanternSum(p: vec3f, n: vec3f, t: f32, night: f32) -> f32 {
   var L = LAMPS;
   var acc = 0.0;
   for (var i = 0; i < NLAMP; i++) {
     let d = L[i].xyz - p;
+    if (d.y > 26.0) { break; }
     let dd = dot(d, d);
     if (dd > 576.0) { continue; }
     let lev = lampLevel(L[i].w, t, night);
     acc += lev * max(dot(n, d) * inverseSqrt(dd), 0.0) * 7.0 / (dd + 1.5) * (1.0 - smoothstep(300.0, 576.0, dd));
   }
-  return vec3f(1.0, 0.58, 0.26) * acc;
+  return acc;
+}
+// (the door lamps are listed from south to north)
+fn doorSum(p: vec3f, n: vec3f) -> f32 {
+  var D = DOORS;
+  var acc = 0.0;
+  for (var i = 0; i < NDOOR; i++) {
+    let d = D[i] - p;
+    if (d.y > 10.0) { break; }
+    let dd = dot(d, d);
+    if (dd > 100.0) { continue; }
+    acc += max(dot(n, d) * inverseSqrt(dd), 0.0) * 2.4 / (dd + 0.6) * (1.0 - smoothstep(49.0, 100.0, dd));
+  }
+  return acc;
+}
+
+// the floodlights over the red piste (see FLOODS): all on at once, a while
+// after the lanterns on the path have begun to come on
+const NFLOOD = ${FLOODS.length};
+const FLOODS = array<vec4f, ${FLOODS.length}>(${FLOODS.map((l) => `vec4f(${f(l[0])}, ${f(l[1])}, ${f(l[2])}, ${f(l[3])})`).join(', ')});
+const FLOOD_BOX = vec4f(${f(Math.min(...FLOODS.map((l) => l[0])) - 60)}, ${f(Math.min(...FLOODS.map((l) => l[1])) - 60)}, ${f(Math.max(...FLOODS.map((l) => l[0])) + 60)}, ${f(Math.max(...FLOODS.map((l) => l[1])) + 60)});
+fn floodOn(t: f32) -> f32 { return smoothstep(0.3, 0.34, nightOf(t)); }
+fn floodLight(p: vec3f, n: vec3f, t: f32) -> vec3f {
+  if (p.x < FLOOD_BOX.x || p.y < FLOOD_BOX.y || p.x > FLOOD_BOX.z || p.y > FLOOD_BOX.w) { return vec3f(0.0); }
+  let on = floodOn(t);
+  if (on <= 0.0) { return vec3f(0.0); }
+  return vec3f(1.0, 0.93, 0.82) * floodSum(p, n) * on;
+}
+// (the masts are listed from the top of the piste down, south-westwards,
+// never stepping back north by more than 2 m: once one is 62 m further
+// south, so are all the rest)
+fn floodSum(p: vec3f, n: vec3f) -> f32 {
+  var L = FLOODS;
+  var acc = 0.0;
+  for (var i = 0; i < NFLOOD; i++) {
+    let d = L[i].xyz - p;
+    if (d.y < -62.0) { break; }
+    let dd = dot(d, d);
+    if (dd > 3600.0) { continue; }
+    // (aimed across the piste: little of it falls behind the mast)
+    let aim = smoothstep(-0.3, 0.5, dot(-d.xy * inverseSqrt(max(dot(d.xy, d.xy), 1e-4)), vec2f(cos(L[i].w), sin(L[i].w))));
+    acc += max(dot(n, d) * inverseSqrt(dd), 0.0) * 120.0 / (dd + 120.0) * (0.12 + 0.88 * aim) * (1.0 - smoothstep(1600.0, 3600.0, dd));
+  }
+  return acc;
 }
 
 // the trodden path: packed snow with footprints and sledge runners
@@ -4024,7 +4438,7 @@ fn surface(sIn: Surface) -> Surface {
   var s = sIn;
   let pf = length(fwidth(s.pos));
   switch (s.mat) {
-    case ${MAT.TERRAIN}u: { s = terrainSurf(s, pf); s.light += lampLight(s.pos, s.n, s.t); return s; }
+    case ${MAT.TERRAIN}u: { s = terrainSurf(s, pf); s.light += lampLight(s.pos, s.n, s.t) + floodLight(s.pos, s.n, s.t); return s; }
     case ${MAT.NEEDLES}u: { s = needleSurf(s, pf); }
     case ${MAT.BARK}u: { s = barkSurf(s, pf); }
     case ${MAT.LOGS}u: { s = logSurf(s, pf); }
@@ -4034,7 +4448,12 @@ fn surface(sIn: Surface) -> Surface {
     case ${MAT.GLASS}u: { s = glassSurf(s, pf); }
     case ${MAT.LANTERN}u: { s = lanternSurf(s); }
     case ${MAT.WOODPILE}u: { s = woodpileSurf(s, pf); }
-    case ${MAT.SNOWSLAB}u: { s = snowSurf(s, pf, s.color.r); }
+    case ${MAT.SNOWSLAB}u: {
+      s = snowSurf(s, pf, s.color.r);
+      // (a snowman: packed snow without the sheen of a fresh drift, which on
+      // a ball mirrors the bright snow round it like glass)
+      if (s.tag == 1u) { s.gloss = select(0.03, s.gloss, s.gloss > 0.5); }
+    }
     case ${MAT.PATH}u: { s = pathSurf(s, pf); }
     case ${MAT.PLASTER}u: { s = plasterSurf(s, pf); }
     case ${MAT.SHINGLE}u: { s = shingleSurf(s, pf); }
@@ -4059,7 +4478,7 @@ fn surface(sIn: Surface) -> Surface {
     default: {}
   }
   s.sun *= ridgeShade(s.pos, envSun(s.t).dir);
-  s.light += lampLight(s.pos, s.n, s.t);
+  s.light += lampLight(s.pos, s.n, s.t) + floodLight(s.pos, s.n, s.t);
   return s;
 }`;
 
@@ -4142,6 +4561,9 @@ export default {
     bench(b, 5.6, -50, Math.PI / 2);
     snowman(b, -6.8, -49, -2.58);
     deer(b);
+    pisteMarkers(b);
+    trail(b);
+    b.texture('pisteMap', { width: PISTE_MAP.w, height: PISTE_MAP.h, data: pisteTable() });
     signpost(b, 4.1, -57.2);
     b.static(pathRibbon());
     b.instances(lantern(), LAMPS.map(([x, y, z, along]) => ({ transform: m4.mul(m4.translation(x, y, z - 2.55 - 0.05), m4.rotationZ(along)), data: along })));

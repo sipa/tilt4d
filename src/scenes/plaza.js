@@ -9,7 +9,8 @@
 //   square   |x|, |y| < 40, clock tower at the origin, town hall on the east side
 //   avenue   y in [-14, 14], from the square (x = -40) west to the gate (x = -224)
 //   gate     x in [-236, -224]; trams turn round outside it, cyclists and
-//            walkers come and go along the outside of the wall
+//            walkers come and go along the outside of the wall; north of it,
+//            a yard with a stair up to the top of the wall (see WALK)
 //   town     blocks of houses round both, inside a rectangular city wall
 
 import { Geo } from '../geom.js';
@@ -45,6 +46,23 @@ const MAT = {
   WATER: 9, AWNING: 10, TRAM: 11, BULB: 12, DISPLAY: 13, LEAF: 14, GABLE: 15,
   JET: 16, CANOPY: 17, DOOR: 18, GLASS: 19, CURTAIN: 20, NEON: 21, PERSON: 22, WHEEL: 23, SIGN: 24, HORSE: 25,
 };
+
+// The city wall north of the gate can be walked along on top (WALK, at its
+// full 9 m height), and a stone stair goes up to it against its inner face,
+// from a yard beside the gate (STAIR: rising north from y0 to y1, then a
+// landing to y2).  Both are part of `ground`, the one thing in the town that
+// is not level: in a view tilted up, going up the stair takes the walker
+// 9 m × tan(tilt) / 10 m/s on in time (a second at 45°), and coming down
+// takes them back.  (Its edge with the wall's top is put 2 cm off the wall,
+// so that the top of the wall and the treads each count as ground.)
+const WALK = { x0: WALL.x0, x1: WALL.x0 + 2.6, y0: AW, y1: WALL.y + 1.3, z: 9 };
+const STAIR = { x0: WALK.x1 + 0.02, x1: WALK.x1 + 2.6, y0: 15, y1: 31, y2: 33 };
+function ground(x, y) {
+  if (x < WALK.x0 - 0.01 || x > STAIR.x1 + 0.01 || y < WALK.y0 - 0.01 || y > WALK.y1 + 0.01) return 0;
+  if (x < STAIR.x0 - 0.01) return WALK.z;
+  if (y < STAIR.y0 || y > STAIR.y2 + 0.01) return 0;
+  return WALK.z * Math.min(1, (y - STAIR.y0) / (STAIR.y1 - STAIR.y0));
+}
 
 // street lamps: positions shared by the geometry and the shader's light pools
 const AV_LAMP = { x0: -46, dx: -24, n: 8, y: 7.6 };
@@ -245,6 +263,63 @@ fn paint(h: f32) -> vec3f {
   return lin(pal[i32(floor(clamp(h, 0.0, 0.999) * 6.0))]);
 }
 
+// What is seen through a shop's window from near by: shelves of goods (kind
+// 0), clothes on two figures (1) or a café's counter with lamps over it (2),
+// and for some the shop's name in gold along the top of the glass.  f is the
+// place in the facade's cell, y metres up from the foot of the glass, w the
+// size of a pixel.  Returns the colour inside, how bright it is when lit (as
+// a share of the light's colour), and where the gold letters are.
+struct Shop { inside: vec3f, light: f32, letters: f32 };
+fn shopInside(f: vec2f, cell: vec2f, kind: f32, y: f32, hr: f32, hr2: f32, w: vec2f) -> Shop {
+  let goods = noise2(f * vec2f(14.0, 5.0) + cell * 3.1);
+  var inside: vec3f;
+  var light: f32;
+  if (kind == 1.0) {
+    // two dressed figures on stands against a pale wall
+    inside = lin(vec3f(0.42, 0.38, 0.34)) * (0.8 + 0.3 * goods);
+    let x = (fract(f.x * 2.0) - 0.5) * 1.33;
+    let fid = hash21(vec2f(floor(f.x * 2.0) + cell.x * 2.0, 4.7));
+    let hw = select(0.1 + 0.12 * (1.0 - y), 0.17 - 0.06 * (y - 1.0), y > 1.0);
+    let cloth = step(0.45, y) * step(y, 1.45) * (1.0 - smoothstep(hw - 0.01, hw + 0.01, abs(x)));
+    let head = saturate(ellipse(vec2f(x, y - 1.62), vec2f(0.085, 0.11), 0.01) + step(abs(x), 0.035) * step(1.4, y) * step(y, 1.55));
+    let pole = saturate(step(abs(x), 0.018) * step(y, 0.5) + step(abs(x), 0.15) * step(y, 0.035));
+    inside = mix(inside, select(paint(fract(fid * 5.3)) * 0.8, paint(fid), y > 1.0), cloth);
+    inside = mix(inside, lin(vec3f(0.82, 0.8, 0.76)), head);
+    inside = mix(inside, lin(vec3f(0.1)), pole);
+    light = (0.35 + 0.35 * goods) * (1.0 - 0.7 * saturate(cloth + head + pole));
+  } else if (kind == 2.0) {
+    // a tiled wall, a counter with cakes and loaves on it, lamps hanging over it
+    let tl = abs(fract(vec2f(f.x * 2.65, y) / 0.15) - 0.5);
+    inside = lin(vec3f(0.6, 0.56, 0.48)) * (1.0 - 0.25 * step(0.44, max(tl.x, tl.y)) * (1.0 - smoothstep(0.004, 0.012, w.x)));
+    let counter = step(y, 0.95);
+    inside = mix(inside, lin(vec3f(0.3, 0.18, 0.1)) * (0.8 + 0.3 * step(0.88, y)), counter);
+    let ck = hash21(vec2f(floor(f.x * 9.0), cell.x));
+    let cake = ellipse(vec2f((fract(f.x * 9.0) - 0.5) * 0.3, y - 1.0), vec2f(0.1, 0.06), 0.01) * step(0.95, y) * step(0.3, ck);
+    inside = mix(inside, mix(lin(vec3f(0.75, 0.5, 0.25)), lin(vec3f(0.9, 0.85, 0.75)), ck), cake);
+    let lp = vec2f((fract(f.x * 3.0) - 0.5) * 0.9, y - 1.95);
+    let glow = ellipse(lp, vec2f(0.12, 0.07), 0.01) * step(lp.y, 0.0);
+    inside = mix(inside, lin(vec3f(0.15, 0.25, 0.2)), saturate(glow + step(abs(lp.x), 0.006) * step(0.0, lp.y)));
+    light = (0.35 + 0.35 * goods) * (1.0 - 0.7 * saturate(counter + cake)) + 2.5 * glow;
+  } else {
+    inside = lin(vec3f(0.2, 0.17, 0.14) * (0.75 + 0.5 * goods));
+    // things on the shelves: boxes, jars and bottles in rows, each its own colour and height
+    let sq = vec2f(f.x * 26.0, (f.y - 0.12) / 0.58 * 3.0 + 0.5);
+    let item = vec2f(floor(sq.x), floor(sq.y));
+    let ih = hash22(item + cell * 7.3);
+    let stand = step(0.18, fract(sq.x)) * step(fract(sq.x), 0.88) * step(0.08, fract(sq.y)) * step(fract(sq.y), 0.25 + 0.5 * ih.y) * step(0.25, ih.x) * step(0.5, sq.y) * step(sq.y, 3.5);
+    inside = mix(inside, paint(fract(ih.x * 3.7 + hr)) * (0.6 + 0.5 * ih.y), stand * (1.0 - smoothstep(0.01, 0.03, w.x)) * step(f.y, 0.69));
+    let shelf = 1.0 - smoothstep(0.012, 0.012 + w.y, abs(fract((f.y - 0.12) / 0.58 * 3.0) - 0.5) * 0.19);
+    light = (0.25 + 0.6 * goods) * (1.0 - 0.5 * shelf);
+  }
+  // the shop's name in gold along the top of the glass, for some
+  let lq = vec2f((f.x - 0.2) / 0.6, (f.y - 0.6) / 0.06);
+  var letters = 0.0;
+  if (hr2 >= 0.5 && lq.y >= 0.0 && lq.y <= 1.0 && lq.x >= 0.0 && lq.x <= 1.0) {
+    letters = step(0.3, fract(lq.x * 9.0)) * step(0.35, noise2(vec2f(lq.x * 40.0, lq.y * 3.0) + cell));
+  }
+  return Shop(mix(inside, lin(vec3f(0.85, 0.66, 0.25)), letters), light, letters);
+}
+
 fn facade(sIn: Surface, fw: vec2f) -> Surface {
   var s = sIn;
   let w = max(fw * 0.7, vec2f(0.004));
@@ -315,25 +390,35 @@ fn facade(sIn: Surface, fw: vec2f) -> Surface {
       let sw = rectAA(f, vec2f(0.1, 0.12), vec2f(0.9, 0.7), w);
       c = mix(c, trim * 0.85, sfr);
       glass = sw;
-      // a shop interior: shelves and goods
-      let shelf = 1.0 - smoothstep(0.012, 0.012 + w.y, abs(fract((f.y - 0.12) / 0.58 * 3.0) - 0.5) * 0.19);
-      let goods = noise2(f * vec2f(14.0, 5.0) + cell * 3.1);
-      inside = lin(vec3f(0.2, 0.17, 0.14) * (0.75 + 0.5 * goods));
-      // things on the shelves: boxes, jars and bottles in rows, each its own colour and height
-      let sq = vec2f(f.x * 26.0, (f.y - 0.12) / 0.58 * 3.0 + 0.5);
-      let item = vec2f(floor(sq.x), floor(sq.y));
-      let ih = hash22(item + cell * 7.3);
-      let stand = step(0.18, fract(sq.x)) * step(fract(sq.x), 0.88) * step(0.08, fract(sq.y)) * step(fract(sq.y), 0.25 + 0.5 * ih.y) * step(0.25, ih.x) * step(0.5, sq.y) * step(sq.y, 3.5);
-      inside = mix(inside, paint(fract(ih.x * 3.7 + hr)) * (0.6 + 0.5 * ih.y), stand * (1.0 - smoothstep(0.01, 0.03, w.x)) * step(f.y, 0.69));
-      // the shop's name in gold along the top of the glass, for some
-      let lq = vec2f((f.x - 0.2) / 0.6, (f.y - 0.6) / 0.06);
-      let letters = step(0.0, lq.x) * step(lq.x, 1.0) * step(0.0, lq.y) * step(lq.y, 1.0) * step(0.3, fract(lq.x * 9.0)) * step(0.35, noise2(vec2f(lq.x * 40.0, lq.y * 3.0) + cell)) * step(0.5, hr2);
-      shine = max(shine, letters);
-      inside = mix(inside, lin(vec3f(0.85, 0.66, 0.25)), letters);
       // shops stay open into the evening
       let h = hours(s.t);
       lit = step(0.3, hr2) * step(16.5 + hr * 1.5, h) * step(h, 21.5 + hr2 * 2.0);
-      litCol = lin(mix(vec3f(0.95, 0.8, 0.6), vec3f(0.95, 0.7, 0.45), hr)) * (0.25 + 0.6 * goods) * (1.0 - 0.5 * shelf);
+      // The inside, one of three kinds for each house (see shopInside), is
+      // worked out only on the glass and from near by: where a pixel is
+      // wider than about 10 cm across the window (from 50 m or so face on,
+      // nearer at a slant) it gives way to the even tint it comes to from
+      // there, so that the windows down the avenue cost no more than paint.
+      let kind = floor(hash21(vec2f(hid * 0.71, 2.9)) * 3.0);
+      let y = (f.y - 0.12) * 4.1;
+      let low = step(y, 0.95);
+      var light = 0.53;   // the lit inside's brightness, as a share of litCol
+      if (kind == 1.0) {
+        inside = lin(vec3f(0.4, 0.36, 0.33));
+        light = 0.47;
+      } else if (kind == 2.0) {
+        inside = mix(lin(vec3f(0.57, 0.53, 0.46)), lin(vec3f(0.26, 0.15, 0.08)), low);
+        light = 0.525 * (1.0 - 0.7 * low);
+      } else {
+        inside = lin(vec3f(0.2, 0.17, 0.14));
+      }
+      let near = (1.0 - smoothstep(0.025, 0.04, w.x)) * step(0.001, sw);
+      if (near > 0.0) {
+        let v = shopInside(f, cell, kind, y, hr, hr2, w);
+        inside = mix(inside, v.inside, near);
+        light = mix(light, v.light, near);
+        shine = max(shine, v.letters * near);
+      }
+      litCol = select(lin(mix(vec3f(0.95, 0.8, 0.6), vec3f(0.95, 0.7, 0.45), hr)), lin(vec3f(0.95, 0.78, 0.55)), kind > 0.5) * light;
     }
     let fascia = rectAA(f, vec2f(-0.1, 0.79), vec2f(1.1, 0.93), w) * step(0.35, hr2);
     c = mix(c, paint(fract(hr * 3.7)) * 0.8, fascia);
@@ -1379,7 +1464,9 @@ function makeHouse(o) {
         box(x1 - x0 + 0.12, 0.6, 0.12, (x0 + x1) / 2, 0.2, z0 + dz + 0.06, trim);
       }
     }
-    gable.add(Geo.triangle([w, d, H], [0, d, H], [w / 2, d, zR]));
+    // (the back gable gets its round window too: left with the triangle's own
+    // uv, the shader would make most of it one dark pane)
+    gable.add(uvFrom(Geo.triangle([w, d, H], [0, d, H], [w / 2, d, zR]), oculus(rh)));
   } else {
     // flat roof behind a parapet, with a heavy cornice
     const par = 0.9;
@@ -1435,6 +1522,9 @@ let HOUSE_ID = 1;
 //   length  along the row; gaps: [[a, b], ...] distances left open for lanes
 //   ends    [left, right]: whether the end walls are exposed (windows)
 //   onHouse called with each house's placement, for extras
+//   leave   the id of a house to leave out: everything about it is drawn
+//           from the random numbers as before, so that the rest of the town
+//           stays as it was, but it is not added (onHouse is told `gone`)
 function row(b, rand, o) {
   const e = [-o.nrm[1], o.nrm[0]];
   const inward = [-o.nrm[0], -o.nrm[1]];
@@ -1477,9 +1567,12 @@ function row(b, rand, o) {
       });
       const org = [o.start[0] + e[0] * x, o.start[1] + e[1] * x];
       const m = placeM(org, e, inward);
-      b.static(house.transform(m));
-      addBoxes(boxes, m);
-      if (o.onHouse) o.onHouse({ m, w, H, g0, hid, rand, sh, floors, bays, roof });
+      const gone = o.leave === hid;
+      if (!gone) {
+        b.static(house.transform(m));
+        addBoxes(boxes, m);
+      }
+      if (o.onHouse) o.onHouse({ m, w, H, g0, hid, rand, sh, floors, bays, roof, gone });
       x += w;
     });
   }
@@ -1577,7 +1670,8 @@ let GAIT = rng(3);
 //           legs are not part of the column but real ones that stride, and the
 //           arms swing (see walkingLimbs); `fit`, if given, is a span of
 //           seconds that a whole number of strides must fill
-function person(rand, { sit = false, scale = 1, build = null, walk = 0, fit = 0 } = {}) {
+//   kid     a child for certain (otherwise one now and then, at random)
+function person(rand, { sit = false, scale = 1, build = null, walk = 0, fit = 0, kid = false } = {}) {
   // (the scene's random numbers are drawn as they always were, so that
   // everything else in the town stays as it was; the rest come from STYLE)
   const R = STYLE;
@@ -1586,7 +1680,7 @@ function person(rand, { sit = false, scale = 1, build = null, walk = 0, fit = 0 
   const hat = rand() < 0.25, hatCol = hat ? rand.pick(['#2a2a2a', '#7a5a3a', '#a33', '#e8e0d0']) : null;
   const st = { scarf: R() < 0.4, buttons: R() < 0.6, glasses: R() < 0.18, beard: R() < 0.14, trousers: LEGS.indexOf(legs), long: R() < 0.35 };
   // a child now and then: smaller, with a larger head for its size
-  const child = !sit && R() < 0.09;
+  const child = (!sit && R() < 0.09) || kid;
   if (child) { st.beard = false; st.long = false; scale *= 0.64; }
   const hs = child ? 1.2 : 1;
   const id = (st.scarf ? 1 : 0) | (st.buttons ? 2 : 0) | (st.glasses ? 4 : 0) | (st.beard ? 8 : 0) | (st.trousers << 4) | (st.long ? 64 : 0);
@@ -1986,14 +2080,47 @@ function bunting(a, b, sag, rand) {
 // ---------------------------------------------------------------------------
 // landmarks
 
-function clockFaceAt(b, m, R) {
-  const face = Geo.disc(R, 48).rotateX(Math.PI / 2);
+function clockFaceAt(b, m, R, seg = 48) {
+  const face = Geo.disc(R, seg).rotateX(Math.PI / 2);
   uvFrom(face, (p) => [0.5 + p[0] / (2 * R), 0.5 + p[2] / (2 * R)]);
   const bez = new Geo();
-  bez.add(annulus(R, R + 0.35 * R / 3.25, 48).rotateX(Math.PI / 2).translate(0, -0.12, 0));
-  bez.add(Geo.cylinder(R + 0.35 * R / 3.25, 0.12, 48, { caps: false }).rotateX(Math.PI / 2));
-  b.static(face.mat(MAT.CLOCK).transform(m4.mul(m, m4.translation(0, -0.05, 0))));
+  const t = 0.12 * Math.min(1, R / 1.2);
+  bez.add(annulus(R, R + 0.35 * R / 3.25, seg).rotateX(Math.PI / 2).translate(0, -t, 0));
+  bez.add(Geo.cylinder(R + 0.35 * R / 3.25, t, seg, { caps: false }).rotateX(Math.PI / 2));
+  b.static(face.mat(MAT.CLOCK).transform(m4.mul(m, m4.translation(0, -t * 0.4, 0))));
   b.static(bez.color('#d9a842').gloss(0.8).transform(m));
+}
+
+// Street clocks, low down, that keep the same time as the tower's: level,
+// they all agree; in a view tilted up, what is higher is seen later, and the
+// tower's clock, 30 m above them, runs ahead (by a quarter of an hour at 45°,
+// by nearly an hour at 75°, as a day here lasts five minutes).
+//   a cast-iron pillar clock with four faces at the square's end of the avenue
+function pillarClock(b, x, y) {
+  const iron = '#1e2622';
+  const g = new Geo();
+  g.add(Geo.lathe([[0.34, 0], [0.34, 0.2], [0.24, 0.32], [0.2, 0.62], [0.13, 0.78], [0.1, 0.8]], 10, { smooth: false }));
+  g.add(Geo.cylinder(0.1, 2.45, 10, { r2: 0.085, caps: false }).translate(0, 0, 0.8));
+  g.add(Geo.cylinder(0.16, 0.14, 10).translate(0, 0, 1.5));
+  g.add(Geo.lathe([[0.085, 3.2], [0.26, 3.3], [0.26, 3.36]], 10, { smooth: false }));
+  g.add(Geo.box(0.9, 0.9, 0.98).translate(0, 0, 3.36 + 0.49));
+  g.add(Geo.box(1.02, 1.02, 0.1).translate(0, 0, 4.39));
+  g.add(Geo.cone(0.62, 0.42, 4).rotateZ(Math.PI / 4).translate(0, 0, 4.44));
+  g.add(Geo.sphere(0.07, 6, 4).translate(0, 0, 4.92));
+  b.static(g.color(iron).gloss(0.35).translate(x, y, 0));
+  b.static(Geo.sphere(0.06, 6, 4).translate(x, y, 4.99).color('#d9a842').gloss(0.8), { within: 40, solid: false });
+  for (let k = 0; k < 4; k++) clockFaceAt(b, m4.mul(m4.translation(x, y, 3.85), m4.rotationZ(k * Math.PI / 2), m4.translation(0, -0.455, 0)), 0.36, 24);
+}
+
+//   a clock on an iron bracket over the pavement, its two faces along the street
+function bracketClock(b, x, y, z, out) {
+  const iron = '#1e2622';
+  const tip = y - out * 1.25;
+  addBoxes([[beamM([x, y, z + 0.55], [x, tip, z + 0.55], 0.06), iron], [beamM([x, y, z - 0.2], [x, tip + out * 0.55, z + 0.5], 0.04), iron],
+    [boxM(0.05, 0.05, 0.12, x, tip + out * 0.25, z + 0.5), iron]]);
+  const c = [x, tip + out * 0.25, z];
+  b.static(Geo.cylinder(0.43, 0.2, 20).rotateY(Math.PI / 2).translate(c[0] - 0.1, c[1], c[2]).color(iron).gloss(0.35));
+  for (const s of [-1, 1]) clockFaceAt(b, m4.mul(m4.translation(c[0] + s * 0.1, c[1], c[2]), m4.rotationZ(s * Math.PI / 2)), 0.36, 24);
 }
 
 function clockTower(b) {
@@ -2118,6 +2245,46 @@ function cityWall(b, rand) {
     b.static(metricUV(t).color(col).mat(MAT.STONE));
     b.static(Geo.cone(4.9, 6, 16).translate(x, yy, 13).color('#7b402d'));
   }
+}
+
+// The stair up the inside of the city wall (see WALK and STAIR): fifty steps
+// of 18 cm in a solid block of masonry, whose stepped edge shows from the
+// yard through an iron railing along its open side; a parapet across the end
+// of its landing; and a timber railing along the inner edge of the wall's
+// top, open where the stair comes up.  All of it solid, so that nobody walks
+// off by mistake (the rails are within a walker's height); and a tree in the
+// yard.
+function wallStair(b) {
+  const { y0, y1, y2 } = STAIR, n = 50, r = WALK.z / n, L = (y1 - y0) / n;
+  // the block: its profile in (y, z), extruded across x
+  const steps = [[y0, 0]];
+  for (let k = 0; k < n; k++) steps.push([y0 + k * L, (k + 1) * r], [y0 + (k + 1) * L, (k + 1) * r]);
+  steps.push([y2, WALK.z], [y2, 0]);
+  const g = Geo.extrude(steps, STAIR.x1 - STAIR.x0).transform(m4.fromBasis([0, 1, 0], [0, 0, 1], [1, 0, 0], [STAIR.x0, 0, 0]));
+  g.add(Geo.box(STAIR.x1 - STAIR.x0, 0.35, 1).translate((STAIR.x0 + STAIR.x1) / 2, y2 - 0.175, WALK.z + 0.5));
+  b.static(metricUV(g).color('#b5a98c').mat(MAT.STONE));
+  // the iron railing: a post on every fifth step, a handrail and a rail half
+  // way down; and the railing on the wall: posts every 2 m, the same two
+  // rails.  (One mesh with the stair, not copies of the plain boxes: a group
+  // of those of its own would be a draw call more in the shadow maps.)
+  const rails = new Geo();
+  const bar = (m, c) => rails.add(Geo.box(1, 1, 1).transform(m).color(c));
+  const iron = '#262a2c', xr = STAIR.x1 - 0.06;
+  for (let k = 2; k < n; k += 5) bar(boxM(0.05, 0.05, 1, xr, y0 + (k + 0.5) * L, (k + 1) * r + 0.5), iron);
+  for (const y of [y1 + 1, y2 - 0.4]) bar(boxM(0.05, 0.05, 1, xr, y, WALK.z + 0.5), iron);
+  for (const h of [0.5, 1]) {
+    bar(beamM([xr, y0 + 1.5 * L, 2 * r + h], [xr, y1, WALK.z + h], 0.045), iron);
+    bar(beamM([xr, y1, WALK.z + h], [xr, y2 - 0.35, WALK.z + h], 0.045), iron);
+  }
+  const wood = '#5a4030', x = WALK.x1 - 0.1, top = WALK.z + 1;
+  for (const [a, c] of [[WALK.y0 + 0.2, y1 - 2], [y2, WALK.y1 - 4.5]]) {
+    const k = Math.round((c - a) / 2);
+    for (let i = 0; i <= k; i++) bar(boxM(0.1, 0.1, 1, x, a + (c - a) * i / k, WALK.z + 0.5), wood);
+    bar(boxM(0.08, c - a, 0.07, x, (a + c) / 2, top - 0.035), wood);
+    bar(boxM(0.05, c - a, 0.05, x, (a + c) / 2, WALK.z + 0.5), wood);
+  }
+  b.static(rails.gloss(0.3));
+  b.static(tree(rng(1210), 7).translate(-218.5, 23, 0));
 }
 
 // Background blocks of houses behind the frontages, round courtyards.
@@ -2611,10 +2778,13 @@ function trams(b) {
 
 // Things that come in along an open route, cross the town and leave again:
 // one every `every` seconds, each existing from its start to its end.
-// Whatever `make(rand, speed)` returns may carry small parts in `.detail`:
-// they go with it all the way, drawn from `within` metres; and a movement of
-// its own that repeats in `.gait` (see moving()).
-function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 0, within = 12 }) {
+// Whatever `make(rand, speed, kid)` returns may carry small parts in
+// `.detail`: they go with it all the way, drawn from `within` metres; and a
+// movement of its own that repeats in `.gait` (see moving()).  With `pairs`,
+// every other one is two, side by side at the same pace (now and then a
+// grown-up and a child, `kid`): people in twos never walk through one
+// another, as people walking each at their own pace along one line would.
+function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 0, within = 12, pairs = false }) {
   const path = new Path(pts.map((p) => [p[0], p[1], 0]));
   const n = Math.max(1, Math.round(P / every));
   for (let i = 0; i < n; i++) {
@@ -2622,9 +2792,15 @@ function travellers(b, rand, pts, { speed, every, make, size, lift = 0, start = 
     const v = speed * rand.range(0.97, 1.03);
     const d = path.length / v;
     const tf = follow(path, { speed: v, offset: -v * t0, span: size * 1.5, lift });
-    const geo = make(rand, v);
     const times = adaptiveTimes(tf, t0, t0 + d, { size, tolerance: 0.1, maxStep: 40 });
-    moving(b, geo, { times, transform: tf, caps: 'both' }, within);
+    if (!pairs || i % 2 === 0) {
+      moving(b, make(rand, v), { times, transform: tf, caps: 'both' }, within);
+      continue;
+    }
+    const kid = rand() < 0.4;
+    for (const side of [-0.33, 0.33]) {
+      moving(b, make(rand, v, kid && side > 0), { times, transform: (t) => m4.mul(tf(t), m4.translation(side, 0, 0)), caps: 'both' }, within);
+    }
   }
 }
 
@@ -2740,6 +2916,60 @@ function carouselHorses(b) {
   }
 }
 
+// Balloons: a seller in the square, west of the tower, with a bunch of them on
+// strings; and once a minute a cloud of them let go from the town hall's
+// balcony, rising over the roofs at 1.75 to 2.15 m/s (each at its own speed,
+// so that the cloud spreads as it goes) and drifting north on the breeze.  A
+// straight rise needs only two keys.  In a view tilted up a balloon is seen
+// the later the higher it is, so the cloud is drawn out upwards; between 78°
+// and 80°, where 10 m/s over the tangent is a balloon's own speed, the slice
+// runs along its ascent, and seen from a moment or two before a release the
+// cloud is a sheaf of long coloured threads.  (The speeds are kept close for
+// that: the further a balloon's is from that of the slice, the shorter its
+// thread.)
+const BALLOON_COLS = ['#d8402f', '#f2c12e', '#2f6fb3', '#3c9a5a', '#e07a2a', '#d84a8a', '#f4f1e8', '#7a4ab0'];
+function balloon(col) {
+  const g = lowSphere(0.17, 7, 5).scale(1, 1, 1.2).translate(0, 0, 0.23).color(col).gloss(0.55);
+  return g.add(Geo.cone(0.035, 0.05, 4).color(col));
+}
+// (Each cloud goes up as five groups of eight, a group one mesh with one
+// speed and drift, its balloons let go at places of their own along the
+// balcony: every moving thing costs the renderer something in every pass,
+// however small.  They are plain, as they are never seen from closer than
+// 30 m or so, cast no shadow, which nobody could see from that height, and
+// are drawn from 180 m, beyond which a balloon is less than a pixel or two.)
+function balloonRelease(b) {
+  const r = rng(7177);
+  for (const t0 of [20, 80]) {
+    for (let k = 0; k < 5; k++) {
+      const v = 1.75 + 0.1 * k + r.range(-0.03, 0.03), a = r.range(0.3, 0.7) * Math.PI, drift = r.range(0.3, 0.8);
+      const g = new Geo();
+      for (let i = 0; i < 8; i++) g.add(lowSphere(0.17, 5, 3).scale(1, 1, 1.2).translate(SQ - 3.3 + r.range(-0.3, 0.3), r.range(-15, 15), 7.43 + r.range(0, 0.6)).color(r.pick(BALLOON_COLS)).gloss(0.55));
+      const t1 = t0 + 0.3 * k, t2 = t1 + 85 / v;
+      const tf = (t) => m4.translation(Math.cos(a) * drift * (t - t1), Math.sin(a) * drift * (t - t1), v * (t - t1));
+      b.dynamic(g.noShadow(), { times: [t1, t2], transform: tf, caps: 'both', within: 180 });
+    }
+  }
+}
+function balloons(b, at) {
+  const r = rng(6061);
+  const [bx, by] = at;
+  const seller = placePerson(person(r, { scale: 1.02 }), m4.mul(m4.translation(bx, by, 0), m4.rotationZ(Math.PI / 2)));
+  b.static(seller);
+  b.static(seller.detail, { within: 16, solid: false });
+  // the bunch, its strings gathered in the seller's right hand
+  const hand = [bx, by + 0.24, 0.95];
+  const bunch = new Geo();
+  for (let i = 0; i < 11; i++) {
+    const a = i * 2.4, rr = 0.12 + 0.3 * Math.sqrt((i + 0.5) / 11);
+    const knot = [hand[0] + rr * Math.cos(a), hand[1] + rr * Math.sin(a), 2.25 + 0.5 * ((i * 0.618) % 1)];
+    bunch.add(balloon(r.pick(BALLOON_COLS)).rotateX(r.range(-0.25, 0.25)).rotateY(r.range(-0.25, 0.25)).translate(...knot));
+    bunch.add(beam(hand, knot, 0.007).color('#e8e4da'));
+  }
+  b.static(bunch, { solid: false });
+  balloonRelease(b);
+}
+
 function flags(b) {
   // two flags on the town hall's poles, a wave running out along them every
   // 1.5 s: one round of it as eight poses (80 rounds to the period)
@@ -2775,6 +3005,7 @@ export default {
   viewDistance: 430,
   skyDistance: 520,
   shadowRadii: [40, 240],
+  ground,
   wgsl,
 
   // The music (see "Music" in docs/SCENES.md).
@@ -2830,7 +3061,17 @@ export default {
 
     // ---- houses round the square and along the avenue
     const specials = { cinema: -1, chemists: [] };
-    const extras = (h) => { shopExtras(b, rand, h, specials); houseDetail(b, h); };
+    const extras = (h) => {
+      if (h.gone) {
+        // (a house left out: its extras draw their random numbers all the same, and are dropped)
+        const n = BOXES.length;
+        shopExtras({ static() {} }, rand, h, specials);
+        BOXES.length = n;
+        return;
+      }
+      shopExtras(b, rand, h, specials);
+      houseDetail(b, h);
+    };
     const front = { awnings: 0.35, onHouse: extras };
     // north side, facing south, with a lane at x = 14..19
     row(b, rand, { ...front, start: [-SQ - DEPTH, SQ], nrm: [0, -1], length: 2 * (SQ + DEPTH), gaps: [[SQ + DEPTH + 14, SQ + DEPTH + 19]] });
@@ -2846,7 +3087,9 @@ export default {
     // the avenue, with a side street on each side
     specials.cinema = HOUSE_ID + 9;
     specials.chemists.push(HOUSE_ID + 4);
-    row(b, rand, { ...front, start: [GATE_X, AW], nrm: [0, -1], length: -SQ - DEPTH - GATE_X, gaps: [[78, 84]] });
+    // (its first house, by the gate, is left out: there is a yard there with
+    // the stair up to the wall)
+    row(b, rand, { ...front, start: [GATE_X, AW], nrm: [0, -1], length: -SQ - DEPTH - GATE_X, gaps: [[78, 84]], leave: HOUSE_ID });
     specials.chemists.push(HOUSE_ID + 7);
     row(b, rand, { ...front, start: [-SQ - DEPTH, -AW], nrm: [0, 1], length: -SQ - DEPTH - GATE_X, gaps: [[64, 70]] });
 
@@ -2854,6 +3097,7 @@ export default {
     clockTower(b);
     gate(b);
     cityWall(b, rand);
+    wallStair(b);
     blocks(b, rand);
 
     // ---- street lamps
@@ -2902,6 +3146,8 @@ export default {
     streetFurniture(b);
     groundPigeons(b);
     countryside(b, rand);
+    pillarClock(b, -20, 0);
+    bracketClock(b, -196, AW, 5.0, 1);
 
     // ---- tram rails
     const rails = densify(TRAM_PTS, 10, true);
@@ -2928,11 +3174,13 @@ export default {
     trams(b);
     travellers(b, rand, R_BIKE_IN, { speed: 4.6, every: 8, make: cyclist, size: 0.9 });
     travellers(b, rand, R_BIKE_OUT, { speed: 4.6, every: 8, make: cyclist, size: 0.9, start: 4 });
-    R_WALK.forEach((r, i) => travellers(b, rand, r, { speed: 1.35, every: 12, make: (rr, v) => person(rr, { scale: rr.range(0.9, 1.07), walk: v }), size: 0.4, start: i * 2.2 }));
+    R_WALK.forEach((r, i) => travellers(b, rand, r, { speed: 1.35, every: P / 7, pairs: true, make: (rr, v, kid) => person(rr, { scale: rr.range(0.9, 1.07), walk: v, kid }), size: 0.4, start: i * 2.2 }));
     walkersRoundTower(b, rand);
     birds(b, rand);
     fountainJets(b);
     carouselHorses(b);
     flags(b);
+    // (last, so that the figures of the town draw their looks as they always did)
+    balloons(b, [-16.5, -7]);
   },
 };

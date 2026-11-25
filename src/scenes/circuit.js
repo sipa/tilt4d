@@ -14,8 +14,15 @@
 //
 // Gulls wheel over the straight and the beach, gliding and now and then
 // beating their wings; the flags on the grandstand and the marshals' huts
-// wave, and the yachts and the dinghy at the jetty rock in the swell:
-// movements that repeat, stored as the poses of one round (`cycle`).
+// wave in the sea breeze, the wind turbines on the ridge face into it, and
+// the yachts and the dinghy at the jetty rock in the swell: movements that
+// repeat, stored as the poses of one round (`cycle`).
+//
+// For the tilt up and down there is height that moves: three jets loop over
+// the bay every 80 s trailing smoke, rising and falling at up to 78 m/s and
+// slowing over the top, so that a view tilted up draws their loop out and
+// shows its top further on than its foot; and the turbines' blades, 60 m
+// from tip to tip, bend.
 //
 // Detail for close inspection (on foot, or driving alongside) is mostly
 // painted by the shader from uv, tags and the copies' numbers: the cars'
@@ -55,6 +62,7 @@ const GAL_SP = 8, GAL_N = 25, GAL_V = 60, GAL_CYCLE = 2, GAL_ON = 0.3;
 const CHASE_V = 30, CHASE_SP = 90;
 const BEAM_T = 12;            // lighthouse revolution, seconds
 const S_LINE = 330;           // start/finish line, metres from the start of the straight
+const SPAWN_S = 125, SPAWN_T = 30;   // the player starts this far along the straight, at this time
 
 const MAT = {
   TERRAIN: 1, ROAD: 2, VERGE: 3, SEA: 4, DISPLAY: 5, LAMP: 6, BEAM: 7, CHASE: 8,
@@ -64,6 +72,7 @@ const MAT = {
   TRAIN_CAB: 27, TRAIN_END: 28, BOGIE: 29, LOCO: 30, CONTAINER: 31,
   LADDER: 32, MARKER: 33, RAILING: 34, TYRES: 35, CONE: 36, FENCE: 37,
   BASKET: 38, FLAME: 39, GONDOLA: 40, HULL: 41, PLANKS: 42, ARMCO: 43, CHEVRON: 44, SAIL: 45, ROOF: 46, CAR_BONNET: 47,
+  SMOKE: 48, GALLERY: 49, CANOPY: 50,
 };
 
 // ------------------------------------------------------------------ noise
@@ -273,6 +282,82 @@ const onTrack = (s, u) => {
   const f = frameAt(s);
   return [f.p[0] + f.r[0] * u, f.p[1] + f.r[1] * u];
 };
+
+// ------------------------------------------------------------------ air display
+// Three jets fly a circuit of their own over the sea, three rounds a period:
+// north along a line 260 m offshore at 80 m, pulling up on the way into a
+// loop 280 m high, abreast of the straight and seen from its start beside
+// the first timing board, round to the east in a banked turn, south further
+// out and back round.  The smoke is on from 300 m before the loop to 200 m
+// after it.
+const AIR = { x: 720, z: 80, yS: -900, yLoop: 100, yN: 900, r: 140, turn: 400, life: 28 };
+AIR.legs = [AIR.yLoop - AIR.yS, 2 * Math.PI * AIR.r, AIR.yN - AIR.yLoop, Math.PI * AIR.turn, AIR.yN - AIR.yS, Math.PI * AIR.turn];
+AIR.len = AIR.legs.reduce((a, l) => a + l, 0);
+AIR.lap = PERIOD / 3;
+AIR.on = AIR.legs[0] - 300;
+AIR.off = AIR.legs[0] + AIR.legs[1] + 200;
+// They keep their speed on the level and trade some of it for height in the
+// loop, coming over the top at two thirds of it: a table of when the leader
+// passes each point of a round, counted from the round's start (AIR.tAt), and
+// where it is at a given moment of a round (AIR.dAt).
+{
+  const n = Math.ceil(AIR.len / 2), T = new Float64Array(n + 1);
+  const pace = (d) => {
+    const e = d - AIR.legs[0];
+    return e > 0 && e < AIR.legs[1] ? Math.sqrt(1 - 0.56 * (1 - Math.cos(e / AIR.r)) / 2) : 1;
+  };
+  for (let i = 1; i <= n; i++) T[i] = T[i - 1] + 1 / pace(AIR.len * (i - 0.5) / n);
+  const k = AIR.lap / T[n];
+  AIR.v = AIR.len / n / k;                                    // 91 m/s on the level, 60 over the top
+  AIR.tAt = (d) => {
+    const x = Math.min(n, Math.max(0, d / AIR.len * n)), i = Math.min(n - 1, Math.floor(x));
+    return k * (T[i] + (T[i + 1] - T[i]) * (x - i));
+  };
+  AIR.dAt = (t) => {
+    const tt = (((t % AIR.lap) + AIR.lap) % AIR.lap) / k;
+    let lo = 0, hi = n;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (T[m] <= tt) lo = m; else hi = m; }
+    return AIR.len / n * (lo + (tt - T[lo]) / (T[lo + 1] - T[lo]));
+  };
+}
+AIR.bank = Math.atan(AIR.v * AIR.v / (9.81 * AIR.turn));    // 64 degrees in the turns
+// a round starts at this time, which puts the leader at the top of the loop at the spawn's moment
+AIR.t0 = SPAWN_T - AIR.tAt(AIR.legs[0] + AIR.legs[1] / 2);
+// Where the leader is d metres along the circuit: its position, heading and up.
+function airAt(d) {
+  const A = AIR;
+  d = ((d % A.len) + A.len) % A.len;
+  const level = (p, fwd) => ({ p: [p[0], p[1], A.z], fwd, up: [0, 0, 1] });
+  // banked towards the middle of a turn, rolling in and out over its first and last 20 degrees
+  const banked = (p, fwd, inward, f) => {
+    const b = A.bank * smoothstep(0, 0.35, f) * (1 - smoothstep(Math.PI - 0.35, Math.PI, f));
+    return { p: [p[0], p[1], A.z], fwd, up: [inward[0] * Math.sin(b), inward[1] * Math.sin(b), Math.cos(b)] };
+  };
+  const [l0, l1, l2, l3, l4] = A.legs;
+  if (d < l0) return level([A.x, A.yS + d], [0, 1, 0]);
+  d -= l0;
+  if (d < l1) {
+    const f = d / A.r, c = Math.cos(f), s = Math.sin(f);
+    return { p: [A.x, A.yLoop + A.r * s, A.z + A.r * (1 - c)], fwd: [0, c, s], up: [0, -s, c] };
+  }
+  d -= l1;
+  if (d < l2) return level([A.x, A.yLoop + d], [0, 1, 0]);
+  d -= l2;
+  if (d < l3) {
+    const f = d / A.turn, c = Math.cos(f), s = Math.sin(f);
+    return banked([A.x + A.turn * (1 - c), A.yN + A.turn * s], [s, c, 0], [c, -s], f);
+  }
+  d -= l3;
+  if (d < l4) return level([A.x + 2 * A.turn, A.yN - d], [0, -1, 0]);
+  d -= l4;
+  const f = d / A.turn, c = Math.cos(f), s = Math.sin(f);
+  return banked([A.x + A.turn * (1 + c), A.yS - A.turn * s], [-s, -c, 0], [-c, s], f);
+}
+// the jets fly abreast, 16 m apart: where jet j (-1, 0, 1) is d metres along
+function airJet(d, j) {
+  const { p, fwd, up } = airAt(d), right = v3.cross(fwd, up);
+  return { p: v3.add(p, v3.scale(right, 16 * j)), fwd, up, right };
+}
 
 // ------------------------------------------------------------------ terrain grid
 
@@ -752,9 +837,13 @@ function boatGeo(sail) {
 
 const f = (v) => { const s = Number(v).toFixed(4); return s; };
 const LH = [640, 1140];
+const GAL_F = frameAt(GAL0);   // the gallery stands on a straight: its start and heading
 
 const wgsl = dayNightEnv({ dayLength: DAY, startHour: START_HOUR, sunTilt: 0.55, fog: FOG, clouds: 0.35, zenith: '#3b7fcf', horizon: '#c4dbe8' }) + /* wgsl */ `
 const S_LINE = ${f(S_LINE)};
+const MAIN_LEN = ${f(MAIN_LEN)};
+const GAL_P = vec2f(${f(GAL_F.p[0])}, ${f(GAL_F.p[1])});
+const GAL_T = vec2f(${f(GAL_F.t[0])}, ${f(GAL_F.t[1])});
 const GAL0 = ${f(GAL0)};
 const GAL1 = ${f(GAL1)};
 const GAL_SP = ${f(GAL_SP)};
@@ -769,6 +858,9 @@ const LH = vec2f(${f(LH[0])}, ${f(LH[1])});
 const BEAM_T = ${f(BEAM_T)};
 const RAIL_X = ${f(RAIL_X)};
 const PERIOD = ${f(PERIOD)};
+const AIR_LAP = ${f(AIR.lap)};
+const AIR_ON_T = ${f(AIR.t0 + AIR.tAt(AIR.on))};
+const AIR_LIFE = ${f(AIR.life)};
 const CAR_SPOKE_ROUNDS = ${f(WHEEL_ROUNDS.car)};
 const BUS_STUD_ROUNDS = ${f(WHEEL_ROUNDS.bus)};
 
@@ -814,6 +906,28 @@ fn trackLight(u: f32, v: f32, t: f32) -> vec3f {
 fn groundDetail(p: vec2f, dist: f32) -> f32 {
   let near = 1.0 - smoothstep(60.0, 400.0, dist);
   return 0.86 + 0.26 * fbm2(p * 0.035) + 0.16 * (noise2(p * 0.9) - 0.5) * near;
+}
+
+// The plain and the lower hills are farmed: a patchwork of fields about 90 by
+// 60 m on a grid turned a little off north, each stubble, ploughed earth,
+// vines in rows 2.5 m apart, or left as it is, with a darker hedge along its
+// edges.  The vines' rows blend into their average from 100 m on.
+fn fields(p: vec2f, dist: f32, c: vec3f) -> vec3f {
+  let q = mat2x2f(0.94, -0.34, 0.34, 0.94) * p;
+  let g = q / vec2f(90.0, 60.0);
+  let f = fract(g);
+  let h = hash21(floor(g) + 31.0);
+  if (h > 0.55) { return c; }
+  var col = vec3f(0.44, 0.37, 0.19) * (0.94 + 0.12 * step(0.5, fract(q.x / 3.0)) * (1.0 - smoothstep(40.0, 120.0, dist)));
+  if (h > 0.4) {
+    let row = abs(fract(q.y / 2.5) - 0.5) * 2.0;
+    let leaf = mix(smoothstep(0.55, 0.25, row), 0.45, smoothstep(40.0, 100.0, dist));
+    col = mix(vec3f(0.44, 0.35, 0.22), vec3f(0.27, 0.36, 0.14), leaf);
+  } else if (h > 0.25) {
+    col = vec3f(0.37, 0.27, 0.18) * (0.9 + 0.2 * step(0.5, fract(q.x / 1.2)) * (1.0 - smoothstep(30.0, 80.0, dist)));
+  }
+  let edge = min(min(f.x, 1.0 - f.x) * 90.0, min(f.y, 1.0 - f.y) * 60.0);
+  return mix(vec3f(0.24, 0.29, 0.15), col, smoothstep(0.8, 2.2, edge));
 }
 
 fn waveGrad(p: vec2f, d: vec2f, k: f32, w: f32, t: f32) -> vec2f {
@@ -893,6 +1007,17 @@ fn cutout(s: Surface) -> f32 {
   // show the holes well, its 50 cm ones further out do not)
   let fine = select(vec2f(0.085, 0.17), vec2f(0.25, 0.45), s.dist <= 0.0);
   return mix(saturate(0.5 + d / 0.03), 1.0, smoothstep(fine.x, fine.y, pf));
+}
+
+// The underside of a roof (the grandstand's, the gallery's), which the sky
+// does not reach: lit by the sunlit road and land below it, with a beam
+// across it every 10 m along the track (v, in metres).
+fn underside(sIn: Surface, v: f32) -> Surface {
+  var s = sIn;
+  let bv = abs(fract(v / 10.0 + 0.5) - 0.5) * 10.0;
+  s.color = mix(vec3f(0.62, 0.6, 0.56), vec3f(0.3, 0.29, 0.27), aaBand(bv, 0.3, 0.05));
+  s.light += vec3f(0.9, 0.86, 0.78) * (0.3 * envDaylight(s.t));
+  return s;
 }
 
 // ---- vehicles: painted detail (see carGeo and busGeo)
@@ -1349,6 +1474,9 @@ fn surface(sIn: Surface) -> Surface {
   let lift = select(max(s.aux, 0.0), 0.0, m == ${MAT.SEA}u) * 100.0;
   s.sun *= landSunAt(s.pos, envSun(s.t).dir, lift);
   if (m == ${MAT.TERRAIN}u || m == ${MAT.VERGE}u) {
+    if (m == ${MAT.TERRAIN}u && s.n.z > 0.97 && s.pos.z > 3.5 && s.pos.z < 45.0 && coastX(s.pos.y) - s.pos.x > 110.0) {
+      s.color = fields(s.pos.xy, s.dist, s.color);
+    }
     s.color *= groundDetail(s.pos.xy, s.dist);
     s.color *= 1.0 - 0.3 * (1.0 - smoothstep(0.15, 1.1, s.pos.z));
     if (m == ${MAT.VERGE}u) { s.light += trackLight(s.uv.x, s.uv.y, s.t) * smoothstep(15.0, 10.5, abs(s.uv.x)); }
@@ -1368,9 +1496,35 @@ fn surface(sIn: Surface) -> Surface {
     let v = s.uv.y;
     let au = abs(u);
     let grain = noise2(s.pos.xy * 1.7) * 0.5 + noise2(s.pos.xy * 0.21) * 0.5;
+    let near = 1.0 - smoothstep(30.0, 90.0, s.dist);
+    let lanes = step(au, 6.0);
     var col = vec3f(0.085, 0.088, 0.094) * (0.82 + 0.36 * grain);
-    col *= 1.0 - 0.13 * aaBand(fract(au / 3.0) - 0.5, 0.16, 0.08) * step(au, 6.0);
+    // each lane is darker and polished where the wheels run, two bands
+    // either side of its middle, and stained with oil down the middle
+    let lane = fract(au / 3.0) * 3.0 - 1.5;
+    let wheels = aaBand(abs(lane) - 0.85, 0.3, 0.2) * lanes;
+    col *= 1.0 - 0.3 * wheels - 0.12 * aaBand(lane, 0.25, 0.15) * lanes;
+    var gl = 0.16 + 0.14 * wheels;
+    // here and there a length of a lane has been relaid, newer and darker or
+    // older and paler than the rest, inside a seam of tar
+    let h = hash21(vec2f(floor(u / 3.0), floor(v / 23.0)) + 13.7);
+    if (h > 0.84 && au < 6.0) {
+      let pu = fract(u / 3.0) * 3.0;
+      let pv = fract(v / 23.0) * 23.0;
+      let e = min(min(pu - 0.3, 2.7 - pu), min(pv - 1.5, 5.5 + 14.0 * fract(h * 7.3) - pv));
+      col = select(col, select(vec3f(0.025), col * select(0.75, 1.22, fract(h * 13.1) > 0.5), e > 0.0), e > -0.04);
+    }
+    // sealed cracks wandering across it, in places, seen from near by
+    let crack = abs(noise2(vec2f(u * 0.9, v * 0.3)) - 0.5) + 0.04 * step(noise2(s.pos.xy * 0.04), 0.5);
+    col *= 1.0 - 0.55 * near * (1.0 - smoothstep(0.004, 0.009, crack));
+    // black tyre marks along the wheel bands where cars brake for a bend
+    if (au < 6.0 && max(kerbZone, step(MAIN_LEN - 170.0, v) * step(v, MAIN_LEN)) > 0.5) {
+      col *= 1.0 - 0.6 * wheels * smoothstep(0.45, 0.6, noise2(vec2f(u * 3.0, v * 0.08)));
+    }
+    // the shoulder: paler, ribbed beside the edge line, dusty out by the verge
     col = mix(col, vec3f(0.115, 0.112, 0.108) * (0.85 + 0.3 * grain), step(6.0, au));
+    col *= 1.0 - 0.25 * near * step(6.05, au) * step(au, 6.55) * step(0.65, fract(v / 0.3));
+    col = mix(col, vec3f(0.2, 0.18, 0.14), smoothstep(7.6, 9.0, au) * (0.3 + 0.5 * noise2(s.pos.xy * 0.4)));
     let fu = max(fwu.x, 0.003);
     var mk = aaBand(au - 5.85, 0.1, fu);
     mk = max(mk, aaBand(au - 3.0, 0.075, fu) * step(fract(v / 12.0), 0.5));
@@ -1396,7 +1550,7 @@ fn surface(sIn: Surface) -> Surface {
       col = mix(vec3f(0.02), vec3f(0.85), ch);
     }
     s.color = col;
-    s.gloss = 0.16;
+    s.gloss = gl;
     s.light += trackLight(u, v, s.t);
   } else if (m == ${MAT.SEA}u) {
     let p = s.pos.xy;
@@ -1651,6 +1805,32 @@ fn surface(sIn: Surface) -> Surface {
   } else if (m == ${MAT.CHECKER}u) {
     let c = fract((floor(s.uv.x * 6.0) + floor(s.uv.y * 4.0)) * 0.5) * 2.0;
     s.color = mix(vec3f(0.02), vec3f(0.9), c);
+  } else if (m == ${MAT.GALLERY}u) {
+    // the covered gallery, cast in 10 m sections: lit inside by its own
+    // lamps, its sections' joints, and a band of dark tiles along the foot
+    // of the walls, which the spray from the road keeps dirty
+    let d = s.pos.xy - GAL_P;
+    let v = GAL0 + dot(d, GAL_T);
+    let u = dot(d, vec2f(GAL_T.y, -GAL_T.x));
+    s.light += trackLight(u, v, s.t) * 1.6;
+    if (s.n.z < -0.5) { s = underside(s, v); }
+    let jv = abs(fract((v - GAL0) / 10.0 + 0.5) - 0.5) * 10.0;
+    s.color *= 1.0 - 0.45 * aaBand(jv, 0.04, 0.02);
+    // (aux: the height above the road, in hundreds of metres)
+    if (abs(s.n.z) < 0.5 && abs(u) > 11.0 && s.aux < 0.012) { s.color = vec3f(0.12, 0.13, 0.13); s.gloss = 0.5; }
+  } else if (m == ${MAT.CANOPY}u) {
+    if (s.n.z < -0.5) { s = underside(s, s.pos.y * 4.0 / 3.0); }
+  } else if (m == ${MAT.SMOKE}u) {
+    // a jet's smoke trail (uv.x across it, -1..1 over 18 m; uv.y the seconds
+    // after the smoke came on that this part of it was laid): there from the
+    // moment the jet passes, spreading from 3 m across to 16 m and fading
+    // out over AIR_LIFE seconds, in puffs that drift apart
+    let ago = s.t - AIR_ON_T - s.uv.y;
+    let k = saturate((ago - floor(ago / AIR_LAP) * AIR_LAP) / AIR_LIFE);
+    let w = (1.5 + 6.5 * sqrt(k)) / 9.0;
+    let puff = 0.7 + 0.6 * noise2(vec2f(s.uv.x * 2.5 + 7.0 * k, s.uv.y * 6.0));
+    s.alpha = saturate((1.0 - smoothstep(w * 0.3, w, abs(s.uv.x))) * (1.0 - smoothstep(0.35, 1.0, k)) * puff);
+    s.gloss = 0.0;
   }
   return s;
 }
@@ -1658,7 +1838,6 @@ fn surface(sIn: Surface) -> Surface {
 
 // ------------------------------------------------------------------ scene
 
-const SPAWN_S = 125, SPAWN_T = 30;
 const spawnXY = onTrack(SPAWN_S, 4.5);
 
 export default {
@@ -2039,7 +2218,8 @@ export default {
         }
       }
 
-      // marshals' posts on the right, each with a green flag in the wind
+      // marshals' posts on the right, each with a green flag in the sea
+      // breeze, flying west towards the road
       const hut = Geo.merge(
         Geo.box(2.2, 2.2, 2.3).translate(0, 0, 1.15).color('#e9e4d8'),
         Geo.box(2.6, 2.6, 0.15).translate(0, 0, 2.38).color('#c0392b'),
@@ -2051,7 +2231,7 @@ export default {
         for (let j = 0; j <= 1; j++) {
           for (let i = 0; i <= nx; i++) {
             const a = i / nx;
-            g.vert(0.25 * a * Math.sin(a * 5 - ph * Math.PI * 2), -a * L, -j * H, 1, 0, 0, a, 1 - j);
+            g.vert(-a * L, 0.25 * a * Math.sin(a * 5 - ph * Math.PI * 2), -j * H, 0, 1, 0, a, 1 - j);
           }
         }
         for (let i = 0; i < nx; i++) g.quadIdx(i, i + 1, i + nx + 2, i + nx + 1);
@@ -2071,7 +2251,7 @@ export default {
         const fm = m4.mul(m, m4.translation(-1.4, 0, 5.1));
         b.dynamic(flagCloth, {
           times: [0, PERIOD], transform: () => fm, caps: 'none', within: 150,
-          cycle: { period: PERIOD / Math.round(PERIOD / 0.85), keys: 8, start: s * 0.01 },
+          cycle: { period: PERIOD / Math.round(PERIOD / 0.85), keys: 6, start: s * 0.01 },
         });
       }
 
@@ -2147,16 +2327,16 @@ export default {
         roof.add(Geo.box(0.5, 0.5, 15.4).translate(-38.6, y, 7.7));
       }
       b.static(stand.mat(MAT.CROWD), { transform: m });
-      b.static(roof.color('#e7e3da').gloss(0.3), { transform: m });
-      // flags along the roof's front edge, flying south in the breeze (the
-      // wave runs along the flag only, so one row of quads makes it)
+      b.static(roof.color('#e7e3da').gloss(0.3).mat(MAT.CANOPY), { transform: m });
+      // flags along the roof's front edge, flying west, inland, in the sea
+      // breeze (the wave runs along the flag only, so one row of quads makes it)
       const flag = (color, mat) => (ph) => {
         const g = new Geo(), nx = 6, nz = 1, L = 3.2, H = 2.0;
         for (let j = 0; j <= nz; j++) {
           for (let i = 0; i <= nx; i++) {
-            const a = i / nx, y = -a * L;
-            const x = 0.45 * a * Math.sin(a * 5.5 - ph * Math.PI * 2) ;
-            g.vert(x, y, -j / nz * H, 1, 0, 0, a, 1 - j / nz);
+            const a = i / nx, x = -a * L;
+            const y = 0.45 * a * Math.sin(a * 5.5 - ph * Math.PI * 2);
+            g.vert(x, y, -j / nz * H, 0, 1, 0, a, 1 - j / nz);
           }
         }
         for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const a = j * (nx + 1) + i; g.quadIdx(a, a + 1, a + nx + 2, a + nx + 1); }
@@ -2171,11 +2351,12 @@ export default {
         const pm = m4.mul(m, m4.translation(-17.6, y, 15.6));
         b.static(Geo.cylinder(0.07, 5.2, 5, { caps: false }).color('#ddd'), { transform: pm });
         const fm = m4.mul(pm, m4.translation(0, -0.05, 5.1));
-        // each waves at a pace of its own: a cycle of eight poses, a whole
-        // number of rounds in the period
+        // each waves at a pace of its own: a cycle of six poses, a whole
+        // number of rounds in the period (flying along the way a view is
+        // tilted, a flag's waving is drawn the more steps of it at a time)
         const round = PERIOD / Math.round(PERIOD / (0.9 + 0.07 * k));
         b.dynamic(flag(cols[k], k === 4 || k === 5 ? MAT.CHECKER : 0), {
-          times: [0, PERIOD], transform: () => fm, caps: 'none', cycle: { period: round, keys: 8, start: k * 0.13 },
+          times: [0, PERIOD], transform: () => fm, caps: 'none', cycle: { period: round, keys: 6, start: k * 0.13 },
         });
       }
     }
@@ -2193,14 +2374,14 @@ export default {
         part.add(Geo.box(0.9, 10.05, 7.6).translate(12.2, 0, 3.8));      // solid wall on the hill side (west)
         part.add(Geo.box(1.0, 1.4, 7.6).translate(-12.2, -4.3, 3.8));    // pillars towards the sea
         part.add(Geo.box(1.0, 10.05, 1.2).translate(-12.2, 0, 6.95));    // lintel
-        g.add(part, m);
+        g.add(part.aux((p) => p[2] / 100), m);
       }
       {
         const s = GAL0 + 10 * pieces;
         const m = trackMatrix(s, 0, 0, heightAt(...onTrack(s, 0)) + ROAD_LIFT);
-        g.add(Geo.box(1.0, 1.4, 7.6).translate(-12.2, -0.7, 3.8), m);
+        g.add(Geo.box(1.0, 1.4, 7.6).translate(-12.2, -0.7, 3.8).aux((p) => p[2] / 100), m);
       }
-      b.static(g.color('#cfc6b4').gloss(0.15));
+      b.static(g.color('#cfc6b4').gloss(0.15).mat(MAT.GALLERY));
       const fixtures = new Geo();
       for (let i = 0; i < GAL_N; i++) {
         const s = GAL0 + GAL_SP * (i + 0.5);
@@ -2322,6 +2503,8 @@ export default {
     }
 
     // ---------------------------------------------------------- wind turbines on the western ridge
+    // They face the afternoon's sea breeze, which comes in off the sea from
+    // the east, so that the circuit below sees their rotors face on.
     {
       const towers = new Geo();
       const turbines = [];
@@ -2329,46 +2512,79 @@ export default {
         const y = -760 + 240 * k + rand.range(-30, 30), x = -950 + 30 * Math.sin(k * 1.7);
         const z = groundZ(x, y) - 0.5;
         towers.add(Geo.cylinder(2.1, 64, 10, { r2: 1.3, caps: false }).translate(x, y, z));
-        towers.add(Geo.box(3.2, 9, 3.4).translate(x, y - 1.5, z + 65));
-        turbines.push([x, y + 3.3, z + 65, rand.range(4.6, 5.8), rand.range(0, 2)]);
+        towers.add(Geo.box(9, 3.2, 3.4).translate(x - 1.5, y, z + 65));
+        towers.add(Geo.box(2.6, 2.2, 2.2).translate(x + 3.3, y, z + 65));
+        turbines.push([x + 3.3, y, z + 65, rand.range(4.6, 5.8), rand.range(0, 2)]);
       }
       b.static(aboveLand(towers.color('#eef0f0').gloss(0.3)));
-      const blade = Geo.box(1.9, 0.35, 30).translate(0.35, 0, 16.5);
-      blade.p.forEach((v, i) => { if (i % 3 === 0 && blade.p[i + 2] > 20) blade.p[i] *= 0.55; });
-      const rotor = new Geo();
-      for (let k = 0; k < 3; k++) rotor.add(blade.clone().rotateY(k * 2 * Math.PI / 3));
-      rotor.add(Geo.box(2.2, 2.6, 2.2));
-      rotor.color('#f4f5f3').gloss(0.4);
-      for (const [x, y, z, T, off] of turbines) {
-        // seen from the north (upwind) the rotor turns clockwise; one third of a turn repeats
-        stopMotion(b, (ph) => aboveLand(rotor.clone().rotateY(-ph * 2 * Math.PI / 3).translate(x, y, z)), 40, T / 3, off);
+      // A blade, along +z from the middle of the hub: a thin sheet, widest a
+      // few metres out, narrowing to the tip and twisting on the way (its
+      // chord turns from 16 degrees across the wind at the root to 2 at the
+      // tip).  In four pieces along its length, so that between two of its
+      // poses, 15 degrees apart, it folds by 0.6 m at most (see `cycle` in
+      // the docs): under a pixel from the circuit.  More poses would cost:
+      // a view tilted up by 75 degrees sees a rotor over 7 s of its turning,
+      // and draws every step of it.  For the same reason it casts no shadow,
+      // which would be far off on the ridge: the shadow maps would draw all
+      // those steps again.
+      const blade = new Geo();
+      const stations = [[1.4, 1.7, 0.28], [6, 2.7, 0.2], [13, 2.1, 0.12], [22, 1.3, 0.06], [31.5, 0.45, 0.035]];
+      for (const [r, chord, pitch] of stations) {
+        const c = Math.cos(pitch), sn = Math.sin(pitch);
+        // the leading edge a third of the chord ahead of the spar, the trailing edge the rest behind it
+        blade.vert(-sn * chord * 0.33, c * chord * 0.33, r, c, sn, 0, 0, r / 31.5);
+        blade.vert(sn * chord * 0.67, -c * chord * 0.67, r, c, sn, 1, r / 31.5);
       }
-      // their small parts, from near by: the spinner on the hub (round, so it
-      // need not turn), a door and a transformer at the foot; and on every
-      // nacelle a red warning light, all flashing together, a second on and a second off
+      for (let i = 0; i < stations.length - 1; i++) blade.quadIdx(2 * i, 2 * i + 1, 2 * i + 3, 2 * i + 2);
+      blade.color('#f4f5f3').gloss(0.4).doubleSided().noShadow().aux(0.65);
+      for (const [x, y, z, T, off] of turbines) {
+        // Seen from the east (upwind) the rotor turns clockwise, a whole
+        // number of turns in a period: each blade is the same sheet on the
+        // same round of 24 poses, a third of a turn apart.  Between poses
+        // the renderer fills in the turning, so that a view tilted up or to
+        // the side sees each blade bent: its tip, higher up or further to the
+        // side, is seen at another moment than its root.
+        const round = PERIOD / Math.round(PERIOD / T), place = m4.translation(x, y, z);
+        for (let k = 0; k < 3; k++) {
+          b.dynamic(blade, {
+            times: [0, PERIOD], transform: () => place, caps: 'none',
+            cycle: { period: round, keys: 24, start: off - k * round / 3, transform: (u) => m4.rotationX(-2 * Math.PI * u) },
+          });
+        }
+      }
+      // their small parts, from near by: the spinner on the hub, a door and a
+      // transformer at the foot; and on every nacelle a red warning light,
+      // all flashing together, a second on and a second off
       const lightOff = new Geo(), lightOn = new Geo();
       for (const [x, y, z] of turbines) {
         const d = new Geo();
-        d.add(Geo.cone(1.25, 2.0, 8).rotateX(-Math.PI / 2).translate(x, y + 4.55, z).color('#f4f5f3').gloss(0.4));
-        d.add(Geo.box(1.0, 0.3, 2.2).translate(x, y - 2.08, z - 64.5 + 1.1).color('#7d8a8f'));
-        d.add(Geo.box(2.0, 1.4, 2.0).translate(x + 4.5, y, z - 64.5 + 1.0).color('#c9cdd1'));
+        d.add(Geo.cone(1.25, 2.0, 8).rotateY(Math.PI / 2).translate(x + 1.25, y, z).color('#f4f5f3').gloss(0.4));
+        d.add(Geo.box(1.0, 0.3, 2.2).translate(x - 3.3, y - 2.08, z - 64.5 + 1.1).color('#7d8a8f'));
+        d.add(Geo.box(2.0, 1.4, 2.0).translate(x - 3.3, y + 4.5, z - 64.5 + 1.0).color('#c9cdd1'));
         b.static(aboveLand(d), { within: 200 });
-        lightOff.add(Geo.box(0.45, 0.45, 0.3).translate(x, y - 4.5, z + 1.85).color('#4a0c08'));
-        lightOn.add(Geo.box(0.47, 0.47, 0.32).translate(x, y - 4.5, z + 1.85).color('#ff2a14').emissive(9));
+        lightOff.add(Geo.box(0.45, 0.45, 0.3).translate(x - 7.8, y, z + 1.85).color('#4a0c08'));
+        lightOn.add(Geo.box(0.47, 0.47, 0.32).translate(x - 7.8, y, z + 1.85).color('#ff2a14').emissive(9));
       }
       b.static(aboveLand(lightOff));
       b.static(aboveLand(lightOn), { from: 0, to: 1, period: 2, solid: false });
     }
 
     // ---------------------------------------------------------- trees
-    // Every tree is a copy of one of three: placed, turned and scaled.
+    // Every tree is a copy of one of three: placed, turned and scaled.  The
+    // umbrella pines' crowns are low domes, and each pine leans a little, its
+    // crown a little out of round and its green a shade of its own (from a
+    // random sequence of their own, which leaves where everything stands as it was).
     {
       const pines = [], cyps = [];
       const pine = Geo.merge(
-        Geo.cylinder(0.32, 6.5, 5, { r2: 0.22, caps: false }).color('#5a4636'),
-        Geo.cylinder(3.9, 2.3, 6, { r2: 2.4 }).translate(0, 0, 6.2).color('#3d5628'),
+        Geo.cylinder(0.32, 6.5, 5, { r2: 0.22, caps: false }).color('#5a4636').untinted(),
+        Geo.lathe([[0.45, 0], [3.9, 0.55], [3.3, 1.75]], 6).translate(0, 0, 6.0).color('#3d5628'),
+        Geo.cylinder(3.3, 0.6, 6, { r2: 0, caps: false }).translate(0, 0, 7.75).color('#3d5628'),
       ).gloss(0.08);
-      const cyp = Geo.cone(1.15, 10, 6).color('#2f4527').gloss(0.08);
+      const vary = rng(91);
+      const lean = (kx, ky) => [1, 0, 0, 0, 0, 1, 0, 0, kx, ky, 1, 0, 0, 0, 0, 1];
+      // (a cypress's foot is in the ground: its cone has no base)
+      const cyp = Geo.cylinder(1.15, 10, 6, { r2: 0, caps: false }).color('#2f4527').gloss(0.08);
       const blocked = (x, y) => {
         if (featureDist(x, y) < FLAT - 4) return true;
         if (y > RAIL_S - 400 && y < RAIL_N + 400 && Math.abs(x - RAIL_X) < 18) return true;
@@ -2390,7 +2606,15 @@ export default {
         if (slope > 0.45) continue;
         const sc = rand.range(0.75, 1.25), isPine = rand() < 0.75;
         const sz = sc * rand.range(0.85, 1.15), turn = rand.range(0, 6.28);
-        (isPine ? pines : cyps).push(m4.mul(m4.translation(x, y, z - 0.3), m4.rotationZ(turn), m4.scaling(sc, sc, sz)));
+        if (isPine) {
+          pines.push({
+            transform: m4.mul(m4.translation(x, y, z - 0.3), lean(vary.range(-0.1, 0.1), vary.range(-0.1, 0.1)), m4.rotationZ(turn),
+              m4.scaling(sc * vary.range(0.85, 1.15), sc * vary.range(0.85, 1.15), sz)),
+            tint: [vary.range(0.85, 1.1), vary.range(0.9, 1.12), vary.range(0.8, 1.0)],
+          });
+        } else {
+          cyps.push(m4.mul(m4.translation(x, y, z - 0.3), m4.rotationZ(turn), m4.scaling(sc, sc, sz)));
+        }
         placed++;
       }
       // cypress avenues along the south straight and the gallery approach
@@ -2608,6 +2832,61 @@ export default {
         b.dynamic(boatGeo(bt.sail), { times, transform: tf, caps: 'none', cycle });
         b.dynamic(boatDetailGeo(), { times, transform: tf, caps: 'none', within: 50, cycle });
       }
+    }
+
+    // ---------------------------------------------------------- the far side of the bay
+    // An island 3 km out, which the haze leaves as a pale outline on the
+    // horizon.  (Ships crossing in front of it were tried: something that
+    // moves that slowly so far off lies across a view tilted near 90 degrees
+    // for minutes on end, and doubled what such a view draws.)
+    {
+      const island = Geo.heightfield(2850, -1000, 3750, 1800, 9, 28, (x, y) => {
+        const e = ((x - 3300) / 430) ** 2 + ((y - 400) / 1350) ** 2;
+        return 150 * Math.max(0, 1 - e) ** 1.5 * (0.7 + 0.6 * fbm(x / 300, y / 300)) - 8 * Math.min(1, e);
+      }, (x, y, z) => (z < 2 ? [0.72, 0.66, 0.5] : [0.4, 0.44, 0.27]));
+      b.static(island.mat(MAT.TERRAIN).gloss(0.05));
+    }
+
+    // ---------------------------------------------------------- air display
+    // Three jets abreast (see airAt), each trailing smoke of its own colour
+    // round the loop: two strips crossed along its path, 18 m wide, which the
+    // SMOKE material shows from the moment the jet passes and fades out.
+    {
+      const jet = new Geo();
+      const nose = [0, 5.5, 0.1], tail = [0, -4.6, 0.35], ring = [[0.6, 0.8, 0.1], [0, 0.8, 0.85], [-0.6, 0.8, 0.1], [0, 0.8, -0.5]];
+      for (let k = 0; k < 4; k++) {
+        const a = ring[k], c = ring[(k + 1) % 4];
+        jet.add(Geo.triangle(nose, c, a));
+        jet.add(Geo.triangle(tail, a, c));
+      }
+      const sheets = new Geo();
+      for (const sx of [-1, 1]) {
+        sheets.add(Geo.quad([sx * 0.5, 1.8, 0.05], [sx * 0.5, -1.4, 0.05], [sx * 4.2, -1.9, 0], [sx * 4.2, -0.9, 0]));
+        sheets.add(Geo.triangle([sx * 0.3, -3.0, 0.3], [sx * 0.3, -4.4, 0.3], [sx * 1.9, -4.3, 0.3]));
+      }
+      sheets.add(Geo.triangle([0, -2.6, 0.6], [0, -4.6, 0.4], [0, -4.4, 2.5]));
+      jet.color('#2257a8').add(sheets.color('#2257a8').doubleSided());
+      jet.gloss(0.5).noShadow();
+      const smoke = new Geo();
+      ['#d83a2e', '#f4f4f0', '#2f6fd0'].forEach((hex, i) => {
+        const j = i - 1, col = parseHex(hex);
+        const tf = (t) => { const q = airJet(AIR.dAt(t - AIR.t0), j); return m4.facing(q.p, q.fwd, q.up); };
+        b.dynamic(jet, { times: adaptiveTimes(tf, 0, PERIOD, { tolerance: 0.25, size: 5, maxStep: 8, minStep: 0.02 }), transform: tf, caps: 'none' });
+        const n = Math.ceil((AIR.off - AIR.on) / 6);
+        for (const across of ['right', 'up']) {
+          const base = smoke.vertexCount;
+          for (let k = 0; k <= n; k++) {
+            const d = AIR.on + (AIR.off - AIR.on) * k / n, q = airJet(d, j);
+            for (const sx of [-1, 1]) {
+              const p = v3.add(q.p, v3.scale(q[across], 9 * sx));
+              const v = smoke.vert(p[0], p[1], p[2], 0, 0, 1, sx, AIR.tAt(d) - AIR.tAt(AIR.on));
+              smoke.c[v * 3] = col[0]; smoke.c[v * 3 + 1] = col[1]; smoke.c[v * 3 + 2] = col[2];
+            }
+          }
+          for (let k = 0; k < n; k++) { const a = base + 2 * k; smoke.quadIdx(a, a + 1, a + 3, a + 2); }
+        }
+      });
+      b.static(smoke.mat(MAT.SMOKE).doubleSided().blend(1));
     }
 
     // ---------------------------------------------------------- gulls

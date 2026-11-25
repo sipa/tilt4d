@@ -150,76 +150,148 @@ fn nebula(dir: vec3f) -> vec3f {
   return col * dens * 1.3 + vec3f(0.006, 0.006, 0.011) * w;
 }
 
-fn planetSurface(n: vec3f, dir: vec3f, t: f32) -> vec3f {
+// Value noise in octaves, each a little more than twice as fine as the one
+// before and gain times as strong, with a share of the last one: oct = 3.5
+// is three octaves and half of a fourth.  The octaves are centred, so leaving
+// the fine ones out takes away detail and leaves the mean where it is.  Each
+// octave is turned against the one before, so that the grid the noise is
+// made on does not show as blocky edges where clouds and coasts are cut
+// sharply out of it.
+const OCT_TURN = mat3x3f(0.0, 1.624, 1.218, -1.624, 0.7308, -0.9744, -1.218, -0.9744, 1.2992);
+fn octaves(p: vec3f, oct: f32, gain: f32) -> f32 {
+  var a = 0.5; var s = 0.0; var q = p;
+  for (var i = 0; i < 7; i++) {
+    let w = saturate(oct - f32(i));
+    if (w <= 0.0) { break; }
+    s += a * w * (noise3(q) - 0.5);
+    q = OCT_TURN * q + vec3f(17.3, 9.1, 4.7);
+    a *= gain;
+  }
+  return 0.5 + s * (1.0 - gain) * 2.0;
+}
+
+// The planet at the unit normal n, seen along dir, at time t.  With full
+// false it is drawn coarsely, for what glossy surfaces mirror (envReflect).
+// The fine octaves fade out towards the limb, where the ground is seen edge
+// on and they would only shimmer.
+fn planetSurface(n: vec3f, dir: vec3f, t: f32, full: bool) -> vec3f {
   let lat = dot(n, PL_AX);
+  let alat = abs(lat);
+  let mu = max(dot(n, -dir), 0.0);
+  let fine = select(0.0, smoothstep(0.05, 0.35, mu), full);
   // the ground turns once every 15 minutes
   let nr = rotAround(n, PL_AX, -t * (TAU / 900.0));
-  let cont = fbm3(nr * 2.3 + vec3f(5.2, 1.3, 7.7));
-  let detail = noise3(nr * 9.0 + 2.0) * 0.65 + noise3(nr * 21.0) * 0.35;
-  let land = smoothstep(0.54, 0.585, cont + (detail - 0.5) * 0.08);
-  var alb = mix(vec3f(0.004, 0.016, 0.055), vec3f(0.008, 0.032, 0.08), detail);
-  let landCol = mix(vec3f(0.13, 0.105, 0.065), vec3f(0.04, 0.07, 0.03), smoothstep(0.4, 0.68, detail));
-  alb = mix(alb, landCol, land);
-  let ice = smoothstep(0.8, 0.87, abs(lat) + (detail - 0.5) * 0.12);
+  // continents: a noise pushed about by another, so that coasts wind and
+  // there are bays, peninsulas and islands
+  let wp = nr * 1.8 + vec3f(5.2, 1.3, 7.7);
+  var h = 0.5;
+  var grain = 0.5;
+  if (full) {
+    let warp = vec3f(noise3(wp * 1.7 + 11.0), noise3(wp * 1.7 + 23.0), noise3(wp * 1.7 + 37.0)) - 0.5;
+    grain = octaves(nr * 13.0 + 2.0, 1.0 + 3.5 * fine, 0.62);
+    h = octaves(wp + warp * 1.2, 3.0, 0.5) + (grain - 0.5) * 0.09 * fine;
+  } else {
+    h = octaves(wp, 2.0, 0.5);
+  }
+  let coast = 0.545;
+  let land = smoothstep(coast, coast + 0.004 + 0.03 * (1.0 - fine), h);
+  // what grows there: forest and grassland, deserts in the dry belts either
+  // side of the tropics, tundra towards the poles, bare rock on high ground
+  let moist = noise3(nr * 3.3 + 19.0);
+  let dry = smoothstep(0.14, 0.3, alat) * (1.0 - smoothstep(0.5, 0.64, alat)) * smoothstep(0.32, 0.55, moist);
+  var lc = mix(vec3f(0.022, 0.045, 0.018), vec3f(0.075, 0.08, 0.035), smoothstep(0.4, 0.7, moist * 0.5 + grain * 0.5));
+  lc = mix(lc, vec3f(0.34, 0.23, 0.12) * (0.45 + 1.1 * grain), dry);
+  lc = mix(lc, vec3f(0.1, 0.095, 0.08), smoothstep(0.6, 0.75, alat));
+  lc = mix(lc, vec3f(0.17, 0.155, 0.14), smoothstep(0.64, 0.72, h + (grain - 0.5) * 0.25) * 0.8);
+  // the sea: deep blue, and turquoise over the shelves along the coasts
+  var alb = mix(vec3f(0.004, 0.014, 0.05), vec3f(0.012, 0.06, 0.085), smoothstep(coast - 0.025, coast, h));
+  alb = mix(alb, lc, land);
+  let ice = smoothstep(0.83, 0.89, alat + (grain - 0.5) * 0.1 + (h - 0.5) * 0.15);
   alb = mix(alb, vec3f(0.75, 0.8, 0.86), ice);
-  // cloud bands: every band of latitude drifts at its own rate
+  // cloud bands: every band of latitude drifts at its own rate, and within it
+  // the clouds are swirled by a slower noise.  There are fewer over the dry
+  // belts and more along the equator and in the storm belts further out.
+  // The bands' edges wander (by a noise that stays put while the clouds go
+  // by) and the clouds thin out to nothing at them, so that no straight seam
+  // shows where two bands meet.
   let lb = asin(clamp(lat, -1.0, 1.0)) / PI + 0.5;
-  let bf = lb * 11.0;
+  let bf = lb * 11.0 + (noise3(n * 5.0 + 31.0) - 0.5) * 0.7;
   let band = floor(bf);
   let edge = abs(fract(bf) - 0.5) * 2.0;
   let rate = (0.6 + hash11(band * 7.31 + 0.5)) * (TAU / 520.0) * select(-0.6, 1.0, hash11(band + 3.1) > 0.35);
   let nc = rotAround(n, PL_AX, -t * rate - band * 1.7);
-  let q = vec3f(dot(nc, PL_E1), dot(nc, PL_E2), dot(nc, PL_AX) * 3.0);
-  let cl = fbm3(q * 4.5 + vec3f(band * 3.1, 0.0, 1.0)) * 0.7 + noise3(q * 13.0) * 0.3;
-  let cloud = smoothstep(0.5, 0.72, cl) * (1.0 - smoothstep(0.65, 1.0, edge) * 0.9);
-  alb = mix(alb, vec3f(0.8, 0.82, 0.86), cloud);
+  var q = vec3f(dot(nc, PL_E1), dot(nc, PL_E2), dot(nc, PL_AX) * 3.0) * 4.5 + vec3f(band * 3.1, 0.0, 1.0);
+  if (full) {
+    let sw = vec2f(noise3(q * 0.45 + 3.0), noise3(q * 0.45 + 9.0)) - 0.5;
+    q += vec3f(sw * 2.2, 0.0);
+  }
+  let belts = 0.05 * smoothstep(0.12, 0.3, alat) * (1.0 - smoothstep(0.45, 0.6, alat)) - 0.03 * (1.0 - smoothstep(0.0, 0.12, alat));
+  let cl = octaves(q, 2.0 + 4.5 * fine, 0.6) - belts;
+  // thick cloud with sharp edges, and round it a thin veil that the ground
+  // shows through
+  let soft = 0.02 + 0.12 * (1.0 - fine);
+  let cloud = max(smoothstep(0.53 - soft * 0.5, 0.53 + soft, cl), smoothstep(0.42, 0.53, cl) * 0.45) * (1.0 - smoothstep(0.6, 0.97, edge));
+  alb = mix(alb, vec3f(0.8, 0.82, 0.86) * (0.7 + 0.3 * smoothstep(0.54, 0.72, cl)), cloud);
   // sunlight
   let ndl = dot(n, SUN_DIR);
   let day = smoothstep(-0.1, 0.2, ndl);
   var c = alb * SUN_COL * 0.8 * max(ndl, 0.0);
   c += alb * vec3f(1.0, 0.4, 0.15) * (smoothstep(-0.12, 0.04, ndl) * (1.0 - smoothstep(0.04, 0.3, ndl)) * 0.25);
   let r = reflect(dir, n);
-  c += SUN_COL * (pow(max(dot(r, SUN_DIR), 0.0), 50.0) * 0.5 * (1.0 - land) * (1.0 - cloud) * step(0.0, ndl));
-  // city lights on the night side
+  let glint = pow(max(dot(r, SUN_DIR), 0.0), 60.0) * 0.6 + pow(max(dot(r, SUN_DIR), 0.0), 8.0) * 0.03;
+  c += SUN_COL * (glint * (1.0 - land) * (1.0 - cloud) * step(0.0, ndl));
+  // city lights on the night side, strung along the coasts
   if (ndl < 0.05 && land > 0.0) {
-    let city = (1.0 - ice) * step(0.86, hash31(floor(nr * 150.0))) * smoothstep(0.45, 0.65, noise3(nr * 4.0 + 9.0));
+    let city = (1.0 - ice) * step(0.86, hash31(floor(nr * 150.0))) * smoothstep(0.45, 0.65, noise3(nr * 4.0 + 9.0) + (1.0 - smoothstep(coast, coast + 0.05, h)) * 0.25);
     c += vec3f(1.0, 0.62, 0.28) * (land * city * (1.0 - smoothstep(-0.2, 0.05, ndl)) * (1.0 - cloud * 0.85) * 0.25);
   }
   // atmosphere at grazing angles, and a blue haze over the day side
-  let mu = max(dot(n, -dir), 0.0);
   let rim = pow(1.0 - mu, 3.0);
   c += vec3f(0.2, 0.45, 1.0) * (rim * smoothstep(-0.25, 0.35, ndl) * 0.7);
   c += vec3f(0.004, 0.012, 0.035) * day;
   return c;
 }
 
-fn envSky(dir: vec3f, t: f32) -> vec3f {
-  var bg = starField(dir) + nebula(dir);
-  let sd = dot(dir, SUN_DIR);
-  bg += vec3f(1.0, 0.93, 0.82) * (70.0 * smoothstep(0.99988, 0.99995, sd));
-  bg += vec3f(1.0, 0.82, 0.62) * (pow(max(sd, 0.0), 900.0) * 3.0 + pow(max(sd, 0.0), 40.0) * 0.06);
+// The sky with the planet in it.  The stars, the nebula and the sun are
+// worked out only where the planet does not hide them.
+fn skyWith(dir: vec3f, t: f32, full: bool, lit: f32) -> vec3f {
   let b = dot(dir, PL_DIR);
-  if (b <= 0.0) { return bg; }
   let d = sqrt(max(1.0 - b * b, 0.0));
-  let cov = smoothstep(PL_R + 0.001, PL_R - 0.001, d);
-  var c = bg;
+  let cov = select(0.0, smoothstep(PL_R + 0.001, PL_R - 0.001, d), b > 0.0);
+  var c = vec3f(0.0);
+  if (cov < 1.0) {
+    if (full) { c = starField(dir) + nebula(dir); }
+    let sd = dot(dir, SUN_DIR);
+    c += vec3f(1.0, 0.93, 0.82) * (70.0 * lit * smoothstep(0.99988, 0.99995, sd));
+    c += vec3f(1.0, 0.82, 0.62) * (pow(max(sd, 0.0), 900.0) * 3.0 * lit + pow(max(sd, 0.0), 40.0) * 0.06);
+  }
+  if (b <= 0.0) { return c; }
   if (cov > 0.0) {
     let h = max(PL_R * PL_R - d * d, 0.0);
     let s = b - sqrt(h);
     let n = normalize(dir * s - PL_DIR);
-    c = mix(bg, planetSurface(n, dir, t), cov);
+    c = mix(c, planetSurface(n, dir, t, full), cov);
   }
   // the thin bright line of atmosphere just outside the limb
   let limbN = normalize(dir - PL_DIR * b);
-  let lit = smoothstep(-0.4, 0.5, dot(limbN, SUN_DIR));
+  let lt = smoothstep(-0.4, 0.5, dot(limbN, SUN_DIR));
   let above = max(d - PL_R, 0.0);
-  c += vec3f(0.3, 0.55, 1.0) * ((exp(-above / 0.004) * 0.8 + exp(-above / 0.03) * 0.08) * lit * (1.0 - cov));
+  c += vec3f(0.3, 0.55, 1.0) * ((exp(-above / 0.004) * 0.8 + exp(-above / 0.03) * 0.08) * lt * (1.0 - cov));
   return c;
 }
 
+fn envSky(dir: vec3f, t: f32) -> vec3f { return skyWith(dir, t, true, 1.0); }
+
+// Glossy surfaces mirror the planet coarsely and leave out the stars, which
+// would only sparkle; the sun only where its light reaches the surface.
+fn envReflect(dir: vec3f, t: f32, lit: f32) -> vec3f { return skyWith(dir, t, false, lit); }
+
+// The planet, which fills a third of the sky below and shows the station
+// mostly its day side, lights whatever faces it with a pale blue: about a
+// fifteenth of the sun's light, as its clouds and seas send back.
 fn envAmbient(n: vec3f, t: f32) -> vec3f {
   let pl = dot(n, PL_DIR) * 0.5 + 0.5;
-  return vec3f(0.010, 0.012, 0.018) + vec3f(0.04, 0.07, 0.12) * (pl * pl);
+  return vec3f(0.010, 0.012, 0.018) + vec3f(0.075, 0.1, 0.145) * (pl * pl);
 }
 
 fn envFog(dir: vec3f, t: f32, dist: f32) -> vec4f { return vec4f(0.0); }
@@ -233,15 +305,42 @@ fn stripe(x: f32, w: f32, fw: f32) -> f32 {
   return mix(sharp, 2.0 * w, saturate(fw * 1.2 - 0.3));
 }
 
-// panel seams projected along the main axis of the normal: x = seam, y = panel tint
-fn hullPanels(p: vec3f, n: vec3f, px: f32) -> vec2f {
+// Hull plating in panels of 6 by 3 m, laid out along the main axis of the
+// normal: most of them painted, in slightly different shades; some wrapped in
+// a quilted blanket of a warmer white; some darker service panels with a
+// hatch and a bolt at each corner; a few ribbed, and a few with a striped
+// band at one end.  Everything is a change of the base colour, so a dark
+// box stays dark.  The detail fades out once a pixel is wider than about a
+// metre, and the panels' shades once it is wider than a panel.
+fn hullSkin(p: vec3f, n: vec3f, base: vec3f, px: f32) -> vec3f {
   let an = abs(n);
   var q = p.xy;
   if (an.x >= an.y && an.x >= an.z) { q = p.yz; } else if (an.y >= an.z) { q = p.xz; }
   let g = q / vec2f(6.0, 3.0);
+  let cell = floor(g);
+  let f = (fract(g) - 0.5) * vec2f(6.0, 3.0);
+  let h = hash21(cell + 0.71);
+  let near = saturate(1.6 - px);
+  var c = base * mix(1.0, 0.88 + 0.22 * hash21(cell), saturate(1.4 - px * 0.4));
+  if (near > 0.0) {
+    if (h < 0.24) {
+      let quilt = seams(f, vec2f(0.6), 0.012, px);
+      let pillow = length(fract(f / 0.6) - 0.5);
+      c *= mix(vec3f(1.0), vec3f(1.05, 1.0, 0.88) * (1.0 - 0.3 * quilt - 0.12 * pillow), near);
+    } else if (h < 0.34) {
+      let hd = sdRect(f, vec2f(2.3, 1.0), 0.25);
+      let bolt = fillSd(length(abs(f) - vec2f(2.7, 1.2)) - 0.07, px);
+      c *= mix(1.0, 0.6 * (1.0 - 0.5 * lineSd(hd, 0.025, px)) * (1.0 - 0.6 * bolt), near);
+    } else if (h < 0.41) {
+      c *= mix(1.0, 0.8 + 0.25 * stripe(f.y * 4.0, 0.3, px * 4.0), near);
+    } else if (h < 0.45) {
+      let band = step(abs(f.x + 2.4), 0.35);
+      let hz = step(0.5, fract((f.x + f.y) * 1.4));
+      c = mix(c, mix(vec3f(0.03), vec3f(0.9, 0.62, 0.05), hz), band * near);
+    }
+  }
   let seam = max(1.0 - stripe(g.x, 0.5 - 0.08 / 6.0, px / 6.0), 1.0 - stripe(g.y, 0.5 - 0.08 / 3.0, px / 3.0));
-  let tint = mix(1.0, 0.84 + 0.3 * hash21(floor(g) + floor(p.z / 3.0) * 0.0), saturate(1.4 - px * 0.4));
-  return vec2f(seam, tint);
+  return c * (1.0 - 0.5 * seam);
 }
 
 // craters: random spheres on a 3D grid of cells of size metres, each a bowl
@@ -504,8 +603,7 @@ fn surface(sIn: Surface) -> Surface {
       p = vec3f(dot(s.pos, ST_X), dot(s.pos, ST_Y), dot(s.pos, ST_Z));
       n = vec3f(dot(s.n, ST_X), dot(s.n, ST_Y), dot(s.n, ST_Z));
     }
-    let pn = hullPanels(p, n, px);
-    s.color *= pn.y * (1.0 - 0.5 * pn.x);
+    s.color = hullSkin(p, n, s.color, px);
   } else if (m == MAT_RING_SIDE) {
     // windows on the flat faces of the spinning ring (this mesh stands still:
     // the pattern turns with the ring's own time)
@@ -873,6 +971,28 @@ function schedule(L, stops, { laps = 1, ramp = 4 } = {}) {
   };
 }
 
+// A run in to a stop and out again, for something that arrives from far away
+// and leaves again: cruising at `cruise` m/s from the start of a way, easing
+// to a stop at the distance `stop` over `ramp` seconds, waiting `dwell`
+// seconds and easing back to cruising speed.  dist(u) is the distance
+// covered u seconds after the start (at cruising speed before it and after
+// the run out), and `end` the moment at which the run out has covered as
+// much as the run in.
+function runIn(stop, { cruise, ramp, dwell }) {
+  const half = cruise * ramp / 2; // what an easing covers
+  const t1 = (stop - half) / cruise, t2 = t1 + ramp, t3 = t2 + dwell, t4 = t3 + ramp;
+  // the distance covered x seconds into speeding up from rest
+  const ease = (x) => cruise / 2 * (x - ramp / Math.PI * Math.sin(Math.PI * x / ramp));
+  const dist = (u) => {
+    if (u <= t1) return cruise * u;
+    if (u <= t2) return stop - ease(t2 - u);
+    if (u <= t3) return stop;
+    if (u <= t4) return stop + ease(u - t3);
+    return stop + half + cruise * (u - t4);
+  };
+  return { dist, end: t4 + t1 };
+}
+
 // Transform for a model (+Y forward, +Z up) moved along a path by a distance function.
 const along = (path, distAt, span = 8) => (t) => {
   const { p, dir } = path.smoothAt(distAt(t), span);
@@ -978,25 +1098,58 @@ function shuttle(accent, id) {
   g.add(ship(Geo.box(13, 3.2, 0.35).translate(0, -5.5, -0.6), 2).color('#9aa0a8'));
   g.add(ship(Geo.box(0.35, 3.5, 2.6).translate(0, -7, 3.1), 1).color(accent));
   g.add(ship(Geo.box(4.4, 2.6, 2.4).translate(0, -10.2, 0.2), 3).color('#4a4f57'));
-  g.add(engineDiscs(-11.52, 0.5));
-  g.add(navLight(0.35, '#ff2a1a').translate(-6.5, -5.5, -0.6));
-  g.add(navLight(0.35, '#22ff66').translate(6.5, -5.5, -0.6));
-  g.add(navLight(0.3, '#ffffff', 1).mat(MAT.BLINK).translate(0, -7.5, 4.5));
   return g;
 }
 
 // The exhaust and the glow in the engines, kept apart from the hull so that
-// addShuttle can change them with the shuttle's speed: the plume is scaled,
-// and the bright discs slide out of the engine block when it is under way and
-// back into it, behind the dim discs that are part of the hull, when it stops.
-// All three are stored once for all the shuttles: the discs as they are, the
-// plume as the six poses of its flicker (see FLICKER).
-const SHUTTLE_TAIL = [0, -11.6, 0.2];
+// addShuttle can change them with the shuttle's thrust.  A ship in space
+// that coasts needs none, so the plume is full only while the shuttle speeds
+// up and a stub while it coasts or waits, and the bright discs slide out of
+// the engine block while it thrusts and back into it, behind the dim discs
+// that are part of the hull, while it does not.  While it slows down, two
+// jets come out of its bow instead, from thrusters inside the hull: drawn
+// back to nothing there, they are hidden.  All four are stored once for all
+// the shuttles: the discs and the jets as they are, the plume as the six
+// poses of its flicker (see FLICKER).
+const SHUTTLE_TAIL = [0, -11.6, 0.2], SHUTTLE_BOW = [0, 8.8, 0.6];
 const engineDiscs = (y, e) => Geo.merge(...[-1.15, 1.15].map((x) => Geo.disc(0.78, 6).rotateX(Math.PI / 2).translate(x, y, 0.2))).color('#bfe6ff').emissive(e);
-const shuttleFires = () => engineDiscs(-11.6, 16);
+const shuttleFires = () => engineDiscs(-11.6, 16).noShadow();
 const shuttlePlume = () => Geo.cylinder(1.6, 9, 6, { r2: 0.2, caps: false }).rotateX(Math.PI / 2).translate(...SHUTTLE_TAIL)
   .color([0.3, 0.55, 1.0]).emissive(4).additive().mat(MAT.GLOW);
+const retroJets = (xs, at, r, len) => Geo.merge(...xs.map((x) => Geo.cylinder(r, len, 5, { r2: r * 0.15, caps: false }).rotateX(-Math.PI / 2).translate(x + at[0], at[1], at[2])))
+  .color([0.45, 0.7, 1.0]).emissive(7).additive().mat(MAT.GLOW);
 const SHUTTLE_PLUME = shuttlePlume(), SHUTTLE_FIRES = shuttleFires(); // one of each for all the shuttles
+const SHUTTLE_RETRO = retroJets([-2.1, 2.1], SHUTTLE_BOW, 0.5, 6.5);
+
+// The shuttle's running lights and the dim glow in its engines: a mesh of
+// their own, which casts no shadow, so that the shadow maps can leave it out
+// (it is a third of the shuttle's triangles).  One for all the shuttles.
+const SHUTTLE_LIGHTS = Geo.merge(
+  engineDiscs(-11.52, 0.5),
+  navLight(0.35, '#ff2a1a').translate(-6.5, -5.5, -0.6),
+  navLight(0.35, '#22ff66').translate(6.5, -5.5, -0.6),
+  navLight(0.3, '#ffffff', 1).mat(MAT.BLINK).translate(0, -7.5, 4.5),
+).noShadow();
+
+// How hard something moving by dist(t) thrusts: its acceleration along its
+// way, as a share of the most it ever has, positive while it speeds up and
+// negative while it slows down.
+function thrustOf(dist) {
+  const h = 0.2;
+  const acc = (t) => (dist(t + h) - 2 * dist(t) + dist(t - h)) / (h * h);
+  let top = 1e-6;
+  for (let t = 0; t < PERIOD; t += 0.25) top = Math.max(top, Math.abs(acc(t)));
+  return (t) => Math.max(-1, Math.min(1, acc(t) / top));
+}
+
+// The transforms of a ship's plume and of its braking jets: the plume
+// scaled about the tail by the thrust (k), the jets drawn out from where
+// they start by the braking.
+const plumeAt = (tf, thrust, tail, w0, l0) => (t) => {
+  const k = Math.max(0, thrust(t));
+  return m4.mul(tf(t), m4.translation(...tail), m4.scaling(w0 + (1 - w0) * k, l0 + (1 - l0) * k, w0 + (1 - w0) * k), m4.translation(...tail.map((v) => -v)));
+};
+const retroAt = (tf, thrust, bow) => (t) => m4.mul(tf(t), m4.translation(...bow), m4.scaling(1, Math.max(0, -thrust(t)), 1), m4.translation(...bow.map((v) => -v)));
 
 // The exhaust plumes of the shuttles and the tugs flicker: a round of a
 // quarter of a second in six poses, in each of which the plume is a little
@@ -1066,22 +1219,18 @@ function addRiding(b, geo, times, tf, within, span, more = {}) {
   }
 }
 
-// A shuttle on its way: the hull, the exhaust scaled by speed, and the detail.
-function addShuttle(b, accent, id, tf, distAt) {
+// A shuttle on its way: the hull, the engines as its thrust (see thrustOf)
+// has them, and the detail.
+function addShuttle(b, accent, id, tf, thrust) {
   const times = adaptiveTimes(tf, 0, PERIOD, { size: 10, tolerance: 0.3, maxStep: 8 });
-  // The exhaust is full length and the engines full bright at 60 m/s and
-  // more; standing still, a stub and a dim glow.
-  const thrust = (t) => Math.min(1, Math.abs(distAt(t + 0.05) - distAt(t - 0.05)) / 0.1 / 60);
   b.dynamic(shuttle(accent, id), { times, transform: tf, caps: 'none' });
-  const plume = (t) => {
-    const k = thrust(t);
-    return m4.mul(tf(t), m4.translation(...SHUTTLE_TAIL), m4.scaling(0.25 + 0.75 * k, 0.04 + 0.96 * k, 0.25 + 0.75 * k), m4.translation(...SHUTTLE_TAIL.map((v) => -v)));
-  };
-  b.dynamic(SHUTTLE_PLUME, { times, transform: plume, caps: 'none', cycle: flicker(SHUTTLE_TAIL, 4, id * 0.093) });
+  b.dynamic(SHUTTLE_LIGHTS, { times, transform: tf, caps: 'none' });
+  b.dynamic(SHUTTLE_PLUME, { times, transform: plumeAt(tf, thrust, SHUTTLE_TAIL, 0.3, 0.06), caps: 'none', cycle: flicker(SHUTTLE_TAIL, 4, id * 0.093) });
   // (from a third of full thrust up the bright discs are out in front of the
   // dim ones; below that they are behind them or inside the engine block)
-  const fires = (t) => m4.mul(tf(t), m4.translation(0, 0.12 * (1 - thrust(t)), 0));
+  const fires = (t) => m4.mul(tf(t), m4.translation(0, 0.12 * (1 - Math.max(0, thrust(t))), 0));
   b.dynamic(SHUTTLE_FIRES, { times, transform: fires, caps: 'none' });
+  b.dynamic(SHUTTLE_RETRO, { times, transform: retroAt(tf, thrust, SHUTTLE_BOW), caps: 'none' });
   addRiding(b, SHUTTLE_DETAIL, times, tf, 90, 500);
 }
 
@@ -1119,10 +1268,14 @@ const tugRadar = (start) => ({
   cycle: { period: 3, keys: 18, start, transform: (u) => m4.mul(m4.translation(...RADAR_AT), m4.rotationZ(-TAU * u)) },
 });
 
-// The tug's exhaust, apart from the rest so that it can flicker (see FLICKER).
-const TUG_TAIL = [0, -33.1, 0];
+// The tug's exhaust, the bright disc in its engine and its braking jets,
+// apart from the rest so that they can follow its thrust as the shuttles'
+// do, and the exhaust flicker (see FLICKER).
+const TUG_TAIL = [0, -33.1, 0], TUG_BOW = [0, 31.5, 0];
 const TUG_PLUME = Geo.cylinder(4.5, 22, 6, { r2: 0.6, caps: false }).rotateX(Math.PI / 2).translate(...TUG_TAIL)
   .color([0.3, 0.55, 1.0]).emissive(3).additive().mat(MAT.GLOW);
+const TUG_FIRES = Geo.disc(3.2, 8).rotateX(Math.PI / 2).translate(0, -33.15, 0).color('#c2e4ff').emissive(14).noShadow();
+const TUG_RETRO = retroJets([-4, 4], TUG_BOW, 1.1, 15);
 
 function freighter(colors, id) {
   const g = new Geo();
@@ -1135,12 +1288,17 @@ function freighter(colors, id) {
   });
   g.add(tug(Geo.box(18, 5, 0.4).translate(0, -24, 0), 2).color('#a9adb3'));
   g.add(tug(Geo.box(11, 8, 9).translate(0, -29, 0), 3).color('#474c54'));
-  g.add(Geo.disc(3.2, 8).rotateX(Math.PI / 2).translate(0, -33.05, 0).color('#c2e4ff').emissive(14));
-  g.add(navLight(0.6, '#ff2a1a').translate(-9, -24, 0));
-  g.add(navLight(0.6, '#22ff66').translate(9, -24, 0));
-  g.add(navLight(0.5, '#ffffff', 1).mat(MAT.BLINK).translate(0, 26, 6.2));
   return g;
 }
+
+// The tug's running lights and the dim glow in its engine, apart from the
+// rest so that they stay out of the shadow maps (see SHUTTLE_LIGHTS).
+const FREIGHTER_LIGHTS = Geo.merge(
+  Geo.disc(3.2, 8).rotateX(Math.PI / 2).translate(0, -33.05, 0).color('#c2e4ff').emissive(0.6),
+  navLight(0.6, '#ff2a1a').translate(-9, -24, 0),
+  navLight(0.6, '#22ff66').translate(9, -24, 0),
+  navLight(0.5, '#ffffff', 1).mat(MAT.BLINK).translate(0, 26, 6.2),
+).noShadow();
 
 function satellite(accent) {
   const g = new Geo();
@@ -1578,36 +1736,61 @@ export default {
         b.static(lat.color('#aab1ba').mat(MAT.LATTICE).cutout(), { transform: STATION, within: 250, solid: false });
       });
 
-      // shuttles: in along one side, round the nose of the station, a pause at
-      // the docking tube, out along the other side and round again far away
-      const rt = racetrack(L2W([0, 0, 270]), L2W([0, 0, 1960]), 40, YL, 24);
-      const dist = schedule(rt.path.length, [{ d: rt.apexA, dwell: 6 }, { d: rt.apexB, dwell: 0.5 }], { laps: 2, ramp: 4 });
+      // Shuttles, one every 20 s: in from deep space along one side of the
+      // lane, braking all the way to the nose of the station, round it to a
+      // stop at the docking tube, and after a wait out along the other side
+      // and away.  Each comes into sight 3 km out, where it is a few pixels
+      // across, and goes out of sight there again.
+      const ZF = 3130, W = 40;
+      const pts = [L2W([W, 0, ZF])];
+      for (let k = 0; k <= 24; k++) pts.push(L2W([W * Math.cos(k / 24 * Math.PI), 0, 270 - W * Math.sin(k / 24 * Math.PI)]));
+      pts.push(L2W([-W, 0, ZF]));
+      const lane = new Path(pts);
+      const run = runIn(ZF - 270 + W * Math.PI / 2, { cruise: 150, ramp: 10, dwell: 8 });
+      const lap = (t, i) => (((t + i * 20) % 60) + 60) % 60;
+      const thrustInLap = thrustOf(run.dist);
       ['#e0782e', '#2f9fd6', '#d9b53a'].forEach((accent, i) => {
-        const distAt = (t) => dist(t + i * 20);
-        addShuttle(b, accent, i, along(rt.path, distAt, 10), distAt);
+        const tf = (t) => {
+          const u = lap(t, i);
+          if (u > run.end) {
+            // out of sight, from the end of the way back to its start
+            return m4.mul(m4.translation(...v3.lerp(pts[pts.length - 1], pts[0], (u - run.end) / (60 - run.end))), m4.scaling(0));
+          }
+          const { p, dir } = lane.smoothAt(run.dist(u), 10);
+          return m4.mul(m4.facing(p, dir), m4.scaling(Math.min(1, u / 3, (run.end - u) / 3)));
+        };
+        addShuttle(b, accent, i, tf, (t) => thrustInLap(lap(t, i)));
       });
     }
 
-    // ---- lane B: freighter convoys circling between the mine and the depot --
+    // ---- lane B: freighter convoys going round between the mine and the depot
     const conv = racetrack(MINE, DEPOT, 240, [0, 0, 1], 96);
     {
       const L = conv.path.length;
-      const speed = L / PERIOD;
+      // Two convoys of four go round half a lap apart, and each stops in
+      // formation twice a lap, easing in and out over 12 s: alongside the
+      // depot, and half a lap on alongside the mine.  So while one waits at
+      // the depot the other waits at the mine.
+      const stops = schedule(L, [{ d: conv.len - 40, dwell: 8 }, { d: conv.len - 40 + L / 2, dwell: 8 }], { ramp: 12 });
       const palettes = [
         ['#b5532a', '#8a8f96', '#c9c6bd', '#8a8f96'],
         ['#c9c6bd', '#2f7f86', '#8a8f96', '#c9c6bd'],
         ['#8a8f96', '#c9c6bd', '#b5532a', '#6f757d'],
         ['#6f757d', '#8a8f96', '#c9c6bd', '#c8962f'],
       ];
-      for (const base of [0.1 * L, 0.6 * L]) {
+      for (const [c, shift] of [[0, 30], [1, 90]]) {
+        const lead = (t) => stops(t + shift);
+        const thrust = thrustOf(lead);
         for (let i = 0; i < 4; i++) {
-          const off = base - i * 130;
-          const tf = along(conv.path, (t) => off + speed * t, 40);
-          const times = adaptiveTimes(tf, 0, PERIOD, { size: 30, tolerance: 0.5, maxStep: 10 });
-          b.dynamic(freighter(palettes[i], (base > L / 2 ? 4 : 0) + i), { times, transform: tf, caps: 'none' });
-          b.dynamic(TUG_PLUME, { times, transform: tf, caps: 'none', cycle: flicker(TUG_TAIL, 3, (base > L / 2 ? 0.11 : 0.02) + i * 0.057) });
+          const tf = along(conv.path, (t) => lead(t) - i * 130, 40);
+          const times = adaptiveTimes(tf, 0, PERIOD, { size: 30, tolerance: 2, maxStep: 10 });
+          b.dynamic(freighter(palettes[i], c * 4 + i), { times, transform: tf, caps: 'none' });
+          b.dynamic(FREIGHTER_LIGHTS, { times, transform: tf, caps: 'none' });
+          b.dynamic(TUG_PLUME, { times, transform: plumeAt(tf, thrust, TUG_TAIL, 0.35, 0.08), caps: 'none', cycle: flicker(TUG_TAIL, 3, c * 0.09 + 0.02 + i * 0.057) });
+          b.dynamic(TUG_FIRES, { times, transform: (t) => m4.mul(tf(t), m4.translation(0, 0.3 * (1 - Math.max(0, thrust(t))), 0)), caps: 'none' });
+          b.dynamic(TUG_RETRO, { times, transform: retroAt(tf, thrust, TUG_BOW), caps: 'none' });
           addRiding(b, FREIGHTER_DETAIL, times, tf, 150, 900);
-          addRiding(b, TUG_RADAR, times, tf, 150, 900, tugRadar((base > L / 2 ? 1.9 : 0.3) + i * 0.71));
+          addRiding(b, TUG_RADAR, times, tf, 150, 900, tugRadar(c * 1.6 + 0.3 + i * 0.71));
         }
       }
       // beacon chains along both straights, flashing in the direction of travel
@@ -1825,7 +2008,7 @@ export default {
       const dist = schedule(rt.path.length, [{ d: rt.apexA, dwell: 7 }, { d: rt.apexB, dwell: 7 }], { laps: 2, ramp: 5 });
       ['#c8402f', '#8a8f96'].forEach((accent, i) => {
         const distAt = (t) => dist(t + i * 30);
-        addShuttle(b, accent, 3 + i, along(rt.path, distAt, 10), distAt);
+        addShuttle(b, accent, 3 + i, along(rt.path, distAt, 10), thrustOf(distAt));
       });
       const n = Math.floor(rt.len / 55);
       for (let i = 1; i < n; i++) {
@@ -1845,21 +2028,16 @@ export default {
       });
     }
 
-    // ---- asteroids: a field round the mine, a few strays, some tumbling -----
+    // ---- asteroids: a field round the mine, some of them tumbling -----------
+    // (none drift about elsewhere: round the station they only read as specks
+    // in front of the planet)
     {
       const clear = (p, r) => avoid.every(([q, rr]) => v3.dist(p, q) > rr + r);
       let placed = 0, tries = 0;
-      while (placed < 150 && tries++ < 4000) {
-        const nearMine = placed < 110;
-        const p = nearMine
-          ? v3.add(MINE, [rand.range(-900, 700), rand.range(-800, 900), rand.range(-500, 400)])
-          : [rand.range(-3000, 3000), rand.range(-2500, 3200), rand.range(-900, 900)];
-        const r = nearMine ? 4 + Math.pow(rand(), 3) * 45 : 6 + Math.pow(rand(), 2) * 30;
+      while (placed < 110 && tries++ < 4000) {
+        const p = v3.add(MINE, [rand.range(-900, 700), rand.range(-800, 900), rand.range(-500, 400)]);
+        const r = 4 + Math.pow(rand(), 3) * 45;
         if (!clear(p, r + 20)) continue;
-        if (v3.dist(p, [0, 0, 0]) < 700 || v3.dist(p, SPAWN_POS) < 300) continue;
-        // keep the main approach lane clear
-        const lz = v3.dot(p, AX), lx = v3.dot(p, XL), ly = v3.dot(p, YL);
-        if (lz > 0 && lz < 2200 && Math.abs(lx) < 200 && Math.abs(ly) < 160) continue;
         const tone = rand.range(0.2, 0.34);
         b.static(rockGeo(r, 1000 + placed, { rough: rand.range(0.2, 0.4), squash: [1, rand.range(0.7, 1.1), rand.range(0.6, 0.95)] })
           .rotateZ(rand.range(0, TAU)).rotateX(rand.range(0, TAU)).translate(...p)

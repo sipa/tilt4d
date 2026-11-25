@@ -172,6 +172,9 @@ Geo.cylinder(0.2, 3, 8).rotateX(Math.PI / 2).translate(0, 0, 1).color('#888').gl
 
 * `translate(x, y, z)`, `scale(x, y, z)`, `rotateX/Y/Z(angle)`, `transform(matrix)`
 * `add(other, matrix?)` appends another mesh; `clone()` copies
+* `pick((i, middle) => boolean)` is a new mesh of the triangles it is true
+  for (their number, the middle of their corners), with the vertices in the
+  order they had: for taking a mesh apart (see "Things in pieces" below)
 * `color(c)`, `colorBy((position, normal, index) => colour)`
 * `emissive(e)`: glow as a multiple of the colour. 1 looks lit in daylight, 4 and up blooms
 * `gloss(v)`: 0 matte .. 1 mirror-like (sharp highlight, reflects the sky)
@@ -498,6 +501,29 @@ What it takes to store depends on the kind of motion:
   (a walker's stride, a wing beat, a waving flag, a turning wheel), is stored
   as the few poses of one round of that movement, once: see `cycle` below.
 
+**Things in pieces.** A slice tilted close to 90° touches a moving thing at
+every step of its movement during which the thing is no further from the
+slice than it is big that way: something 30 m tall, at every step of the
+minutes that a slice tilted up by 89° takes to rise 30 m. Given as several
+meshes a few metres across, each with the movement of the whole (the same
+`times` and `transform`), every piece is drawn only for the steps during
+which the slice crosses that piece: the same picture for a fraction of the
+tetrahedra, which is what made the pier's rides and the workshop's pendulums
+cheap in those views. Two things to mind:
+
+* Take a mesh apart with `geo.pick`, which keeps the vertices in their order,
+  and do not renumber them yourself. What a moving triangle sweeps from key
+  to key is split into three tetrahedra, and which way goes by the order of
+  the triangle's corners among the mesh's vertices. `Geo`'s shapes are
+  numbered along themselves (a tube's vertices go ring by ring), and with
+  that order the two long edges of a thin face are split alike, so the face
+  stays thin while it turns. Numbered any other way, a rod that turns far
+  between keys (a spoke of a wheel that has sixteen keys a turn) opens into a
+  sheet half a metre wide in a tilted view, and nothing shows in a level one.
+* Build what is long in lengths no longer than a piece (a spoke as a tube of
+  three lengths), and do not cut triangles in two afterwards: the new corners
+  have no place in that order.
+
 An object that neither starts from nor ends in nothing has open ends in time.
 `caps` seals them so that a tilted slice through its first or last moment looks
 solid: `'auto'` seals every end that is not held, `'none'` seals nothing (right
@@ -718,8 +744,11 @@ anything else in it: what casts a shadow and what it falls on would have to be
 at the same place. Just short of 90° that does not hold, and the shadow maps
 then take everything the slice touches within their reach: the views between
 about 85° and 90° are the dearest a scene has, several times a level one.
-`node tools/cost.mjs <scene> --view "lift=89" --view "lift=90"` counts them
-(for the reflection picture, the average of its sides).
+`node tools/count.mjs <scene>` counts them in seconds, pass by pass, without
+drawing anything (`tools/cost.mjs` draws its views, which software rendering
+takes minutes to hours over at such a tilt): the moving geometry of the
+starting view level and tilted to 75°, 89° and 90°, sideways and up, in the
+picture, in the shadow maps and in a side of the reflection picture.
 
 In a scene with `reflections`, a side of the reflection picture takes the
 moving geometry it can see, like any other view, less what would be too small
@@ -1024,6 +1053,15 @@ calls, and a score made of them) from the starting point at several tilts and
 from any views you add: see "Budgets". Add views in the busiest places, tilted
 by 60° and more. To hold a change to a budget, save the numbers before it and
 compare after it.
+
+```
+node tools/count.mjs myscene [--view "..."]... [--save before.json] [--against before.json --budget 1.1]
+```
+
+counts only the moving geometry, and does not draw: the starting view level
+and tilted sideways and up by 75°, 89° and 90°, pass by pass. Views tilted
+close to 90° are a scene's dearest (see "Budgets"), and this is the way to
+measure them: drawing one here can take half an hour.
 
 These counts are the measure to go by. Frame times here come from software
 renderers, each with a bias of its own: Chromium's (SwiftShader) runs every
