@@ -416,6 +416,12 @@ things on tables that are centimetres across, sets a few of them itself
   cylinder (`r`, and `lo` to `hi` above the feet) can be made slimmer the same
   way; the steps a walker takes up and down (0.25 m and 0.3 m) and the search
   for a place to stand after landing go by it too.
+* `jumpSpeed`. The usual jump starts at 5 m/s and reaches 1.27 m, and in a
+  view tilted up it goes through time instead: `1.27 / C` seconds forward and
+  back at 90°, which is four seconds where `C` is 0.3 m/s. The workshop's
+  starts at `Math.sqrt(2 * 9.81 * C)`, so that it reaches `C` metres, 30 cm:
+  one second at 90°. (A jump of height `h` starts at `Math.sqrt(2 * 9.81 * h)`.)
+  Whatever is meant to be jumped onto has to be within that reach.
 * `solidGrid: 0.25` or so. Solid triangles are sorted into grids over x and y
   whose cells are 4 m at the finest; in a room that is one cell for
   everything, and every solid triangle is then tested each time the player
@@ -593,7 +599,14 @@ meshes are stored once here too, and so are identical rounds.)
 What it costs to draw is what the mesh costs at any one moment: its
 triangles, three tetrahedra each, where the slice finds it, in the picture and
 in every shadow map it stands in. That is the same as for a mesh on plain
-keys. (The statistics count a step for every stretch from pose to pose along
+keys, with one exception: which steps are drawn goes by a box round the whole
+of the thing's own movement, where plain keys have a box for every step. For
+something whose round takes it far (a ball that bounces 12 m, a beam that
+sweeps a circle 120 m across) a tilted slice touches that box for longer than
+it touches the thing itself, and more steps are drawn than plain keys would
+need: a few per cent more for the lab's bouncing balls at a tilt of 75°, a
+third more for its lighthouse beam, which is on plain keys for that reason.
+(The statistics count a step for every stretch from pose to pose along
 the way, so `tetrahedra` goes up a great deal. Nothing is stored for a step
 and nothing is looked through for it: the renderer works out which steps a
 slice can touch from where the thing is at the two keys either side, and

@@ -1,6 +1,8 @@
 // Time Lab: a plain test range that makes the tilt easy to read.  Every clock
 // panel displays the moment at which you are seeing it, so the clocks down the
 // runway run behind once you start moving, and the ones behind you run ahead.
+// A frame of clocks one above another, with a ramp up to a platform behind it,
+// does the same for the tilt up and down.
 //
 // This file doubles as the reference example for the scene API (docs/SCENES.md).
 
@@ -16,6 +18,22 @@ const MAT_GROUND = 1, MAT_CLOCK = 2, MAT_DIAL = 3, MAT_STENCIL = 4, MAT_CAR = 5,
 // The cars' loop, and how often their wheels turn on it in one period (the shader turns them).
 const LOOP = new Path([[-70, 50, 0], [70, 50, 0], [70, 90, 0], [-70, 90, 0]], { closed: true, smooth: 8 });
 const WHEEL_R = 0.36, WHEEL_TURNS = Math.round(LOOP.length / (2 * Math.PI * WHEEL_R));
+
+// The climb by the frame of clocks (see build): a ramp 4 m wide from the ground at y = 15 to a
+// platform 10 m up at y = 40, which reaches east from its top, all of it walled round.  A walker
+// follows the scene's `ground` up a slope, but can only stand on something solid that is at
+// least 0.45 m above it, and gets onto that by jumping.  So a ramp or stairs that start at the
+// ground have to be part of `ground`, with the meshes drawn to match it, so that they count as
+// ground and not as obstacles.  The ramp rises 10 m in 25, about 22 degrees: briskly on foot,
+// and a car gets up it too.  Everywhere else the range is flat at 0, as for a scene without
+// `ground`; and flying or swimming, `ground` is a floor that keeps the player out of it.
+const EYE = 1.7; // a walker's eye height (the default)
+const RAMP = { x0: -50, x1: -46, y0: 15, y1: 40 }, DECK = { x0: -50, x1: -36, y0: 40, y1: 46, z: 10 };
+function ground(x, y) {
+  if (x < DECK.x0 || x > DECK.x1 || y < RAMP.y0 || y > DECK.y1) return 0;
+  if (y >= DECK.y0) return DECK.z;
+  return x <= RAMP.x1 ? DECK.z * (y - RAMP.y0) / (RAMP.y1 - RAMP.y0) : 0;
+}
 
 const wgsl = dayNightEnv({ dayLength: 300, startHour: 10, fog: 0.0035, clouds: 0.5 }) + /* wgsl */ `
 // How much of a mesh marked .cutout() is there at each pixel (1 solid .. 0 a
@@ -192,6 +210,7 @@ export default {
   mode: 'walk',
   modes: ['walk', 'drive', 'fly', 'swim'],
   spawn: { pos: [0, -30, 0], t: 0, yaw: 0 },
+  ground,
   period: PERIOD,
   viewDistance: 700,
   // about where the fog has swallowed everything, so the horizon matches the sky
@@ -301,13 +320,59 @@ export default {
       d.add(Geo.box(2.02, 0.2, 0.3).translate(0, -3.55, 3.05)).color('#9d8c77');
       d.add(Geo.box(0.05, 0.08, 0.3).translate(0.55, -3.58, 1.5).color('#c9b037').gloss(0.8));
       b.static(d.translate(tx, ty, 0), { within: 100 });
+      // The hand turns once a minute, over and over, in one place: a `cycle` of one turn in 120
+      // poses (one every half second).  It is stiff and the turn only moves it (`cycle.transform`,
+      // with no `geo` function and no paint), so it is kept as the mesh, once, and a matrix of 64
+      // bytes for each pose; `times` has only to follow where it is taken, which is nowhere.  That
+      // is the way to keep anything stiff that does the same thing over and over.
       const hand = Geo.box(0.16, 0.1, 2.6).translate(0, 0, 1.1).color('#b3271e');
       b.dynamic(hand, {
-        times: timeRange(0, PERIOD, 0.5),
-        // seen from the front (-Y side), clockwise means turning from +Z towards +X
-        transform: (t) => m4.mul(m4.translation(tx, ty - 3.63, 24.5), m4.rotationY(t / PERIOD * 2 * Math.PI)),
+        times: [0, PERIOD],
+        transform: () => m4.translation(tx, ty - 3.63, 24.5),
         caps: 'none',
+        // seen from the front (-Y side), clockwise means turning from +Z towards +X
+        cycle: { period: PERIOD, keys: 120, transform: (u) => m4.rotationY(2 * Math.PI * u) },
       });
+    }
+
+    // A frame of clocks one above another, every 10 m of height, for the tilt up and down: with
+    // the view tilted up by 45 degrees each reads a second later than the one below it.  The
+    // lowest is at a walker's eye height, so it shows a walker on the ground their own time, and
+    // the second does the same for one on the platform behind the frame, 10 m up, which the ramp
+    // beside it climbs (see `ground` at the head of the file).  The clocks on the back of the
+    // frame face the platform.  The walk up in such a view takes the walker a second on, over and
+    // above the time that passes anyway: they come up at the moment the second clock showed them
+    // from below.
+    {
+      const [fx, fy] = [-41, 39.6];
+      const g = new Geo();
+      for (const x of [-3.45, 3.45]) g.add(Geo.box(0.4, 0.4, 34).translate(x, 0, 17).color('#8b939c'));
+      g.add(Geo.box(7.3, 0.4, 0.4).translate(0, 0, 34.2).color('#8b939c'));
+      for (let k = 0; k < 4; k++) {
+        const z = EYE + 10 * k;
+        g.add(Geo.box(6.5, 0.3, 3).translate(0, 0, z).color('#22262c'));
+        g.add(Geo.box(6.7, 0.7, 0.06).translate(0, 0, z + 1.53).color('#22262c'));  // a hood over the displays
+        g.add(panel(6, 2.6).translate(0, -0.16, z - 1.3).mat(MAT_CLOCK));
+        g.add(panel(6, 2.6).rotateZ(Math.PI).translate(0, 0.16, z - 1.3).mat(MAT_CLOCK));
+      }
+      g.add(Geo.sphere(0.3, 8, 4).translate(0, 0, 34.7).color('#ff4a36').emissive(6)); // a lamp on top
+      b.static(g.translate(fx, fy, 0));
+      // The platform and the ramp: walls 0.25 m thick and 0.6 m higher than what they stand round,
+      // so that their tops are a parapet, and the surfaces to walk on, laid exactly on `ground`
+      // and drawn with the ground's material (its metre grid).  A wall along the ramp is its side
+      // view (along y, up) extruded and turned to stand along Y and Z, as the cars' cabins are.
+      const [r, d, w] = [RAMP, DECK, 0.25], top = d.z + 0.6;
+      const side = (profile, x) => Geo.extrude(profile, w).rotateX(Math.PI / 2).rotateZ(Math.PI / 2).translate(x, 0, 0);
+      const walls = new Geo();
+      walls.add(side([[r.y0, 0], [d.y1, 0], [d.y1, top], [d.y0, top], [r.y0, 0.6]], r.x0));
+      walls.add(side([[r.y0, 0], [r.y1, 0], [r.y1, top], [r.y0, 0.6]], r.x1 - w));
+      walls.add(Geo.box(d.x1 - r.x1 + w, w, top).translate((r.x1 - w + d.x1) / 2, d.y0 + w / 2, top / 2));
+      walls.add(Geo.box(w, d.y1 - d.y0, top).translate(d.x1 - w / 2, (d.y0 + d.y1) / 2, top / 2));
+      walls.add(Geo.box(d.x1 - d.x0, w, top).translate((d.x0 + d.x1) / 2, d.y1 - w / 2, top / 2));
+      b.static(walls.color('#a4a59e'));
+      const floor = Geo.quad([r.x0, r.y0, 0], [r.x1, r.y0, 0], [r.x1, r.y1, d.z], [r.x0, r.y1, d.z]);
+      floor.add(Geo.plane(d.x1 - d.x0, d.y1 - d.y0).translate((d.x0 + d.x1) / 2, (d.y0 + d.y1) / 2, d.z));
+      b.static(floor.color('#8e928c').mat(MAT_GROUND));
     }
 
     // a stencil clock left of the start: a sheet whose digits are holes (see `cutout`
@@ -360,18 +425,16 @@ export default {
       b.static(rails.color('#8d9299').gloss(0.8));
     }
 
-    // bouncing balls: the bounces land exactly on keys or poses, where the motion kinks.  The two
-    // quicker ones bounce as a `cycle`: one bounce, twelve poses, stored once.  The slower two
-    // stay on plain keys, which then come to less than the twelve poses of a ball would.
+    // bouncing balls, each over and over in one place: a cycle again, of one bounce in twelve
+    // poses, the first of them where the ball lands and the motion kinks.  A bounce is kept as
+    // twelve matrices, 768 bytes, however long it goes on; on plain keys, one every twelfth of a
+    // bounce for the whole period, it would be 145 to 361 of them.  (What it costs to draw is in
+    // the note on the lighthouse's beam.)
     for (let i = 0; i < 4; i++) {
       const bounce = [2, 3, 4, 5][i], height = [3, 5, 8, 12][i], x = -14 - i * 3;
       const ball = Geo.sphere(0.6, 8, 5).color(['#e4572e', '#17bebb', '#ffc914', '#76b041'][i]).gloss(0.6).mat(MAT_STRIPES);
       const hop = (u) => m4.translation(0, 0, height * 4 * u * (1 - u)); // u: how much of the bounce is done
-      if (bounce <= 3) {
-        b.dynamic(ball, { times: [0, PERIOD], transform: () => m4.translation(x, 20, 0.6), caps: 'none', cycle: { period: bounce, keys: 12, transform: hop } });
-      } else {
-        b.dynamic(ball, { times: timeRange(0, PERIOD, bounce / 12), transform: (t) => m4.mul(m4.translation(x, 20, 0.6), hop((t / bounce) % 1)), caps: 'none' });
-      }
+      b.dynamic(ball, { times: [0, PERIOD], transform: () => m4.translation(x, 20, 0.6), caps: 'none', cycle: { period: bounce, keys: 12, transform: hop } });
     }
 
     // windmill
@@ -419,24 +482,26 @@ export default {
       }
       b.static(g.color('#59606a').add(scale.color('#e9e6dc').mat(MAT_SCALE)).translate(px, py, 0));
       const bob = new Geo();
-      // the rod in three lengths: a long triangle that turns comes out bent between keys, more so
-      // the more its ends move from one key to the next
+      // the rod in three lengths: a long triangle that turns comes out bent between poses, more so
+      // the more its ends move from one pose to the next
       bob.add(Geo.tube([[0, 0, 0], [0, 0, -7 / 3], [0, 0, -14 / 3], [0, 0, -7]], 0.042, 4, { caps: false }).rotateZ(Math.PI / 4).color('#c9ccd1'));
       bob.add(Geo.sphere(0.7, 8, 5).translate(0, 0, -7).color('#d4a017').gloss(0.9).mat(MAT_STRIPES).tag(1));
+      // It swings once every 4 s, 0.7 rad either way, and hangs where it is: one swing is a
+      // cycle of twenty poses (one every 0.2 s), and `times` has only to say that it stays put.
       b.dynamic(bob, {
-        times: timeRange(0, PERIOD, 0.2),
-        transform: (t) => m4.mul(m4.translation(px, py, pivot), m4.rotationY(0.7 * Math.sin(t / 4 * 2 * Math.PI))),
+        times: [0, PERIOD],
+        transform: () => m4.translation(px, py, pivot),
         caps: 'none',
+        cycle: { period: 4, keys: 20, transform: (u) => m4.rotationY(0.7 * Math.sin(2 * Math.PI * u)) },
       });
     }
 
     // A row of seven smaller pendulums, swinging in step with that one (once every 4 s) until
     // a tilt puts them out of step: the ones further to the right are then seen later.  The
-    // swing is a `cycle`: one round of it, eight poses, is stored once, and as the seven are the
-    // same mesh with the same poses they share it; each adds only where it hangs.  (The big
-    // pendulum stays on plain keys: for one thing that stays where it is, a matrix a key costs
-    // less than its whole mesh at every pose.)  The rod is in two lengths, as the big one's is
-    // in three.
+    // swing is a `cycle` as the big one's is, of eight poses, and as the seven are the same mesh
+    // with the same poses they share it: the mesh and its eight matrices are stored once, and
+    // each pendulum adds only where it hangs.  The rod is in two lengths, as the big one's is in
+    // three.
     {
       const L = 9.81 * (4 / (2 * Math.PI)) ** 2, pivot = 4.7, swing = 0.26; // 3.97 m swings in 4 s
       const [x0, y0, gap, n] = [10.5, 2, 2.2, 7];
@@ -480,6 +545,14 @@ export default {
       const [lx, ly] = [-60, 20];
       b.static(Geo.cylinder(1.4, 14, 12, { r2: 1.0 }).translate(lx, ly, 0).color('#f1ece2'));
       b.static(Geo.sphere(1.0, 12, 8).translate(lx, ly, 14.6).color('#fff2b0').emissive(10));
+      // The beam is stiff and goes round six times in the period, yet it stays on plain keys (one
+      // every 0.125 s, 481 matrices).  A cycle of one turn would keep a sixth of that, but would
+      // cost more to draw: which of a cycle's poses a slice can touch is worked out from the box
+      // round all of them, here a circle 120 m across that a tilted slice stays near for many
+      // seconds, where each stretch between two plain keys has a box of its own.  Measured with
+      // tools/cost.mjs, the view from the start tilted 75 degrees drew nearly a third more
+      // tetrahedra.  So for a thing that goes far for its size, measure both: the balls' bounces,
+      // 13 m tall, draw a tenth more in a view tilted 75 degrees up, which their saving is worth.
       const beam = Geo.cylinder(0.3, 60, 8, { r2: 5, caps: false }).rotateX(-Math.PI / 2).color('#fff2b0').emissive(0.35).additive();
       b.dynamic(beam, {
         times: timeRange(0, PERIOD, 0.125),

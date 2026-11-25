@@ -207,7 +207,8 @@ and neither are things that come and go, such as blinking lights.
 On foot you can jump about 1.3 m high: over a fence at a run, or onto a low
 wall or a bench, where you can stand and walk on until you step off the edge.
 A jump stops under a ceiling. (With the view tilted up or down it is less
-high, as said above.)
+high, as said above. In the Clockmaker's Workshop, where everything is small
+and slow, the jump is a hop of 30 cm.)
 
 The view is always coloured a little by time: what lies in your past has a
 slight warm cast and what lies in your future a cool one, stronger the more
@@ -321,6 +322,11 @@ sideways.
   lights, and see the rhythm change with the tilt: things that move across your
   view bunch up or stretch out, and at the right tilt a running light is
   everywhere at once.
+* Level the view (`R`) and tilt it up instead: hold `V` and roll the wheel
+  forward. Now it is height that tells the time. The top of a tower or of a
+  mountain is seen later than its foot, and whatever rises or falls is drawn
+  out or squeezed. Walk up a slope in that view and you climb into the future;
+  a jump takes you a moment ahead and back.
 
 ## How it works
 
@@ -475,13 +481,13 @@ In the menu's order, from the lightest to draw to the heaviest:
 
 | scene | mode | at 45°, a second per | what shows the tilt |
 |---|---|---|---|
-| **Time Lab** | walk | 10 m | a bare runway of clocks, plus pendulums, traffic and things that pop in and out of existence |
+| **Time Lab** | walk | 10 m | a bare runway of clocks, plus pendulums, traffic and things that pop in and out of existence; for the tilt up and down, a frame of clocks stacked 10 m apart and a ramp to climb beside it |
 | **Orbital Station** | fly | 200 m | a ring station turning every 30 s, lanes of beacons whose pulses run at 200 m/s, convoys, clocks on the gateway frames |
 | **Coastal Circuit** | drive | 30 m | timing boards every 50 m down a 1.2 km straight, traffic at 15, 30 and 45 m/s, trains, light pulses along the wall |
 | **Old Town** | walk | 10 m | a clock tower that follows the sky, street lamps coming on in a wave at dusk, trams, cyclists and walkers on a 200 m avenue |
-| **Coral Reef** | swim | 4 m | columns of bubbles all rising at the same pace, vents puffing together, lanes of fish, caustics |
-| **Winter Valley** | walk | 12 m | a detailed scene, for desktop GPUs: a ridge's shadow and the alpenglow sweeping over the mountains, lanterns that come on in a wave at dusk with a pulse running up the path, a chairlift, an aerial tram, skaters, skiers, walkers, chimney smoke and clocks that follow the sky |
-| **Pleasure Pier** | walk | 5 m | the most intricate scene, for desktop GPUs: a Victorian pier at dusk on a day of ten minutes, where everything runs in cycles. Pier trains at 9 m/s that stretch along the whole track at a tilt of 29°, a big wheel and a swing ride that wind into spirals, firework shells that become cones, lighthouse beams, lamps coming on in a wave out along the pier, chasing bulbs, a tide every three minutes, clocks, and walkers, cyclists, cars and boats at speeds from 1 to 17 m/s |
+| **Coral Reef** | swim | 4 m | columns of bubbles all rising at the same pace, vents puffing together, lanes of fish, caustics. Tilted up, the bubbles are drawn out and thin out, until near 77° a whole column is a single thread |
+| **Winter Valley** | walk | 12 m | a detailed scene, for desktop GPUs: a ridge's shadow and the alpenglow sweeping over the mountains, lanterns that come on in a wave at dusk with a pulse running up the path, a chairlift, an aerial tram, skaters, skiers, walkers, chimney smoke and clocks that follow the sky. Tilted up, the summits are under the stars while the hamlet is still in the afternoon sun |
+| **Pleasure Pier** | walk | 5 m | the most intricate scene, for desktop GPUs: a Victorian pier at dusk on a day of ten minutes, where everything runs in cycles. Pier trains at 9 m/s that stretch along the whole track at a tilt of 29°, a big wheel and a swing ride that wind into spirals, firework shells that become cones, lighthouse beams, lamps coming on in a wave out along the pier, chasing bulbs, a tide every three minutes, clocks, and walkers, cyclists, cars and boats at speeds from 1 to 17 m/s. Tilted up, night comes down from the top of the sky while the horizon keeps its glow, and the big wheel is drawn out of round |
 | **Clockmaker's Workshop** | walk | 30 cm | one small room, for desktop GPUs, where nothing is far away and everything is slow: some 350 moving parts made of about 200,000 small triangles, so that a tilted close-up stays smooth. Wheel trains that mesh, escapements that tick, a wave of pendulums and its shadow, a row of metronomes, an orrery, two steam engines, a music box that plays the scene's tune, a shelf railway, candles, a fire, a cat. Tilted, pendulums bend into S-shapes and wheels twist like screws; fly up close (`M`) and tilt again |
 
 Scenes live in `src/scenes/` and are listed in `src/scenes/index.js`.

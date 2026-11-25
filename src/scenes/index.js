@@ -2,7 +2,8 @@
 // of tools/cost.mjs): the first one is what the page opens with, behind the
 // menu.  Each module's default export is a scene definition (see
 // docs/SCENES.md); they are loaded on demand.  `hint` is shown for a few
-// seconds the first time the scene is entered (`touchHint` on a touch screen).
+// seconds the first time the scene is entered (`touchHint` on a touch screen):
+// one text, or several that are shown one after another.
 // A speed in these texts is written as "{15 m/s}" and shown in the units the
 // player has chosen.
 // `weight` is the mark on the scene's card for how much there is to draw, from
@@ -16,8 +17,14 @@ export const SCENES = [
     name: 'Time Lab',
     mode: 'walk',
     blurb: 'A bare test range of clocks, traffic and pendulums. Every clock shows the moment you are seeing it at.',
-    hint: 'Roll the mouse wheel forward (or hold X): the view tilts into time, the past on your left and the future on your right. The clocks to the right of the runway now show a later time than those to its left, and they all run slower: at 90° they stop. Sidestep to the right (D) and you walk on in time as well.',
-    touchHint: 'Hold + at the lower right: the view tilts into time, the past on your left and the future on your right. The clocks to the right of the runway now show a later time than those to its left, and they all run slower: at 90° they stop. Sidestep to the right and you walk on in time as well.',
+    hint: [
+      'Roll the mouse wheel forward (or hold X): the view tilts into time, the past on your left and the future on your right. The clocks to the right of the runway now show a later time than those to its left, and they all run slower: at 90° they stop. Sidestep to the right (D) and you walk on in time as well.',
+      'With V held, the wheel tilts the view up and down instead. Rolled forward to 45°, each clock on the tall frame left of the runway shows a second later than the one 10 m below it; and walking up the ramp beside the frame takes you a second further on than the same walk on the flat.',
+    ],
+    touchHint: [
+      'Hold + at the lower right: the view tilts into time, the past on your left and the future on your right. The clocks to the right of the runway now show a later time than those to its left, and they all run slower: at 90° they stop. Sidestep to the right and you walk on in time as well.',
+      'Tap ↔, and − and + tilt the view up and down instead. With + held to 45°, each clock on the tall frame left of the runway shows a second later than the one 10 m below it; and walking up the ramp beside the frame takes you a second further on than the same walk on the flat.',
+    ],
     weight: 1,
     work: 0.4e6,
     load: () => import('./lab.js'),
@@ -60,8 +67,14 @@ export const SCENES = [
     name: 'Coral Reef',
     mode: 'swim',
     blurb: 'Swim a sunlit reef channel past bubbling vents, lanes of fish, mantas, whale sharks and a wreck.',
-    hint: 'Roll the mouse wheel (or hold Z or X) to tilt the view into time: the vents, which all puff together, now go off one after another across the reef, and whatever swims across your view is stretched out or bunched up. At 90° the reef stands still. W swims.',
-    touchHint: 'Hold − or + at the lower right to tilt the view into time: the vents, which all puff together, now go off one after another across the reef, and whatever swims across your view is stretched out or bunched up. At 90° the reef stands still.',
+    hint: [
+      'Roll the mouse wheel (or hold Z or X) to tilt the view into time: the vents, which all puff together, now go off one after another across the reef, and whatever swims across your view is stretched out or bunched up. At 90° the reef stands still. W swims.',
+      'With V held, the wheel tilts the view up and down instead. Rolled forward, the rising bubbles are drawn out and thin out, until near 77° a whole column is a single thread; rolled back, they crowd together.',
+    ],
+    touchHint: [
+      'Hold − or + at the lower right to tilt the view into time: the vents, which all puff together, now go off one after another across the reef, and whatever swims across your view is stretched out or bunched up. At 90° the reef stands still.',
+      'Tap ↔, and − and + tilt the view up and down instead. With +, the rising bubbles are drawn out and thin out, until near 77° a whole column is a single thread; with −, they crowd together.',
+    ],
     weight: 4,
     work: 6.2e6,
     load: () => import('./reef.js'),
@@ -71,8 +84,14 @@ export const SCENES = [
     name: 'Winter Valley',
     mode: 'walk',
     blurb: 'An alpine valley from late afternoon into night: a lantern path through a hamlet, a frozen lake with skaters, a chairlift, an aerial tram, and the ridge\'s shadow sweeping over it all. The detailed one, meant for desktop graphics cards.',
-    hint: 'Roll the mouse wheel forward (or hold X) to tilt the view into time: on your left the slopes are still in the afternoon sun, while on your right night is falling. Roll it back past level, and night comes from the left. R makes it level again.',
-    touchHint: 'Hold + at the lower right to tilt the view into time: on your left the slopes are still in the afternoon sun, while on your right night is falling. Hold − past level, and night comes from the left. The level button undoes it.',
+    hint: [
+      'Roll the mouse wheel forward (or hold X) to tilt the view into time: on your left the slopes are still in the afternoon sun, while on your right night is falling. Roll it back past level, and night comes from the left. R makes it level again.',
+      'With V held, the wheel tilts the view up and down instead. Rolled forward, the summits are already under the stars while the hamlet is still in the afternoon sun.',
+    ],
+    touchHint: [
+      'Hold + at the lower right to tilt the view into time: on your left the slopes are still in the afternoon sun, while on your right night is falling. Hold − past level, and night comes from the left. The level button undoes it.',
+      'Tap ↔, and − and + tilt the view up and down instead. With +, the summits are already under the stars while the hamlet is still in the afternoon sun.',
+    ],
     weight: 5,
     work: 20.5e6,
     load: () => import('./valley.js'),
@@ -82,8 +101,14 @@ export const SCENES = [
     name: 'Pleasure Pier',
     mode: 'walk',
     blurb: 'A Victorian pier at dusk on a day that runs fast: a pier railway, a fairground with a big wheel, fireworks over the sea, a lighthouse, and the tide coming in and going out. The most intricate one, for desktop graphics cards.',
-    hint: 'Roll the mouse wheel forward (or hold X): on your left the sun climbs back into the sky, and on your right night falls, with fireworks. Roll it back past level (Z) and the two change sides. R makes the view level again.',
-    touchHint: 'Hold + at the lower right: on your left the sun climbs back into the sky, and on your right night falls, with fireworks. Hold − and the two change sides. The level button undoes it.',
+    hint: [
+      'Roll the mouse wheel forward (or hold X): on your left the sun climbs back into the sky, and on your right night falls, with fireworks. Roll it back past level (Z) and the two change sides. R makes the view level again.',
+      'With V held, the wheel tilts the view up and down instead. Rolled forward, night comes down from the top of the sky while the horizon keeps its glow, and the big wheel is drawn out of round; rolled back, it is day up there.',
+    ],
+    touchHint: [
+      'Hold + at the lower right: on your left the sun climbs back into the sky, and on your right night falls, with fireworks. Hold − and the two change sides. The level button undoes it.',
+      'Tap ↔, and − and + tilt the view up and down instead. With +, night comes down from the top of the sky while the horizon keeps its glow, and the big wheel is drawn out of round; with −, it is day up there.',
+    ],
     weight: 5,
     work: 17.3e6,
     load: () => import('./pier.js'),

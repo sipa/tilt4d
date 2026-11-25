@@ -404,7 +404,7 @@ function enter() {
   const hint = (touchMode && current.entry.touchHint) || current.entry.hint;
   if (hint && !current.hinted) {
     current.hinted = true;
-    hud.hint(withUnits(UNITS[units], hint));
+    hud.hint([].concat(hint).map((text) => withUnits(UNITS[units], text)));
   }
   overlay.hidden = true;
   hud.setVisible(hudWanted);

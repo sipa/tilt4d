@@ -2085,6 +2085,14 @@ export default {
   solidGrid: 0.25,
   walkSpeed: 0.2,
   runSpeed: 0.5,
+  // A hop, not the engine's leap of 1.27 m: one that reaches C metres (30 cm,
+  // in half a second).  In a view tilted up, where a jump goes through time,
+  // that keeps it to the room's own scale: at 90 degrees one second forward
+  // and back, a tick of the clocks, and at 45 21 cm up and 0.7 s.  In a
+  // level view the head stays well clear of the ceiling beams.  There is
+  // nothing here to be climbed: the lowest thing that can be stood on is the
+  // armchair's cushion, 49 cm up, and the bench leaves no room for a head.
+  jumpSpeed: Math.sqrt(2 * GRAV * C),
   eyeHeight: { walk: 1.6 },
   ceiling: RZ - 0.05,
   wgsl,

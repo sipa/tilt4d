@@ -203,12 +203,17 @@ export class Hud {
     this.flashUntil = performance.now() + ms;
   }
 
-  // Shows a sentence of advice near the top of the screen for a while.
-  hint(text, ms = 9000) {
-    const el = this.el.hint;
-    el.textContent = text;
+  // Shows a piece of advice near the top of the screen for as long as it
+  // takes to read (nine seconds at least); or several, one after another.
+  hint(text, ms) {
+    const el = this.el.hint, [first, ...rest] = Array.isArray(text) ? text : [text];
+    el.textContent = first;
     el.classList.add('show');
     clearTimeout(this.hintTimer);
-    this.hintTimer = setTimeout(() => el.classList.remove('show'), ms);
+    this.hintTimer = setTimeout(() => {
+      el.classList.remove('show');
+      // (the next one once this one has faded)
+      if (rest.length) this.hintTimer = setTimeout(() => this.hint(rest), 1200);
+    }, ms ?? Math.max(9000, first.length * 55));
   }
 }
