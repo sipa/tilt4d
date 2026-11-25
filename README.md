@@ -418,7 +418,9 @@ The slice is drawn like this:
   baked horizon map, which works at any distance and for any moment. The image
   is rendered in HDR with multisampling, bloom and tone mapping.
 * Glossy surfaces mirror the sky or, in scenes that ask for it, a picture of
-  the whole scene around the player, redrawn one side per frame.
+  the whole scene around the player, redrawn one side per frame, and not at
+  all while nothing in it changes: with the scene stopped, or standing still
+  at a tilt of 90°, where time does not pass.
 * A mesh placed many times over (a forest) is stored once and drawn instanced.
   Meshes can have holes cut per pixel (foliage), with matching shadows, or be
   see-through (smoke, glass), and a scene can hand its shader tables of
@@ -437,7 +439,8 @@ The slice is drawn like this:
   90° the view touches a turning wheel at all times, and the picture draws
   the few seconds of it that are on screen. At that tilt nothing in the view
   can shade anything else in it, and moving things stay out of the shadow maps
-  altogether.
+  altogether. The reflection picture, which is small, also leaves out moving
+  things that would cover less than one of its pixels.
 * Small parts of things (door handles, faces, wheel spokes) are given by the
   scenes as detail that is drawn only from near by, so they cost nothing
   across the rest of the scene.

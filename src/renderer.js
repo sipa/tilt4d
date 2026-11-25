@@ -22,6 +22,7 @@ const DEPTH = 'depth32float';
 const SAMPLES = 4;
 const SHADOW_SIZE = 2048;
 const PROBE_SIZE = 256;
+const PROBE_SMALL = 1; // a moving thing that would cover less than a square of this many pixels of the reflection picture is left out of it
 const GLOBALS = 64; // floats in the Globals uniform (see wgsl.js)
 const MAX_COPIES = 24;
 const SUN_SAMPLES = 256, SUN_STEP = 0.25; // the light's direction is read back for this many moments, this far apart (s)
@@ -75,7 +76,7 @@ export class Renderer {
     this.scene = null;
     this.size = [0, 0];
     this.frame = 0;
-    this.info = { tets: 0, triangles: 0, draws: 0, liveDraws: 0, frame: { triangles: 0, tets: 0, draws: 0 } };
+    this.info = { tets: 0, triangles: 0, draws: 0, liveDraws: 0, probe: 0, frame: { triangles: 0, tets: 0, draws: 0 } };
     // What is left out of a pass that cannot see it, as a sum of: 1 static
     // geometry from the picture, 2 static geometry from the shadow maps,
     // 4 moving geometry from the picture, 8 moving geometry from the shadow
@@ -83,9 +84,12 @@ export class Renderer {
     // 32 moving geometry from the shadow maps of a slice in which nothing
     // can shade anything else (one that stands along time: see _dynDraws),
     // 64 the steps of a repeating movement that lie outside the picture,
-    // 128 moving geometry from the sides of the reflection picture.
+    // 128 moving geometry from the sides of the reflection picture,
+    // 256 moving things too small to show in the reflection picture (the
+    // one of these that is not exact: see _dynDraws), 512 a side of the
+    // reflection picture that would come out as it is (see _probeState).
     // (0 draws everything in every pass, to compare with.)
-    this.cull = 255;
+    this.cull = 1023;
     this.detail = 1;   // a factor on the distances from which detail given with `within` is drawn
     this.nearFirst = true; // draw the picture's opaque static geometry nearest first (false: in the order it is stored)
     this.onError = (msg) => console.error(msg);
@@ -337,7 +341,10 @@ export class Renderer {
       textures: [],
       cascades: def.shadows === false ? 0 : Math.min(3, (def.shadowRadii ?? [35, 260]).length),
       reflections: !!def.reflections,
-      probeAge: 0, // sides of the reflection picture drawn so far
+      probeAge: 0, // frames that have had a turn at a side of the reflection picture
+      probeState: [null, null, null, null, null, null], // what each side was last drawn from (see _probeState)
+      // whether the scene's own shader reads the wall clock (it is in G.timeInfo): what it draws then changes all the time
+      clocked: /\btimeInfo\b/.test(def.wgsl || ''),
     };
     let tMin = Infinity, tMax = -Infinity;
     for (let i = 0; i < data.chunks.count; i++) {
@@ -814,6 +821,30 @@ export class Renderer {
     // inside its pyramid, as the picture does.  (Six sides between them look
     // every way, but a running frame draws one of them.)
     const sidePlanes = sides.map((S) => (this.cull & 128 ? pyramid(S[2], S[0], S[1], 1, 1) : []));
+    // And it leaves out what would be too small in it to show.  A side is
+    // PROBE_SIZE pixels across a view that is twice as wide as it is deep, so
+    // a pixel at the depth d along the side's axis is 2 d / PROBE_SIZE wide,
+    // and a thing that covers as much as a disc of radius r (see chunkSize
+    // in builder.js) covers less than PROBE_SMALL squared of them beyond
+    // d = small r.  That is a walker a hundred metres or two off; but a side
+    // that looks along time, in a slice tilted to 90 degrees, has the whole
+    // history of every thing round the player in view, as far as the scene is
+    // drawn, and nearly all of it is that small.  (This is the one thing left
+    // out of a pass that could, just, have been seen: a thing goes when it
+    // would cover less than a pixel, where it was drawn or not as it happened
+    // to lie on the pixel's middle.  It shows most in a slice tilted close to
+    // 90 degrees: a glossy surface that faces across such a slice mirrors
+    // little but the few pixels that look straight along time, hugely
+    // enlarged, and takes its colour from whatever was drawn there.)
+    const small = this.cull & 256 ? PROBE_SIZE / 2 * Math.sqrt(Math.PI) / PROBE_SMALL : Infinity;
+    const Z = ch.size;
+    // whether the thing of chunk i, at repeat k, is that small in the side with the axis F all through the chunk's stretch
+    const tooSmall = (F, i, k) => {
+      const Q = ch.path, q = i * 7, o = i * 9, lim = small * Z[i * 2] + Z[i * 2 + 1];
+      const ga = F[0] * (Q[q] - P[0]) + F[1] * (Q[q + 1] - P[1]) + F[2] * (Q[q + 2] - P[2]) + F[3] * (B[o] + k * period - now) * C;
+      const gb = F[0] * (Q[q + 3] - P[0]) + F[1] * (Q[q + 4] - P[1]) + F[2] * (Q[q + 5] - P[2]) + F[3] * (B[o + 1] + k * period - now) * C;
+      return Math.min(ga, gb) > lim;
+    };
     const tm = (o) => (B[o] + B[o + 1]) / 2;
     const seen = (planes, o, dx, dy, dz, dt) => {
       const ht = (B[o + 1] - B[o]) / 2 * C;
@@ -846,8 +877,10 @@ export class Renderer {
     // and each plane cuts a piece off the stretch.  (Something that stays
     // where it is, in a slice that stands along time, is touched by the
     // slice at all times: a view has a few seconds of that.)
+    // (F, if given: the axis of a side of the reflection picture, which also
+    // leaves out the steps during which the thing is too small in it.)
     let clipA = 0, clipB = 0;
-    const clip = (pl, i, k, u0, u1, s0, s1) => {
+    const clip = (pl, i, k, u0, u1, s0, s1, F = null) => {
       const Q = ch.path, q = i * 7, S = ch.steps, e = i * 6, o = i * 9;
       const T0 = B[o], T1 = B[o + 1];
       const ta = (T0 + k * period - now) * C, tb = (T1 + k * period - now) * C;
@@ -856,6 +889,14 @@ export class Renderer {
         const m = Math.abs(p[0]) * S[e + 3] + Math.abs(p[1]) * S[e + 4] + Math.abs(p[2]) * S[e + 5] + p[4];
         const fa = p[0] * (Q[q] - P[0]) + p[1] * (Q[q + 1] - P[1]) + p[2] * (Q[q + 2] - P[2]) + p[3] * ta + m;
         const fb = p[0] * (Q[q + 3] - P[0]) + p[1] * (Q[q + 4] - P[1]) + p[2] * (Q[q + 5] - P[2]) + p[3] * tb + m;
+        if (fa < 0 && fb < 0) return false;
+        if (fa < 0) v0 = Math.max(v0, fa / (fa - fb));
+        else if (fb < 0) v1 = Math.min(v1, fa / (fa - fb));
+      }
+      if (F && small < Infinity) {
+        const lim = small * Z[i * 2] + Z[i * 2 + 1];
+        const fa = lim - (F[0] * (Q[q] - P[0]) + F[1] * (Q[q + 1] - P[1]) + F[2] * (Q[q + 2] - P[2]) + F[3] * ta);
+        const fb = lim - (F[0] * (Q[q + 3] - P[0]) + F[1] * (Q[q + 4] - P[1]) + F[2] * (Q[q + 5] - P[2]) + F[3] * tb);
         if (fa < 0 && fb < 0) return false;
         if (fa < 0) v0 = Math.max(v0, fa / (fa - fb));
         else if (fb < 0) v1 = Math.min(v1, fa / (fa - fb));
@@ -956,11 +997,10 @@ export class Renderer {
         }
         if (inView) out[0][layer].add(k - k0, i, pf, pn);
         for (let j = 0; j < sidePlanes.length; j++) {
-          const pl = sidePlanes[j];
-          if (!pl.length) outSides[j][layer].add(k - k0, i, first, n);
-          else if (steps) {
-            if (clip(pl, i, k, u0, u1, s0, s1)) outSides[j][layer].add(k - k0, i, clipA * per, (clipB - clipA + 1) * per);
-          } else if (seen(pl, o, dx, dy, dz, (tm(o) + k * period - now) * C)) {
+          const pl = sidePlanes[j], F = sides[j][2];
+          if (steps) {
+            if (clip(pl, i, k, u0, u1, s0, s1, F)) outSides[j][layer].add(k - k0, i, clipA * per, (clipB - clipA + 1) * per);
+          } else if (seen(pl, o, dx, dy, dz, (tm(o) + k * period - now) * C) && !(small < Infinity && tooSmall(F, i, k))) {
             outSides[j][layer].add(k - k0, i, first, n);
           }
         }
@@ -971,6 +1011,29 @@ export class Renderer {
     }
     this.info.tets = out[0][0].tets + out[0][1].tets + blendTets;
     return { lists: out, blend, sides: outSides };
+  }
+
+  // Everything a side of the reflection picture is drawn from, as numbers:
+  // the frame's globals as the shader has them (but for what a side puts its
+  // own in place of, and for the wall clock, unless the scene's shader reads
+  // it), the player's time in full (the times of the scene's repeats are
+  // worked out from it), and the settings that say what is drawn.  A side
+  // that was last drawn from the very same numbers would come out as it is,
+  // pixel for pixel, and is left standing: the player's place and time and
+  // the slice have not changed, which is so while standing still in a slice
+  // tilted to 90 degrees, where time does not pass, or with the scene
+  // stopped.  (Turning the head changes none of it: the picture's axes go by
+  // the slice alone.)
+  _probeState(sc, g, cam) {
+    const s = new Float64Array(GLOBALS + 3);
+    s.set(g);
+    for (let i = 0; i < 12; i++) s[i] = 0;     // the camera's axes: a side has its own, made of the picture's (48 to 59)
+    s[20] = 0; s[21] = 0;                        // the projection: a side's is fixed
+    for (let i = 32; i < 36; i++) s[i] = 0;    // the size of the canvas
+    if (!sc.clocked) s[36] = 0;                  // the wall clock
+    s[44] = 0; s[45] = 0;                        // what the picture is being drawn for
+    s[GLOBALS] = cam.P[3]; s[GLOBALS + 1] = this.detail; s[GLOBALS + 2] = this.cull;
+    return s;
   }
 
   // The frame in which the reflection picture is drawn: three 4D unit
@@ -1000,7 +1063,9 @@ export class Renderer {
 
   // cam: { R, U, F: camera axes as 4-vectors; O: the slice's normal; P: [x, y, z, t]; C; fovY; time;
   //        timeTint: the colouring by time: 0 none, 1 slight, 2 full; timeCast: the strength of the slight one (1 is usual);
-  //        still: true for a single picture (everything is brought up to date at once) }
+  //        still: true for a single picture (everything is brought up to date at once);
+  //        redraw: true to draw this frame's side of the reflection picture even if nothing has changed
+  //        (for timing a frame as it is while the scene runs) }
   render(cam) {
     const sc = this.scene;
     if (!sc || !this.size[0]) return;
@@ -1043,8 +1108,9 @@ export class Renderer {
     const cascadePlanes = [0, 1, 2].map((c) => (c < sc.cascades ? (sun ? this._cascadePlanes(sun, shadowAt, radii[c], g[31]) : null) : [[0, 0, 0, -1]]));
     // The sides of the reflection picture that this frame draws: normally
     // one, in turn; all six for a still, for a scene's first frame, and when
-    // its axes have jumped.
-    let probeSides = [];
+    // its axes have jumped.  A side whose turn it is, but which would come
+    // out as it is, is not drawn.
+    let probeSides = [], probeState = null;
     if (sc.reflections) {
       const jumped = sc.probeAxes && sc.probeAxes.some((a, i) => f4.dot(a, axes[i]) < 0.95);
       const all = cam.still || sc.probeAge === 0 || jumped;
@@ -1052,6 +1118,11 @@ export class Renderer {
       // right, up and forward for the sides +X, -X, +Y, -Y, +Z, -Z of a cube map
       const SIDES = [[neg(Z), Y, X], [Z, Y, neg(X)], [X, neg(Z), Y], [X, Z, neg(Y)], [X, Y, Z], [neg(X), Y, neg(Z)]];
       probeSides = SIDES.map((S, side) => ({ side, S })).filter((s) => all || s.side === sc.probeAge % 6);
+      probeState = this._probeState(sc, g, cam);
+      if (!all && !cam.redraw && (cull & 512)) {
+        const same = (a) => !!a && a.every((v, i) => v === probeState[i]);
+        probeSides = probeSides.filter((s) => !same(sc.probeState[s.side]));
+      }
     }
     const { lists: [draws, s1, s2, s3], blend: blendDyn, sides: probeDyn } = this._dynDraws(cam, sc, radii, g[20], g[21], g[22],
       cull & 8 ? cascadePlanes : [null, null, null], cull & 32 ? sun : false, probeSides.map((s) => s.S));
@@ -1151,6 +1222,7 @@ export class Renderer {
       const pg = p.globals;
       for (let j = 0; j < probeSides.length; j++) {
         const { side, S } = probeSides[j], sideDyn = probeDyn[j];
+        sc.probeState[side] = probeState;
         pg.set(g);
         pg.set(S[0], 0); pg.set(S[1], 4); pg.set(S[2], 8);
         pg[20] = 1; pg[21] = 1;
@@ -1254,6 +1326,7 @@ export class Renderer {
     }
     d.queue.submit([enc.finish()]);
     this.info.draws = nDraws;
+    this.info.probe = probeCount; // (sides of the reflection picture drawn in this frame)
     // (a still brings all six sides of the reflection picture up to date, a running frame one)
     const spare = probeCount > 1 ? (probeCount - 1) / probeCount : 0;
     this.info.liveDraws = Math.round(nDraws - probeDraws * spare);

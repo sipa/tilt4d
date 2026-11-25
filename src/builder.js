@@ -135,7 +135,10 @@ function spatialGroups(px, py, pz, most, small = 4) {
 }
 
 export class SceneBuilder {
-  constructor() {
+  // reflections: whether the scene has a reflection picture (its definition's
+  // `reflections`): every moving mesh's size is then worked out for it.
+  constructor({ reflections = false } = {}) {
+    this.sizes = !!reflections;
     this.sv = new Grow(STATIC_STRIDE);
     this.sIdx = [new Grow(4), new Grow(4), new Grow(4)]; // per layer
     // Moving geometry.  A mesh that changes shape or colour is stored vertex by
@@ -466,7 +469,14 @@ export class SceneBuilder {
 
     const boxes = [];
     let vertBase = base, keyBase = 0, mirrored = false;
+    // how much the mesh can show, for the reflection picture: at a few of its keys (see showRadius)
+    const sized = this.sizes ? spread(nk) : new Set();
+    let show = this.sizes ? 0 : undefined;
     if (rigid) {
+      if (this.sizes) {
+        const vecs = areaVectors(g0);
+        for (const k of xf ? sized : [0]) show = Math.max(show, showRadius(vecs, xf ? xf(times[k]) : null));
+      }
       // the mesh as it is, once (or not at all, if the same mesh is there already) ...
       const own = writeKey(g0, 0, null, null, base, 0).box;
       vertBase = this._share(dv, base, nv);
@@ -476,8 +486,9 @@ export class SceneBuilder {
       boxes.push(...placed.boxes);
     } else {
       for (let k = 0; k < nk; k++) {
-        const t = times[k];
-        boxes.push(writeKey(k === 0 ? g0 : geoAt(t), t, xf ? xf(t) : null, paint ? paint(t) : null, base + k * nv, 0).box);
+        const t = times[k], g = k === 0 ? g0 : geoAt(t), m = xf ? xf(t) : null;
+        if (sized.has(k)) show = Math.max(show, showRadius(areaVectors(g), m));
+        boxes.push(writeKey(g, t, m, paint ? paint(t) : null, base + k * nv, 0).box);
       }
       dv.count += nv * nk;
     }
@@ -488,7 +499,7 @@ export class SceneBuilder {
       let chunk = null;
       for (let k = 0; k < nk - 1; k++) {
         if (!chunk) {
-          chunk = { count: 0, t0: times[k], t1: times[k], box: boxes[k].slice(), within, path: [boxes[k]], dark,
+          chunk = { count: 0, t0: times[k], t1: times[k], box: boxes[k].slice(), within, path: [boxes[k]], dark, show,
             tmpl: list, per, vert: rigid ? vertBase : base + k * nv, nv: rigid ? 0 : nv, key: rigid ? keyBase + k : 0, kind: rigid ? 1 : 0 };
         }
         chunk.count += per;
@@ -678,7 +689,7 @@ export class SceneBuilder {
     const at = tm.count;
     tm.u32.set(fan, at * 4);
     const dark = fan.every((v, i) => i % 4 === 0 || (g.a[v * 4 + 3] & 4) !== 0);
-    this.chunks[0].push({ count: per, t0: t, t1: t, box, within, path: [box], dark, tmpl: this._share(tm, at, per), per, vert: cb, nv: 0, key: 0, kind: 0 });
+    this.chunks[0].push({ count: per, t0: t, t1: t, box, within, path: [box], dark, show: this.sizes ? showRadius(areaVectors(g), m) : undefined, tmpl: this._share(tm, at, per), per, vert: cb, nv: 0, key: 0, kind: 0 });
     this.counts.tetrahedra += per;
   }
 
@@ -795,6 +806,14 @@ export class SceneBuilder {
     // box round all its poses, and from when the steps are), and the shader
     // works out the rest.
     const { layers, lists } = this._tetLists(g0, [vertBase], mirrored);
+    // how much the mesh can show, for the reflection picture: at a few poses, and at a few keys (see showRadius)
+    let show;
+    if (this.sizes) {
+      const vecs = areaVectors(g0);
+      show = 0;
+      for (const i of spread(n)) show = Math.max(show, stiff ? showRadius(vecs, m4.mul(mats[0], cy.transform(i / n))) : showRadius(areaVectors(poseOf(i)), mats[0]));
+      for (const k of spread(nk)) show = Math.max(show, showRadius(vecs, mats[k]));
+    }
     let steps = 0;
     for (let k = 0; k < nk - 1; k++) {
       const t0 = f(times[k]), t1 = f(times[k + 1]);
@@ -807,7 +826,7 @@ export class SceneBuilder {
       const box = b0.slice();
       growBox(box, b1);
       for (const { layer, list, per, dark } of lists) {
-        this.chunks[layer].push({ count: per * count, t0, t1, box, within, path: [b0, b1], dark,
+        this.chunks[layer].push({ count: per * count, t0, t1, box, within, path: [b0, b1], dark, show,
           tmpl: list, per, vert: 0, nv: ma, key: keyBase + k, kind: stiff ? 3 : 2, cycle, steps: count, grid0: grid(ma), dt });
       }
     }
@@ -893,15 +912,21 @@ export class SceneBuilder {
     const chunkLayer = new Uint8Array(all.length);
     const chunkDark = new Uint8Array(all.length); // 1: none of it casts a shadow
     const chunkNear = new Float32Array(all.length); // how near the viewer has to be for it to be drawn
-    // For chunks of such detail, where the thing is over the chunk's stretch of
-    // time: the middle of its bounds at the start and at the end, and a radius
-    // that takes in the thing itself and any bend of its path in between.  (A
-    // chunk's bounds take in the whole stretch, which for something on a long
-    // straight run says little about how near it is at any one moment.)  The
-    // same for the chunks of meshes with a cycle, of which only the steps are
-    // drawn that lie where the slice meets the thing; `chunkSteps` says how
-    // many steps such a chunk has, when the first begins and how long each is.
+    // Where the thing is over the chunk's stretch of time: the middle of its
+    // bounds at the start and at the end, and a radius that takes in the
+    // thing itself and any bend of its path in between.  (A chunk's bounds
+    // take in the whole stretch, which for something on a long straight run
+    // says little about how near it is at any one moment.)  That is what
+    // detail drawn only from near by goes by; the chunks of meshes with a
+    // cycle, of which only the steps are drawn that lie where the slice meets
+    // the thing (`chunkSteps` says how many steps such a chunk has, when the
+    // first begins and how long each is); and the reflection picture, which
+    // leaves out what would be too small in it to show.  For that `chunkSize`
+    // has the radius of a disc that covers as much as the thing can (no more
+    // than a ball round the thing alone, and no more than the mesh has to
+    // show: see showRadius), and how much of the path's radius is the bend.
     const chunkPath = new Float32Array(all.length * 7);
+    const chunkSize = new Float32Array(all.length * 2);
     const chunkSteps = new Float64Array(all.length * 6);
     all.forEach((c, i) => {
       chunkNear[i] = c.within < BIG ? c.within : Infinity;
@@ -910,17 +935,21 @@ export class SceneBuilder {
         const [p, q] = c.path;
         chunkSteps.set([c.steps, c.grid0, c.dt, Math.max(p[3] - p[0], q[3] - q[0]) / 2, Math.max(p[4] - p[1], q[4] - q[1]) / 2, Math.max(p[5] - p[2], q[5] - q[2]) / 2], i * 6);
       }
-      if (c.within < BIG || c.kind >= 2) {
+      {
         const mid = (b) => [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
         const a = mid(c.path[0]), z = mid(c.path[c.path.length - 1]), d = [z[0] - a[0], z[1] - a[1], z[2] - a[2]];
         const len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-        let r = 0;
+        let r = 0, own = 0;
         for (const b of c.path) {
           const m = mid(b), u = len2 > 0 ? Math.min(1, Math.max(0, ((m[0] - a[0]) * d[0] + (m[1] - a[1]) * d[1] + (m[2] - a[2]) * d[2]) / len2)) : 0;
           const off = Math.hypot(m[0] - a[0] - d[0] * u, m[1] - a[1] - d[1] * u, m[2] - a[2] - d[2] * u);
-          r = Math.max(r, off + Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2);
+          const half = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+          r = Math.max(r, off + half);
+          own = Math.max(own, half);
         }
         chunkPath.set([a[0], a[1], a[2], z[0], z[1], z[2], r], i * 7);
+        chunkSize[i * 2] = Math.min(own, c.show ?? own);
+        chunkSize[i * 2 + 1] = r - own;
       }
       chunkRange[i * 2] = c.per; chunkRange[i * 2 + 1] = c.count;
       const b = c.box, h = [(b[3] - b[0]) / 2, (b[4] - b[1]) / 2, (b[5] - b[2]) / 2];
@@ -1039,10 +1068,55 @@ export class SceneBuilder {
       dynKeys: this.keys.f32.slice(0, Math.max(1, this.keys.count) * 16),
       dynTmpl: this.tmpl.u32.slice(0, Math.max(1, this.tmpl.count) * 4),
       dynRuns: runs,
-      chunks: { count: all.length, range: chunkRange, box: chunkBox, layer: chunkLayer, dark: chunkDark, near: chunkNear, path: chunkPath, steps: chunkSteps },
+      chunks: { count: all.length, range: chunkRange, box: chunkBox, layer: chunkLayer, dark: chunkDark, near: chunkNear, path: chunkPath, size: chunkSize, steps: chunkSteps },
       stats,
     };
   }
+}
+
+// How much of itself a mesh can show: the radius of the disc that has half
+// its area.  On average over all the ways it can face, a mesh shows no more
+// than that (a flat sheet seen from both sides shows half its area, a closed
+// shape a quarter).  (For the reflection picture, which leaves out what
+// would not cover a pixel of it: a thin ring or a spoked wheel covers far
+// less than a ball round it would.)  It is worked out from the mesh's
+// triangles as vectors, each as long as the triangle's area and square to
+// it, which a matrix m that places the mesh turns into those of the placed
+// mesh without going through its vertices again.
+function areaVectors(g) {
+  const p = g.p, idx = g.idx, out = new Float64Array(idx.length);
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = idx[i] * 3, b = idx[i + 1] * 3, c = idx[i + 2] * 3;
+    const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2];
+    const vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
+    out[i] = (uy * vz - uz * vy) / 2; out[i + 1] = (uz * vx - ux * vz) / 2; out[i + 2] = (ux * vy - uy * vx) / 2;
+  }
+  return out;
+}
+function showRadius(vecs, m) {
+  let area = 0;
+  if (!m) {
+    for (let i = 0; i < vecs.length; i += 3) area += Math.hypot(vecs[i], vecs[i + 1], vecs[i + 2]);
+  } else {
+    // (areas go by the matrix of cofactors)
+    const c00 = m[5] * m[10] - m[9] * m[6], c01 = m[9] * m[2] - m[1] * m[10], c02 = m[1] * m[6] - m[5] * m[2];
+    const c10 = m[8] * m[6] - m[4] * m[10], c11 = m[0] * m[10] - m[8] * m[2], c12 = m[4] * m[2] - m[0] * m[6];
+    const c20 = m[4] * m[9] - m[8] * m[5], c21 = m[8] * m[1] - m[0] * m[9], c22 = m[0] * m[5] - m[4] * m[1];
+    for (let i = 0; i < vecs.length; i += 3) {
+      const x = vecs[i], y = vecs[i + 1], z = vecs[i + 2];
+      area += Math.hypot(c00 * x + c01 * y + c02 * z, c10 * x + c11 * y + c12 * z, c20 * x + c21 * y + c22 * z);
+    }
+  }
+  return Math.sqrt(area / 2 / Math.PI);
+}
+
+// Up to nine of the numbers 0 .. n - 1, evenly spread, the first and the last
+// among them: the keys or poses at which a thing's size is taken (it may
+// grow, as a firework does, and the largest counts).
+function spread(n) {
+  const out = new Set(), m = Math.min(n, 9);
+  for (let i = 0; i < m; i++) out.add(m > 1 ? Math.round(i * (n - 1) / (m - 1)) : 0);
+  return out;
 }
 
 // Makes the box `box` take in the box `b`.

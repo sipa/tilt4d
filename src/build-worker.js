@@ -17,7 +17,7 @@ self.onmessage = async (e) => {
   try {
     const def = (await import(`./scenes/${id}.js`)).default;
     const t0 = performance.now();
-    const builder = new SceneBuilder();
+    const builder = new SceneBuilder({ reflections: def.reflections });
     let last = 0;
     builder.onProgress = (bytes) => {
       const now = performance.now();

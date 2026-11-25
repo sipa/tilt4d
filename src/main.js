@@ -169,7 +169,7 @@ async function loadScene(id) {
     if (!built) {
       await new Promise((r) => setTimeout(r, 30));
       const t0 = performance.now();
-      const builder = new SceneBuilder();
+      const builder = new SceneBuilder({ reflections: def.reflections });
       def.build(builder);
       const data = builder.finalize();
       const buildMs = Math.round(performance.now() - t0);
@@ -566,7 +566,8 @@ async function measure() {
   measuring = true;
   hud.flash('measuring…', 60000);
   const queue = renderer.device.queue;
-  const cam = { ...player.camera(), fovY: fovFor(canvas.clientWidth / canvas.clientHeight), time: performance.now() / 1000, timeTint, timeCast };
+  // (the same view every time: but with a side of the reflection picture drawn in each, as while the scene runs)
+  const cam = { ...player.camera(), fovY: fovFor(canvas.clientWidth / canvas.clientHeight), time: performance.now() / 1000, timeTint, timeCast, redraw: true };
   const burst = async (frames) => {
     await queue.onSubmittedWorkDone(); // start with nothing pending
     const t0 = performance.now();
@@ -662,7 +663,7 @@ async function start() {
     return;
   }
   renderer.onError = (msg) => { console.error(msg); setStatus(msg, true); };
-  if (params.has('cull')) renderer.cull = num('cull', 255) | 0; // (0: draw everything in every pass, to compare with; see renderer.js)
+  if (params.has('cull')) renderer.cull = num('cull', 1023) | 0; // (0: draw everything in every pass, to compare with; see renderer.js)
   if (params.has('slack')) renderer.slackScale = num('slack', 1); // (the margin by which moving geometry is taken in beyond the slice, times this: see _dynDraws)
   if (params.get('order') === '0') renderer.nearFirst = false; // (draw static geometry in the order it is stored, to compare with)
   // Browsers take the graphics device away now and then (a phone that had

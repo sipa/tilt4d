@@ -705,14 +705,35 @@ anything else in it: what casts a shadow and what it falls on would have to be
 at the same place. Just short of 90° that does not hold, and the shadow maps
 then take everything the slice touches within their reach: the views between
 about 85° and 90° are the dearest a scene has, several times a level one.
-In a scene with `reflections` the view at 90° itself is dear as well. A side
-of the reflection picture takes the moving geometry it can see, like any
-other view; but two of the six then look along time, and what such a side
-sees is the whole history, as far as the scene is drawn, of everything the
-slice touches round the player. A running frame draws one side, so two frames
-in six are several times the others.
 `node tools/cost.mjs <scene> --view "lift=89" --view "lift=90"` counts them
 (for the reflection picture, the average of its sides).
+
+In a scene with `reflections`, a side of the reflection picture takes the
+moving geometry it can see, like any other view, less what would be too small
+in it to show. The picture is 256 pixels across a quarter turn, and a thing
+is left out of a side where it would cover less than one of those pixels, on
+average over the ways it can face: a walker beyond 150 m or so, a railway
+carriage beyond a kilometre. (The builder works out for every mesh how much
+it can cover: half its area, and no more than a ball round it. A thin ring or
+a wheel of spokes covers far less than its size suggests.) At 90° two of the
+six sides look along time, and what such a side has in view is the whole
+history, as far as the scene is drawn, of everything the slice touches round
+the player. Of small things nearly all of that is left out. Big things stay:
+in a scene with trains and a big wheel those two sides are still several
+times the others, and as a running frame draws one side, so are two frames in
+six, for as long as the player is on the move there. A side is not drawn
+again while nothing it is drawn from has changed (the player's place and
+time, the slice, the settings: turning the head changes none of them), and
+at 90° time does not pass: a few seconds after the player has come to a
+stand, when the pace of time has eased to nothing, the reflection picture
+costs nothing, as it does while the scene is stopped. A scene whose own
+shader reads the wall clock (`G.timeInfo`) has it drawn in every frame all
+the same, as what it shows may then change at any time. (Leaving small
+things out is not exact. At ordinary tilts what goes are
+specks of a pixel. Close to 90°, a glossy surface that faces across the slice
+mirrors little but the few pixels of the reflection picture that look
+straight along time, hugely enlarged, and a small thing that is no longer
+drawn there changes the colour of the whole surface.)
 
 On a device that cannot keep up, the page lowers the resolution it draws at,
 and with it the distance from which detail given with `within` is drawn.
